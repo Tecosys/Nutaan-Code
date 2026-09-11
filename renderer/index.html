@@ -72,25 +72,36 @@
       </div>
 
       <div class="browser-pane" id="browserPane" hidden>
-        <div class="browser-bar">
-          <div class="nav-group">
-            <button class="nav-btn" id="browserBack" title="Back">‹</button>
-            <button class="nav-btn" id="browserForward" title="Forward">›</button>
-            <button class="nav-btn" id="browserReload" title="Reload">↻</button>
-          </div>
-          <div class="address-wrap">
-            <span class="address-dot" id="addressDot"></span>
-            <input type="text" id="browserAddress" placeholder="Enter a URL or localhost:3000…" />
-          </div>
-          <div class="device-group">
-            <button class="device-btn" id="sizeMobile" title="Mobile view">📱</button>
-            <button class="device-btn" id="sizeTablet" title="Tablet view">📟</button>
-            <button class="device-btn active" id="sizeDesktop" title="Desktop view">🖥️</button>
-          </div>
+        <div class="panel-tabs">
+          <button class="panel-tab active" id="tabBrowser">🌐 Browser</button>
+          <button class="panel-tab" id="tabCode">{ } Code</button>
+          <div class="panel-tabs-spacer"></div>
           <button class="icon-btn small" id="browserClose" title="Close">✕</button>
         </div>
-        <div class="browser-viewport" id="browserViewport">
-          <webview id="browserView" src="about:blank" allowpopups></webview>
+        <div id="browserView-wrap">
+          <div class="browser-bar">
+            <div class="nav-group">
+              <button class="nav-btn" id="browserBack" title="Back">‹</button>
+              <button class="nav-btn" id="browserForward" title="Forward">›</button>
+              <button class="nav-btn" id="browserReload" title="Reload">↻</button>
+            </div>
+            <div class="address-wrap">
+              <span class="address-dot" id="addressDot"></span>
+              <input type="text" id="browserAddress" placeholder="Enter a URL or localhost:3000…" />
+            </div>
+            <div class="device-group">
+              <button class="device-btn" id="sizeMobile" title="Mobile view">📱</button>
+              <button class="device-btn" id="sizeTablet" title="Tablet view">📟</button>
+              <button class="device-btn active" id="sizeDesktop" title="Desktop view">🖥️</button>
+            </div>
+          </div>
+          <div class="browser-viewport" id="browserViewport">
+            <webview id="browserView" src="about:blank" allowpopups></webview>
+          </div>
+        </div>
+        <div id="codeView-wrap" hidden>
+          <div class="code-view-header" id="codeFileLabel">No file open yet</div>
+          <pre class="code-view"><code id="codeViewContent"></code></pre>
         </div>
       </div>
     </div>

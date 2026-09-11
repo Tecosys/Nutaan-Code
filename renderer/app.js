@@ -29,6 +29,12 @@
   const projectListEl = el("projectList");
   const browserToggleBtn = el("browserToggleBtn");
   const browserPane = el("browserPane");
+  const tabBrowser = el("tabBrowser");
+  const tabCode = el("tabCode");
+  const browserViewWrap = el("browserView-wrap");
+  const codeViewWrap = el("codeView-wrap");
+  const codeFileLabel = el("codeFileLabel");
+  const codeViewContent = el("codeViewContent");
   const browserView = el("browserView");
   const browserAddress = el("browserAddress");
   const browserBack = el("browserBack");
@@ -50,6 +56,7 @@
   let activePath = null;
   let running = false;
   const toolCards = new Map();
+  const toolArgsById = new Map();
   const liveWriteCards = new Map();
   let idCounter = 0;
 
@@ -101,6 +108,48 @@
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  }
+
+  // Lightweight, language-agnostic-ish highlighter for the Code tab — good enough for JS/TS/JSON/CSS
+  // at a glance, not a real tokenizer.
+  function highlightCode(code) {
+    const escaped = escapeHtml(code);
+    const placeholders = [];
+    const stash = (html) => {
+      const token = `\uE000STASH${placeholders.length}STASH\uE001`;
+      placeholders.push(html);
+      return token;
+    };
+    // Pass 1: pull out comments/strings first so nothing inside them gets treated as a keyword etc.
+    const protectedText = escaped
+      .replace(/(\/\/[^\n]*|#[^\n]*)/g, (m) => stash(`<span class="hl-comment">${m}</span>`))
+      .replace(/("(?:[^"\\]|\\.)*?"|'(?:[^'\\]|\\.)*?'|`(?:[^`\\]|\\.)*?`)/g, (m) => stash(`<span class="hl-string">${m}</span>`));
+    // Pass 2: ONE combined regex over what's left — a self-collision bug here previously (separate
+    // sequential .replace() calls, where the keyword pass's own generated `<span class="...">`
+    // markup then got matched by the attr pass) corrupted the output; a single pass avoids that.
+    const KEYWORDS = /^(import|export|from|const|let|var|function|return|if|else|for|while|class|extends|new|async|await|try|catch|default|interface|type|public|private)$/;
+    const combined = /(&lt;\/?)([\w.]+)|([\w-]+)(=)(?=["\uE000])|\b(\d+\.?\d*)\b|\b([A-Za-z_]\w*)\b/g;
+    const highlighted = protectedText.replace(combined, (m, tagOpen, tagName, attrName, eq, num, word) => {
+      if (tagOpen) return `${tagOpen}<span class="hl-tag">${tagName}</span>`;
+      if (attrName) return `<span class="hl-attr">${attrName}</span>${eq}`;
+      if (num) return `<span class="hl-num">${num}</span>`;
+      if (word && KEYWORDS.test(word)) return `<span class="hl-keyword">${word}</span>`;
+      return m;
+    });
+    return highlighted.replace(/\uE000STASH(\d+)STASH\uE001/g, (_, i) => placeholders[Number(i)]);
+  }
+
+  function showCodeFile(relPath, content) {
+    codeFileLabel.textContent = relPath;
+    codeViewContent.innerHTML = highlightCode(content.slice(0, 50_000));
+  }
+
+  function switchPanelTab(tab) {
+    const isCode = tab === "code";
+    tabCode.classList.toggle("active", isCode);
+    tabBrowser.classList.toggle("active", !isCode);
+    codeViewWrap.hidden = !isCode;
+    browserViewWrap.hidden = isCode;
   }
 
   function scrollToBottom() {
@@ -617,6 +666,21 @@
   }
 
   // ---------- File tree ----------
+  const FILE_BADGES = {
+    js: ["JS", "#f7df1e"], jsx: ["JS", "#f7df1e"], mjs: ["JS", "#f7df1e"],
+    ts: ["TS", "#3178c6"], tsx: ["TS", "#3178c6"],
+    css: ["#", "#38bdf8"], scss: ["#", "#c86bd0"],
+    json: ["{}", "#fbbf24"], md: ["M↓", "#8b8da0"],
+    html: ["<>", "#f97316"], py: ["PY", "#4ade80"],
+    yml: ["Y", "#8b8da0"], yaml: ["Y", "#8b8da0"],
+  };
+  function fileBadge(name) {
+    const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
+    const [label, color] = FILE_BADGES[ext] || [null, null];
+    if (!label) return `<span class="tree-icon">📄</span>`;
+    return `<span class="tree-badge" style="color:${color}">${label}</span>`;
+  }
+
   async function buildTreeNode(container, relPath, depth) {
     let entries;
     try {
@@ -629,7 +693,8 @@
       row.className = "tree-row";
       row.style.paddingLeft = 8 + depth * 14 + "px";
       row.title = entry.name;
-      row.innerHTML = `<span class="chev">${entry.isDir ? "▸" : ""}</span><span class="tree-label">${entry.isDir ? "📁" : "📄"} ${escapeHtml(entry.name)}</span>`;
+      const icon = entry.isDir ? `<span class="tree-icon">📁</span>` : fileBadge(entry.name);
+      row.innerHTML = `<span class="chev">${entry.isDir ? "▸" : ""}</span>${icon}<span class="tree-label">${escapeHtml(entry.name)}</span>`;
       container.appendChild(row);
 
       if (entry.isDir) {
@@ -648,10 +713,18 @@
           }
         });
       } else {
-        row.addEventListener("click", () => {
+        row.addEventListener("click", async () => {
           const filePath = relPath === "." ? entry.name : relPath + "/" + entry.name;
-          input.value = (input.value ? input.value + " " : "") + filePath;
-          input.focus();
+          document.querySelectorAll(".tree-row.active").forEach((r) => r.classList.remove("active"));
+          row.classList.add("active");
+          try {
+            const content = await window.nutaan.readFile(activePath, filePath);
+            showCodeFile(filePath, content);
+            browserPane.hidden = false;
+            switchPanelTab("code");
+          } catch (err) {
+            appendBubble("error", `Couldn't open ${filePath}: ${err.message}`);
+          }
         });
       }
     }
@@ -957,6 +1030,7 @@
   window.nutaan.onAgentEvent("agent:tool-start", ({ id, name, args }) => {
     hideThinking();
     finalizeStream();
+    toolArgsById.set(id, args);
     // write_file/edit_file get their own agent:permission-request right after this same
     // tool-start event — don't break their group here, or every file in a multi-file batch
     // ends up as its own separate card instead of one grouped summary.
@@ -1050,9 +1124,32 @@
     showThinking();
   });
 
+  const FILE_VIEW_TOOLS = new Set(["read_file", "write_file", "edit_file"]);
+  async function maybeShowInCodeTab(id, name, result) {
+    if (!FILE_VIEW_TOOLS.has(name) || (result && result.error)) return;
+    const args = toolArgsById.get(id);
+    const proj = activeProject();
+    if (!args?.path || !proj) return;
+    try {
+      // Always re-read fresh rather than trust the tool result shape, so write_file/edit_file
+      // (which don't return the full content) show the actual final file, not a stale guess.
+      const content = await window.nutaan.readFile(proj.path, args.path);
+      showCodeFile(args.path, content);
+      // Only auto-open if the panel isn't already open — don't yank the user off a live browser
+      // preview they deliberately have up just because the agent also touched a file.
+      if (browserPane.hidden) {
+        browserPane.hidden = false;
+        switchPanelTab("code");
+      }
+    } catch {
+      // file may have been deleted/moved since — leave whatever the Code tab was last showing
+    }
+  }
+
   const FS_MUTATING_TOOLS = new Set(["write_file", "edit_file", "run_command"]);
   window.nutaan.onAgentEvent("agent:tool-result", ({ id, name, result }) => {
     resolveToolCard(id, name, result);
+    maybeShowInCodeTab(id, name, result);
     if (running) showThinking();
     if (FS_MUTATING_TOOLS.has(name) && !(result && result.error)) refreshTree();
   });
@@ -1327,6 +1424,9 @@
       }
     });
   }
+
+  tabBrowser.addEventListener("click", () => switchPanelTab("browser"));
+  tabCode.addEventListener("click", () => switchPanelTab("code"));
 
   // ---------- Browser panel ----------
   function normalizeUrl(value) {

@@ -41,7 +41,7 @@
       "node_modules/**/*"
     ],
     "asarUnpack": [
-      "node_modules/omniroute/**/*"
+      "node_modules/**/*"
     ],
     "win": {
       "target": "nsis",
@@ -56,7 +56,8 @@
     "publish": {
       "provider": "github",
       "owner": "Tecosys",
-      "repo": "Nutaan-Code"
+      "repo": "Nutaan-Code",
+      "draft": true
     }
   }
 }
