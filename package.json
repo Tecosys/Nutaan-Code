@@ -1,0 +1,63 @@
+{
+  "name": "nutaan-code",
+  "version": "0.1.16",
+  "description": "Nutaan Code — a personal AI coding agent desktop app",
+  "main": "main.js",
+  "private": true,
+  "author": "Tecosys",
+  "scripts": {
+    "start": "electron .",
+    "build:icon": "node scripts/build-icon.js",
+    "dist": "electron-builder --win",
+    "release": "electron-builder --win --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9",
+    "omniroute": "^3.8.50"
+  },
+  "devDependencies": {
+    "electron": "^44.3.0",
+    "electron-builder": "^25.1.8",
+    "jimp": "^1.6.1",
+    "png-to-ico": "^3.0.2"
+  },
+  "overrides": {
+    "node-gyp": "^12.1.0"
+  },
+  "build": {
+    "appId": "com.tecosys.nutaancode",
+    "productName": "Nutaan Code",
+    "npmRebuild": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "skills/**/*",
+      "assets/**/*",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Tecosys",
+      "repo": "Nutaan-Code",
+      "releaseType": "draft"
+    }
+  }
+}
