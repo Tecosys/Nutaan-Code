@@ -823,7 +823,7 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, messages, au
         sender.send("agent:done", { aborted: true, messages: chatMessages });
         return;
       }
-      sender.send("agent:error", { message: `Network error reaching OmniRoute: ${err.message}` });
+      sender.send("agent:error", { message: `Network error reaching the model server: ${err.message}` });
       return;
     }
 

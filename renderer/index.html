@@ -84,20 +84,21 @@
       <h3>Settings</h3>
     </div>
     <div class="field">
+      <label for="apiKeyInput">API key</label>
+      <input type="password" id="apiKeyInput" placeholder="Paste your OpenRouter API key" autocomplete="off" />
+      <div class="note">Stored only on this device. <a href="#" id="getKeyLink">Get a free API key →</a> (opens right here in the app — no account needed to browse, free models don't need a card).</div>
+    </div>
+    <div class="field">
       <label for="modelSelectSettings">Model</label>
-      <select id="modelSelectSettings"><option value="auto/coding:free">auto/coding:free</option></select>
-      <div class="note">Nutaan Code picks and switches between free/fast models automatically. Change this only if you want to pin a specific one.</div>
+      <select id="modelSelectSettings"><option value="meta-llama/llama-3.3-70b-instruct:free">meta-llama/llama-3.3-70b-instruct:free</option></select>
+      <div class="note">Free models are marked <code>:free</code>. Pick a paid one (e.g. an Anthropic Claude model) for higher quality once you've added credit on OpenRouter.</div>
     </div>
     <details class="advanced">
       <summary>Advanced</summary>
       <div class="field">
         <label for="baseUrlInput">Server URL</label>
-        <input type="text" id="baseUrlInput" placeholder="http://localhost:20128/v1" />
-      </div>
-      <div class="field">
-        <label for="apiKeyInput">API key</label>
-        <input type="password" id="apiKeyInput" placeholder="Auto-configured" autocomplete="off" />
-        <div class="note">Stored only on this device. Only touch this if you're pointing Nutaan Code at a different server.</div>
+        <input type="text" id="baseUrlInput" placeholder="https://openrouter.ai/api/v1" />
+        <div class="note">Only change this if you're pointing Nutaan Code at a different OpenAI-compatible server.</div>
       </div>
     </details>
     <div class="modal-actions">

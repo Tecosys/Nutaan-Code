@@ -1,5 +1,7 @@
 (function () {
-  const DEFAULT_BASE_URL = "http://localhost:20128/v1";
+  const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
+  const OPENROUTER_KEYS_URL = "https://openrouter.ai/keys";
+  const DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
 
   const el = (id) => document.getElementById(id);
   const thread = el("thread");
@@ -36,7 +38,7 @@
   const sizeTablet = el("sizeTablet");
   const sizeDesktop = el("sizeDesktop");
 
-  let settings = { baseUrl: DEFAULT_BASE_URL, apiKey: "", model: "auto/coding:free", autoApprove: false };
+  let settings = { baseUrl: DEFAULT_BASE_URL, apiKey: "", model: DEFAULT_MODEL, autoApprove: false };
   let projects = []; // [{ path, messages: [...] }]
   let activePath = null;
   let running = false;
@@ -373,9 +375,12 @@
       opt.textContent = id;
       modelSelectSettings.appendChild(opt);
     }
-    modelSelectSettings.value = [...modelSelectSettings.options].some((o) => o.value === settings.model)
-      ? settings.model
-      : "auto/coding:free";
+    const ids = res.models;
+    if (ids.includes(settings.model)) {
+      modelSelectSettings.value = settings.model;
+    } else {
+      modelSelectSettings.value = ids.find((id) => id.endsWith(":free")) || ids[0] || DEFAULT_MODEL;
+    }
   }
 
   function updateEmptyHint() {
@@ -719,10 +724,21 @@
   settingsSave.addEventListener("click", async () => {
     settings.baseUrl = baseUrlInput.value.trim() || DEFAULT_BASE_URL;
     settings.apiKey = apiKeyInput.value.trim();
-    settings.model = modelSelectSettings.value || "auto/coding:free";
+    settings.model = modelSelectSettings.value || DEFAULT_MODEL;
     await window.nutaan.setSettings(settings);
     settingsOverlay.hidden = true;
     refreshModels();
+  });
+  const getKeyLink = el("getKeyLink");
+  if (getKeyLink) {
+    getKeyLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      browserPane.hidden = false;
+      navigateBrowser(OPENROUTER_KEYS_URL);
+    });
+  }
+  statusText.addEventListener("click", () => {
+    if (!settings.apiKey) settingsBtn.click();
   });
 
   // ---------- Browser panel ----------
@@ -906,5 +922,6 @@
     }
     persistProjects();
     await refreshModels();
+    if (!settings.apiKey) settingsBtn.click();
   })();
 })();

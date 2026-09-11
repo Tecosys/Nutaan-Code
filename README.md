@@ -2,25 +2,20 @@
 
 A desktop coding agent, built in-house at Tecosys — reads your project's files, proposes edits, runs commands, and can drive a built-in browser panel to actually test what it builds. Every file write, edit, and shell command stops for your approval first (or runs immediately if you turn on Auto-approve), same permission model as Claude Code.
 
-It talks to models through a local gateway rather than any single AI provider directly, so it can route across whichever models are connected there — including free-tier ones — and switch automatically if one runs out of quota.
+It talks to models through any OpenAI-compatible endpoint — [OpenRouter](https://openrouter.ai) by default, which fronts hundreds of models (including several genuinely free ones) behind a single API key, no local server or terminal required.
 
-## Install (team members — no dev setup needed)
+## Install — no terminal, no dev setup
 
 1. Go to the [Releases page](https://github.com/Tecosys/Nutaan-Code/releases) and download the latest `Nutaan-Code-Setup-x.x.x.exe`.
 2. Run it — it installs like any Windows app (Start Menu + desktop shortcut).
 
    > **Windows shows a blue "Windows protected your PC" screen?** That's expected — the installer isn't code-signed yet (that costs a paid certificate), so Windows doesn't recognize the publisher. It's not a virus or a broken download. Click **More info**, then **Run anyway**. This one-time warning goes away for that file once you've run it.
-3. Install the model gateway once, from an admin/PowerShell terminal:
-   ```bash
-   npm install -g omniroute
-   omniroute serve
-   ```
-   (needs [Node.js](https://nodejs.org) 22.22.2+ or 24.x — install that first if you don't have it)
-4. Open the OmniRoute dashboard it prints (`http://localhost:20128`), sign in with the default password `CHANGEME` and **change it immediately**, then add at least one model provider (or a free-tier one that needs no key).
-5. Launch Nutaan Code. On first run, open **⚙ Settings**, generate an API key from that same OmniRoute dashboard, and paste it in.
-6. Click **+ Open Project**, pick a folder, and start chatting.
+3. Launch Nutaan Code. On first run it opens **⚙ Settings** for you automatically:
+   - Click **Get a free API key →** — this opens OpenRouter's key page in Nutaan Code's own built-in browser panel, so you never leave the app. Sign in (Google/GitHub/email) and create a key.
+   - Paste the key into the **API key** field and hit **Save**. A free (`:free`) model is picked by default — no card needed.
+4. Click **+ Open Project**, pick a folder, and start chatting.
 
-The app auto-updates itself after this — no need to reinstall for new versions.
+The app auto-updates itself after this — no need to reinstall for new versions. Want to use a specific paid model later (e.g. an Anthropic Claude model)? Add credit on OpenRouter and pick it from the Model dropdown in Settings — no code changes needed, since Nutaan Code speaks the standard OpenAI-compatible API any provider on OpenRouter exposes.
 
 ## Features
 
@@ -60,9 +55,9 @@ Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which builds th
 
 ## How it works
 
-- `main.js` — Electron main process: owns the file system and shell access, the tool-calling agent loop (streamed via SSE) against the gateway's OpenAI-compatible `/v1/chat/completions` endpoint, the permission gate, and auto-update.
+- `main.js` — Electron main process: owns the file system and shell access, the tool-calling agent loop (streamed via SSE) against the configured OpenAI-compatible `/v1/chat/completions` endpoint, the permission gate, and auto-update.
 - `preload.js` — the only bridge between the renderer (UI) and the main process, via `contextBridge`.
-- `renderer/` — the UI: project sidebar, file tree, chat thread, tool-call cards, permission prompts, and the embedded browser panel.
+- `renderer/` — the UI: project sidebar, file tree, chat thread, tool-call cards, permission prompts, the settings modal, and the embedded browser panel (also used to fetch an OpenRouter key without leaving the app).
 - `skills/` — built-in skill packs.
 
-Every install talks to **its own** local model gateway and **its own** API key — nothing is shared between installs, and nothing leaves the machine except through the gateway each person configures themselves.
+Every install uses **its own** API key, entered locally — nothing is shared between installs, and nothing leaves the machine except through whichever endpoint (OpenRouter by default) each person configures.
