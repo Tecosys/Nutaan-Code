@@ -3,6 +3,7 @@ const path = require("node:path");
 const os = require("node:os");
 const fs = require("node:fs/promises");
 const { exec } = require("node:child_process");
+const { autoUpdater } = require("electron-updater");
 
 const STORE_PATH = path.join(app.getPath("userData"), "settings.json");
 const COMMAND_TIMEOUT_MS = 60_000;
@@ -72,7 +73,38 @@ app.whenReady().then(() => {
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+  setupAutoUpdate();
 });
+
+function setupAutoUpdate() {
+  if (!app.isPackaged) return; // only meaningful for installed builds, not `npm start`
+
+  autoUpdater.autoDownload = true;
+
+  autoUpdater.on("update-downloaded", (info) => {
+    dialog
+      .showMessageBox(win, {
+        type: "info",
+        title: "Update ready",
+        message: `Nutaan Code ${info.version} has been downloaded.`,
+        detail: "Restart now to install it, or it'll install next time you quit.",
+        buttons: ["Restart now", "Later"],
+        defaultId: 0,
+      })
+      .then((result) => {
+        if (result.response === 0) autoUpdater.quitAndInstall();
+      });
+  });
+
+  autoUpdater.on("error", (err) => {
+    console.log("[auto-update] error:", err.message);
+  });
+
+  autoUpdater.checkForUpdates().catch((err) => console.log("[auto-update] check failed:", err.message));
+  setInterval(() => {
+    autoUpdater.checkForUpdates().catch(() => {});
+  }, 4 * 60 * 60 * 1000); // re-check every 4h for a long-running session
+}
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

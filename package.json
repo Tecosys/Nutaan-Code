@@ -1,13 +1,50 @@
 {
   "name": "nutaan-code",
   "version": "0.1.0",
-  "description": "Nutaan Code — a personal AI coding agent desktop app powered by OmniRoute",
+  "description": "Nutaan Code — a personal AI coding agent desktop app",
   "main": "main.js",
   "private": true,
+  "author": "Tecosys",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "dist": "electron-builder --win",
+    "release": "electron-builder --win --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
   },
   "devDependencies": {
-    "electron": "^33.0.0"
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.tecosys.nutaancode",
+    "productName": "Nutaan Code",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "skills/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/logo.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Tecosys",
+      "repo": "Nutaan-Code"
+    }
   }
 }
