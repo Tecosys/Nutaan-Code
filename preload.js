@@ -20,7 +20,8 @@ contextBridge.exposeInMainWorld("nutaan", {
     return () => ipcRenderer.removeListener("app:update-status", listener);
   },
 
-  setupOmniroute: () => ipcRenderer.send("omniroute:setup"),
+  setupOmniroute: (existingApiKey) => ipcRenderer.send("omniroute:setup", { existingApiKey }),
+  reconnectOmniroute: (existingApiKey) => ipcRenderer.invoke("omniroute:reconnect", { existingApiKey }),
   onOmnirouteSetupLog: (callback) => {
     const listener = (_e, line) => callback(line);
     ipcRenderer.on("omniroute:setup-log", listener);
@@ -44,6 +45,9 @@ contextBridge.exposeInMainWorld("nutaan", {
       "agent:permission-request",
       "agent:browser-action",
       "agent:compacting",
+      "agent:retrying",
+      "agent:model-switched",
+      "agent:tool-arg-stream",
       "agent:done",
       "agent:error",
     ];

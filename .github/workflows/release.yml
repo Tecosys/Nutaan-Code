@@ -18,6 +18,14 @@ jobs:
         with:
           node-version: 24
 
+      # node-gyp (used to rebuild native modules like @parcel/watcher, a transitive dep of the
+      # bundled omniroute dashboard) shells out to Python to generate build files. windows-latest
+      # doesn't reliably have one on PATH for npm to find, which is what broke the native rebuild
+      # step inside `electron-builder --win` (node-gyp failed to rebuild @parcel/watcher).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - run: npm install
 
       - run: npx electron-builder --win --publish always

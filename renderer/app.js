@@ -1,7 +1,7 @@
 (function () {
   const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
   const OPENROUTER_KEYS_URL = "https://openrouter.ai/keys";
-  const DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
+  const DEFAULT_MODEL = "nex-agi/nex-n2.5-mini:free";
 
   const el = (id) => document.getElementById(id);
   const thread = el("thread");
@@ -50,6 +50,7 @@
   let activePath = null;
   let running = false;
   const toolCards = new Map();
+  const liveWriteCards = new Map();
   let idCounter = 0;
 
   function genId() {
@@ -292,6 +293,80 @@
     return "";
   }
 
+  let currentFileGroupCard = null;
+  function resetFileGroup() {
+    currentFileGroupCard = null;
+  }
+
+  function fileGroupVerb(names) {
+    const hasWrite = names.includes("write_file");
+    const hasEdit = names.includes("edit_file");
+    if (hasWrite && !hasEdit) return "Wrote";
+    if (hasEdit && !hasWrite) return "Edited";
+    return "Changed";
+  }
+
+  // Consecutive auto-approved file writes/edits in the same turn collapse into one summary card
+  // (file list + per-file diff, expandable) instead of a separate card per file — matches how
+  // Claude Code groups a multi-file change instead of flooding the thread with individual cards.
+  function appendFileGroupRow(req) {
+    const stat = permissionStat(req);
+    const body = req.diff ? diffHtml(req.diff) : `<pre>${escapeHtml(req.detail || "")}</pre>`;
+    const fullPath = req.args?.path || "";
+    const fileName = basename(fullPath) || fullPath;
+
+    if (!currentFileGroupCard) {
+      const wrap = document.createElement("div");
+      wrap.className = "file-group-card";
+      wrap.innerHTML = `
+        <div class="file-group-header">
+          <span class="file-group-title"></span>
+          <button class="file-group-toggle" type="button">View changes</button>
+        </div>
+        <div class="file-group-list" hidden></div>
+      `;
+      thread.appendChild(wrap);
+      const toggle = wrap.querySelector(".file-group-toggle");
+      const list = wrap.querySelector(".file-group-list");
+      toggle.addEventListener("click", () => {
+        list.hidden = !list.hidden;
+        toggle.textContent = list.hidden ? "View changes" : "Hide changes";
+      });
+      currentFileGroupCard = { wrap, list, names: [], files: [] };
+      renderEmptyVisibility();
+    }
+
+    const group = currentFileGroupCard;
+    group.names.push(req.name);
+    group.files.push(fileName);
+
+    const statHtml = stat.replace(/\+(\d+)/, '<span class="stat-add">+$1</span>').replace(/-(\d+)/, '<span class="stat-del">-$1</span>');
+    const row = document.createElement("div");
+    row.className = "file-group-row";
+    row.innerHTML = `
+      <span class="file-row-name" title="${escapeHtml(fullPath)}">${escapeHtml(fileName)}</span>
+      ${stat ? `<span class="tool-stat file-row-stat">${statHtml}</span>` : ""}
+      <span class="tool-chev">▸</span>
+    `;
+    const detail = document.createElement("div");
+    detail.className = "file-group-detail";
+    detail.hidden = true;
+    detail.innerHTML = body;
+    row.addEventListener("click", () => {
+      detail.hidden = !detail.hidden;
+      row.querySelector(".tool-chev").textContent = detail.hidden ? "▸" : "▾";
+    });
+    group.list.appendChild(row);
+    group.list.appendChild(detail);
+
+    const verb = fileGroupVerb(group.names);
+    const n = group.files.length;
+    group.wrap.querySelector(".file-group-title").textContent =
+      n === 1 ? `${verb} ${group.files[0]}` : `${verb} ${n} files`;
+
+    scrollToBottom();
+  }
+
   function appendPermissionCard(req) {
     const wrap = document.createElement("div");
     wrap.className = "permission-card";
@@ -368,9 +443,13 @@
     if (isError) {
       detail.innerHTML = `<pre>${escapeHtml(result.error)}</pre>`;
     } else if (name === "list_dir" && result.entries) {
-      setToolStat(cardEl, `${result.entries.length} item${result.entries.length === 1 ? "" : "s"}`);
-      const lines = result.entries.map((e) => (e.isDir ? `${e.name}/` : e.name)).join("\n");
-      detail.innerHTML = `<pre>${escapeHtml(lines || "(empty)")}</pre>`;
+      if (result.entries.length === 0) {
+        setToolStat(cardEl, "empty folder");
+      } else {
+        setToolStat(cardEl, `${result.entries.length} item${result.entries.length === 1 ? "" : "s"}`);
+        const lines = result.entries.map((e) => (e.isDir ? `${e.name}/` : e.name)).join("\n");
+        detail.innerHTML = `<pre>${escapeHtml(lines)}</pre>`;
+      }
     } else if (name === "read_file" && result.content) {
       const lines = result.content.split("\n").length;
       setToolStat(cardEl, `${lines} lines`);
@@ -426,6 +505,18 @@
         appendBubble("error", `Your Server URL was still set to ${oldBaseUrl} (nothing was running there) — leftover from before this app used OpenRouter by default. Reset it to ${DEFAULT_BASE_URL} automatically, no action needed.`);
       }
     }
+    if (!res.ok && /ECONNREFUSED/.test(res.error || "") && settings.baseUrl === OMNIROUTE_URL && settings.apiKey) {
+      // OmniRoute runs as a background process the user never manages directly — if it's not
+      // listening (e.g. the machine rebooted since it was last started), just restart it and
+      // reuse the same key instead of making them re-open Settings and click "set up" again.
+      setStatus(null, "Reconnecting to OmniRoute…");
+      const restarted = await window.nutaan.reconnectOmniroute(settings.apiKey);
+      if (restarted.ok && restarted.apiKey) {
+        settings.apiKey = restarted.apiKey;
+        await window.nutaan.setSettings(settings);
+        res = await window.nutaan.listModels(settings.baseUrl, settings.apiKey);
+      }
+    }
     if (!res.ok) {
       if (!settings.apiKey) {
         setStatus(false, "Not set up yet");
@@ -465,11 +556,18 @@
     addGroup(`Paid — needs credit (${paidIds.length})`, paidIds);
 
     const ids = res.models;
-    if (ids.includes(settings.model)) {
-      modelSelectSettings.value = settings.model;
-    } else {
-      modelSelectSettings.value = freeIds[0] || ids[0] || DEFAULT_MODEL;
+    if (!ids.includes(settings.model)) {
+      // The configured model (a hardcoded default, or a saved choice) isn't in the live catalog
+      // anymore — providers retire/rename free models over time. Don't just change what's shown
+      // in the dropdown while silently still sending the dead model id on every request; actually
+      // switch to a real, currently-available free one and persist it.
+      const fallback = freeIds[0] || ids[0] || DEFAULT_MODEL;
+      if (fallback !== settings.model) {
+        settings.model = fallback;
+        window.nutaan.setSettings(settings);
+      }
     }
+    modelSelectSettings.value = settings.model;
     updateModelBadge();
   }
 
@@ -577,7 +675,7 @@
       "You are Nutaan Code, a careful personal coding assistant running as a desktop app on the user's own machine.",
       `The current project root is: ${root}`,
       "You have tools to list directories, read files, write files, edit files (exact string replace), search file contents, and run shell commands, all scoped to the project root.",
-      "You also have list_skills and use_skill — check list_skills when a task matches a specific kind of work (reviewing code, debugging, writing a commit message, etc.) and follow the matching skill's instructions via use_skill before improvising.",
+      "You also have list_skills and use_skill for specialized, repeatable workflows (reviewing code, debugging, writing a commit message, a security/performance review, a dependency upgrade, etc.) — when the request clearly matches one of those, call list_skills, then use_skill on the matching one before improvising. Skip this entirely for requests that are just normal build/write/explain/fix work with no specialized workflow behind them (e.g. \"build me a website\", \"add a button\") — checking skills for every single request wastes a turn and adds nothing when nothing matches.",
       "You have browser_navigate, browser_read_page, browser_click, browser_type, browser_scroll, browser_screenshot, browser_resize, and browser_execute_script to actually drive the app's built-in browser panel — navigate, read text, click elements by CSS selector, fill and submit forms, scroll, capture screenshots, switch between mobile/tablet/desktop preview sizes to check responsive layouts, and (with approval) run arbitrary JavaScript for anything the other tools can't do. Use these to genuinely test a running web app, check how a site responds at different sizes, fill in a login form, or look something up — not to answer questions about this project's own code.",
       "Prefer edit_file over write_file for existing files, and only change what's needed.",
       "write_file, edit_file, and run_command require the user's explicit approval before they execute — expect some to be denied, and adapt.",
@@ -590,6 +688,8 @@
     thread.innerHTML = "";
     thread.appendChild(emptyState);
     toolCards.clear();
+    liveWriteCards.clear();
+    resetFileGroup();
     for (const m of messages) {
       if ((m.role === "user" || m.role === "assistant") && m.content) {
         appendBubble(m.role, m.content);
@@ -731,6 +831,8 @@
     } else {
       thread.innerHTML = "";
       thread.appendChild(emptyState);
+      liveWriteCards.clear();
+      resetFileGroup();
       renderEmptyVisibility();
       updateEmptyHint();
     }
@@ -758,7 +860,7 @@
     hideThinking();
     const row = document.createElement("div");
     row.className = "row assistant";
-    row.innerHTML = `<div class="bubble thinking"><span></span><span></span><span></span></div>`;
+    row.innerHTML = `<div class="bubble thinking"><span class="thinking-label">Thinking</span><span></span><span></span><span></span></div>`;
     thread.appendChild(row);
     thinkingEl = row;
     renderEmptyVisibility();
@@ -801,6 +903,7 @@
     chat.updatedAt = new Date().toISOString();
 
     chat.messages.push({ role: "user", content: text });
+    resetFileGroup();
     appendBubble("user", text);
     input.value = "";
     input.style.height = "auto";
@@ -843,6 +946,7 @@
   window.nutaan.onAgentEvent("agent:assistant-delta", ({ content }) => {
     if (!streamBubble) {
       hideThinking();
+      resetFileGroup();
       streamBubble = appendBubble("assistant", "");
     }
     streamText += content;
@@ -853,6 +957,10 @@
   window.nutaan.onAgentEvent("agent:tool-start", ({ id, name, args }) => {
     hideThinking();
     finalizeStream();
+    // write_file/edit_file get their own agent:permission-request right after this same
+    // tool-start event — don't break their group here, or every file in a multi-file batch
+    // ends up as its own separate card instead of one grouped summary.
+    if (name !== "write_file" && name !== "edit_file") resetFileGroup();
     const visibleTools = [
       "list_dir", "read_file", "search_files", "list_skills", "use_skill",
       "browser_navigate", "browser_read_page", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_resize",
@@ -860,15 +968,49 @@
     if (visibleTools.includes(name)) appendToolCard(id, name, args);
   });
 
+  window.nutaan.onAgentEvent("agent:tool-arg-stream", ({ id, name, path, text }) => {
+    hideThinking();
+    finalizeStream();
+    let card = liveWriteCards.get(id);
+    if (!card) {
+      card = document.createElement("div");
+      card.className = "tool-card pending live-write";
+      card.innerHTML = `
+        <div class="tool-header"><div class="tool-title">${name === "edit_file" ? "Editing" : "Writing"} <code></code></div></div>
+        <div class="tool-detail"><pre class="live-write-body"></pre></div>
+      `;
+      thread.appendChild(card);
+      liveWriteCards.set(id, card);
+      renderEmptyVisibility();
+    }
+    if (path) card.querySelector(".tool-title code").textContent = path;
+    const body = card.querySelector(".live-write-body");
+    body.textContent = text;
+    body.scrollTop = body.scrollHeight;
+    scrollToBottom();
+  });
+
   window.nutaan.onAgentEvent("agent:permission-request", (req) => {
     hideThinking();
     finalizeStream();
-    appendPermissionCard(req);
+    const liveCard = liveWriteCards.get(req.id);
+    if (liveCard) {
+      liveCard.remove();
+      liveWriteCards.delete(req.id);
+    }
+    const isGroupableFileOp = (req.name === "write_file" || req.name === "edit_file") && req.autoApproved;
+    if (isGroupableFileOp) {
+      appendFileGroupRow(req);
+    } else {
+      resetFileGroup();
+      appendPermissionCard(req);
+    }
   });
 
   window.nutaan.onAgentEvent("agent:compacting", () => {
     hideThinking();
     finalizeStream();
+    resetFileGroup();
     const wrap = document.createElement("div");
     wrap.className = "tool-card ok";
     wrap.innerHTML = `<div class="tool-title">Compacting conversation to make room for more context…</div>`;
@@ -878,14 +1020,47 @@
     showThinking();
   });
 
+  window.nutaan.onAgentEvent("agent:retrying", ({ message, attempt, max, delayMs }) => {
+    hideThinking();
+    finalizeStream();
+    resetFileGroup();
+    const wrap = document.createElement("div");
+    wrap.className = "tool-card ok";
+    const seconds = Math.round(delayMs / 1000);
+    wrap.innerHTML = `<div class="tool-title">Provider hiccup (${escapeHtml(message || "")}) — retrying in ${seconds}s… (${attempt}/${max})</div>`;
+    thread.appendChild(wrap);
+    renderEmptyVisibility();
+    scrollToBottom();
+    showThinking();
+  });
+
+  window.nutaan.onAgentEvent("agent:model-switched", ({ from, to }) => {
+    hideThinking();
+    finalizeStream();
+    resetFileGroup();
+    settings.model = to;
+    window.nutaan.setSettings(settings);
+    updateModelBadge();
+    const wrap = document.createElement("div");
+    wrap.className = "tool-card ok";
+    wrap.innerHTML = `<div class="tool-title">"${escapeHtml(from)}" wasn't responding, so switched to "${escapeHtml(to)}" and kept going…</div>`;
+    thread.appendChild(wrap);
+    renderEmptyVisibility();
+    scrollToBottom();
+    showThinking();
+  });
+
+  const FS_MUTATING_TOOLS = new Set(["write_file", "edit_file", "run_command"]);
   window.nutaan.onAgentEvent("agent:tool-result", ({ id, name, result }) => {
     resolveToolCard(id, name, result);
     if (running) showThinking();
+    if (FS_MUTATING_TOOLS.has(name) && !(result && result.error)) refreshTree();
   });
 
   window.nutaan.onAgentEvent("agent:done", ({ messages }) => {
     hideThinking();
     finalizeStream();
+    resetFileGroup();
     const chat = activeChat();
     if (messages && chat) {
       chat.messages = messages;
@@ -898,8 +1073,9 @@
   window.nutaan.onAgentEvent("agent:error", ({ message }) => {
     hideThinking();
     finalizeStream();
+    resetFileGroup();
 
-    const looksLikeInvalidKey = /user not found|invalid.?api.?key|invalid_api_key|no such user|unknown key/i.test(message || "");
+    const looksLikeInvalidKey = /user not found|invalid.?api.?key|invalid_api_key|no such user|unknown key|missing.*auth|no auth credentials/i.test(message || "");
     if (looksLikeInvalidKey) {
       appendBubble(
         "error",
@@ -1006,7 +1182,8 @@
       omnirouteIntro.textContent = "Starting OmniRoute — it ships with Nutaan Code, so this only takes a few seconds.";
       omnirouteLog.hidden = false;
       omnirouteLog.textContent = "";
-      window.nutaan.setupOmniroute();
+      const existingApiKey = settings.baseUrl === OMNIROUTE_URL ? settings.apiKey : null;
+      window.nutaan.setupOmniroute(existingApiKey);
     });
   }
   window.nutaan.onOmnirouteSetupLog((line) => {

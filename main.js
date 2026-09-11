@@ -233,6 +233,16 @@ function omnirouteServeAlreadyRunning() {
     .catch(() => false);
 }
 
+function omnirouteKeyStillWorks(apiKey) {
+  if (!apiKey) return Promise.resolve(false);
+  return fetch("http://localhost:20128/v1/models", {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(3000),
+  })
+    .then((res) => res.ok)
+    .catch(() => false);
+}
+
 function errorMessage(err, fallback) {
   return (err && (err.message || String(err))) || fallback || "Unknown error";
 }
@@ -256,7 +266,10 @@ function spawnOmniroute(args) {
 
 function startOmnirouteServer(log) {
   return new Promise((resolve, reject) => {
-    const serve = spawnOmniroute(["serve"]);
+    // --no-open: without this, OmniRoute's own CLI launches the user's real system browser
+    // straight at its (unauthenticated) dashboard/login every time the server starts — we run
+    // it headless and drive setup entirely through the CLI, so that popup is never wanted.
+    const serve = spawnOmniroute(["serve", "--no-open"]);
     serve.unref();
     let settled = false;
     let buf = "";
@@ -340,12 +353,21 @@ async function autoConfigureOmniroute(log) {
   return key;
 }
 
-async function startAndConfigureOmniroute(log, finish) {
+async function startAndConfigureOmniroute(log, finish, existingApiKey) {
   log("Starting OmniRoute (bundled with this app — nothing to download)…\n");
   try {
     await startOmnirouteServer(log);
   } catch (err) {
     finish({ ok: false, error: errorMessage(err, "The server failed to start.") });
+    return;
+  }
+
+  // Re-use a previously-generated key when the server was just restarted (e.g. after a reboot)
+  // rather than re-running setup, which would create a brand-new admin account and orphan the
+  // old API key every single time — exactly what made this feel like "setup never sticks."
+  if (existingApiKey && (await omnirouteKeyStillWorks(existingApiKey))) {
+    log("Your existing OmniRoute key still works — reconnected, nothing else to do.\n");
+    finish({ ok: true, apiKey: existingApiKey });
     return;
   }
 
@@ -360,10 +382,11 @@ async function startAndConfigureOmniroute(log, finish) {
   }
 }
 
-ipcMain.on("omniroute:setup", async (event) => {
+ipcMain.on("omniroute:setup", async (event, payload) => {
   if (omnirouteSetupRunning) return;
   omnirouteSetupRunning = true;
   const sender = event.sender;
+  const existingApiKey = payload?.existingApiKey || null;
   const log = (line) => sender.send("omniroute:setup-log", String(line));
   const finish = (result) => {
     omnirouteSetupRunning = false;
@@ -371,12 +394,43 @@ ipcMain.on("omniroute:setup", async (event) => {
   };
 
   if (await omnirouteServeAlreadyRunning()) {
+    if (existingApiKey && (await omnirouteKeyStillWorks(existingApiKey))) {
+      log("OmniRoute is already running and your key still works — nothing to do.\n");
+      finish({ ok: true, alreadyRunning: true, apiKey: existingApiKey });
+      return;
+    }
     log("OmniRoute is already running on this machine — nothing to install.\n");
     finish({ ok: true, alreadyRunning: true });
     return;
   }
 
-  startAndConfigureOmniroute(log, finish);
+  startAndConfigureOmniroute(log, finish, existingApiKey);
+});
+
+// Separate request/response channel (not the "omniroute:setup" broadcast pair above) used only by
+// the silent background reconnect in the renderer when a chat request fails because the OmniRoute
+// server isn't listening. It must not share a channel with the "Set it up for me" button flow —
+// they used to both listen on the same setup-done broadcast, so a silent reconnect triggered here
+// would also fire the button flow's handler and vice versa, stomping on whichever settings.baseUrl/
+// apiKey the OTHER flow was mid-way through writing. Keeping this on its own invoke/response pair
+// means the two can never step on each other.
+ipcMain.handle("omniroute:reconnect", async (_event, { existingApiKey } = {}) => {
+  if (omnirouteSetupRunning) return { ok: false, error: "Setup is already running." };
+  omnirouteSetupRunning = true;
+  const noop = () => {};
+  try {
+    if (await omnirouteServeAlreadyRunning()) {
+      if (existingApiKey && (await omnirouteKeyStillWorks(existingApiKey))) {
+        return { ok: true, alreadyRunning: true, apiKey: existingApiKey };
+      }
+      return { ok: true, alreadyRunning: true };
+    }
+    return await new Promise((resolve) => {
+      startAndConfigureOmniroute(noop, resolve, existingApiKey);
+    });
+  } finally {
+    omnirouteSetupRunning = false;
+  }
 });
 
 ipcMain.handle("fs:list-dir", async (_e, root, relPath) => {
@@ -1168,6 +1222,70 @@ async function compactIfNeeded(sender, chatMessages, { baseUrl, apiKey, model })
   }
 }
 
+// Upstream inference hiccups (provider capacity, rate limits, brief timeouts) should be retried
+// automatically rather than killing the whole turn — auth/quota problems (401/403/402) should not,
+// since retrying those just wastes time on something a retry can never fix.
+async function pickNextFreeModel(baseUrl, apiKey, alreadyTried) {
+  try {
+    const allModels = await fetchModels(baseUrl, apiKey);
+    const freeIds = allModels.filter((m) => !isImageOnlyModel(m) && m.id.endsWith(":free")).map((m) => m.id);
+    return freeIds.find((id) => !alreadyTried.has(id)) || null;
+  } catch {
+    return null;
+  }
+}
+
+function isTransientError(status, message) {
+  if (status === 429 || status === 502 || status === 503 || status === 504) return true;
+  if (status === 401 || status === 402 || status === 403 || status === 404) return false;
+  return /provider returned error|overloaded|temporarily unavailable|rate.?limit|stopped responding mid-stream|timed?\s*out|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(
+    message || ""
+  );
+}
+
+// Best-effort live decode of a string field's value out of a tool call's arguments JSON while it
+// is still streaming in and therefore not valid JSON yet. Used to show file content being "typed"
+// as the model writes it, the way Claude Code's own UI does, instead of only revealing it once the
+// whole tool call has finished arriving. Doesn't need to be byte-perfect — the real, exact content
+// is what actually gets written to disk; this only drives a live preview.
+function extractPartialStringField(argsSoFar, fieldName) {
+  const marker = `"${fieldName}"`;
+  const markerIdx = argsSoFar.indexOf(marker);
+  if (markerIdx === -1) return null;
+  let i = markerIdx + marker.length;
+  while (i < argsSoFar.length && (argsSoFar[i] === " " || argsSoFar[i] === ":")) i++;
+  if (argsSoFar[i] !== '"') return null;
+  i++;
+  let text = "";
+  for (; i < argsSoFar.length; i++) {
+    const ch = argsSoFar[i];
+    if (ch === "\\") {
+      if (i + 1 >= argsSoFar.length) break; // incomplete escape — wait for more data
+      const next = argsSoFar[i + 1];
+      const simple = { n: "\n", t: "\t", r: "\r", '"': '"', "\\": "\\", "/": "/" };
+      if (next in simple) {
+        text += simple[next];
+        i++;
+      } else if (next === "u") {
+        if (i + 5 < argsSoFar.length) {
+          text += String.fromCharCode(parseInt(argsSoFar.slice(i + 2, i + 6), 16));
+          i += 5;
+        } else break; // incomplete \uXXXX — wait for more data
+      } else {
+        text += next;
+        i++;
+      }
+    } else if (ch === '"') {
+      return { text, done: true };
+    } else {
+      text += ch;
+    }
+  }
+  return { text, done: false };
+}
+
+const STREAMED_FILE_FIELDS = { write_file: "content", edit_file: "new_string" };
+
 async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages }) {
   const res = await fetch(buildEndpointUrl(baseUrl, "/chat/completions"), {
     method: "POST",
@@ -1196,7 +1314,7 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
       const errJson = await res.json();
       detail = errJson?.error?.message || detail;
     } catch {}
-    return { ok: false, error: detail };
+    return { ok: false, error: detail, status: res.status };
   }
 
   const reader = res.body.getReader();
@@ -1258,6 +1376,23 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
           if (tc.id) toolCalls[idx].id = tc.id;
           if (tc.function?.name) toolCalls[idx].function.name += tc.function.name;
           if (tc.function?.arguments) toolCalls[idx].function.arguments += tc.function.arguments;
+
+          const fnName = toolCalls[idx].function.name;
+          const field = STREAMED_FILE_FIELDS[fnName];
+          if (field) {
+            const args = toolCalls[idx].function.arguments;
+            const pathMatch = extractPartialStringField(args, "path");
+            const contentMatch = extractPartialStringField(args, field);
+            if (contentMatch && toolCalls[idx].id) {
+              sender.send("agent:tool-arg-stream", {
+                id: toolCalls[idx].id,
+                name: fnName,
+                path: pathMatch ? pathMatch.text : null,
+                text: contentMatch.text,
+                done: contentMatch.done,
+              });
+            }
+          }
         }
       }
     }
@@ -1287,6 +1422,9 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
   // Read fresh each turn (not persisted into chatMessages) so memory_write calls take effect
   // immediately without bloating the saved conversation with a repeated block every turn.
   const memoryContext = await buildMemoryContext().catch(() => null);
+  let emptyResponseRetries = 0;
+  const MAX_MODEL_SWITCHES = 2;
+  const triedModels = new Set([model]);
 
   for (let i = 0; i < MAX_AGENT_ITERATIONS; i++) {
     if (aborted()) {
@@ -1306,26 +1444,57 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
     ];
     const requestMessages = [chatMessages[0], ...extraSystemMessages, ...chatMessages.slice(1)];
 
+    const MAX_TRANSIENT_RETRIES = 3;
+    const RETRY_DELAYS_MS = [1000, 3000, 7000];
+    triedModels.add(model);
     let streamResult;
-    try {
-      streamResult = await streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages: requestMessages });
-    } catch (err) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        streamResult = await streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages: requestMessages });
+      } catch (err) {
+        if (aborted()) {
+          sender.send("agent:done", { aborted: true, messages: chatMessages });
+          return;
+        }
+        streamResult = { ok: false, error: `Network error reaching the model server: ${err.message}`, transient: isTransientError(0, err.message) };
+      }
+
       if (aborted()) {
         sender.send("agent:done", { aborted: true, messages: chatMessages });
         return;
       }
-      sender.send("agent:error", { message: `Network error reaching the model server: ${err.message}` });
-      return;
-    }
 
-    if (aborted()) {
-      sender.send("agent:done", { aborted: true, messages: chatMessages });
-      return;
-    }
+      if (streamResult.ok) break;
 
-    if (!streamResult.ok) {
-      sender.send("agent:error", { message: streamResult.error });
-      return;
+      const transient = streamResult.transient ?? isTransientError(streamResult.status, streamResult.error);
+      if (!transient) {
+        sender.send("agent:error", { message: streamResult.error });
+        return;
+      }
+
+      if (attempt >= MAX_TRANSIENT_RETRIES) {
+        // This model's upstream provider is down, not just briefly hiccuping — if it's a free
+        // OpenRouter model, try the next free model instead of dead-ending the whole turn on it.
+        const canSwitch = model.endsWith(":free") && !isAzureEndpoint(baseUrl) && triedModels.size <= MAX_MODEL_SWITCHES;
+        const nextModel = canSwitch ? await pickNextFreeModel(baseUrl, apiKey, triedModels) : null;
+        if (!nextModel) {
+          sender.send("agent:error", { message: streamResult.error });
+          return;
+        }
+        sender.send("agent:model-switched", { from: model, to: nextModel, reason: streamResult.error });
+        model = nextModel;
+        triedModels.add(nextModel);
+        attempt = -1; // reset the retry count for the new model
+        continue;
+      }
+
+      const delay = RETRY_DELAYS_MS[attempt] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
+      sender.send("agent:retrying", { message: streamResult.error, attempt: attempt + 1, max: MAX_TRANSIENT_RETRIES, delayMs: delay });
+      await new Promise((r) => setTimeout(r, delay));
+      if (aborted()) {
+        sender.send("agent:done", { aborted: true, messages: chatMessages });
+        return;
+      }
     }
 
     const message = streamResult.message;
@@ -1333,6 +1502,32 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
 
     const toolCalls = message.tool_calls || [];
     if (toolCalls.length === 0) {
+      // A model that stops with neither a tool call nor any text gave up mid-task without saying
+      // so — free models do this occasionally. Nudge it to actually finish or explain instead of
+      // silently ending the turn as if it succeeded.
+      if (!message.content || !message.content.trim()) {
+        const MAX_EMPTY_RESPONSE_RETRIES = 2;
+        if (emptyResponseRetries < MAX_EMPTY_RESPONSE_RETRIES) {
+          emptyResponseRetries++;
+          chatMessages.push({
+            role: "user",
+            content:
+              "Your last response was empty — you stopped without finishing or explaining. Please continue: finish the task, or tell me what's blocking you.",
+          });
+          sender.send("agent:retrying", {
+            message: "The model stopped without a response",
+            attempt: emptyResponseRetries,
+            max: MAX_EMPTY_RESPONSE_RETRIES,
+            delayMs: 500,
+          });
+          await new Promise((r) => setTimeout(r, 500));
+          continue;
+        }
+        sender.send("agent:error", {
+          message: "The model kept stopping without finishing or explaining, even after being asked to continue. Try again, or switch models in Settings.",
+        });
+        return;
+      }
       sender.send("agent:done", { aborted: false, messages: chatMessages });
       return;
     }
