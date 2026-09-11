@@ -16,7 +16,7 @@
     "omniroute": "^3.8.50"
   },
   "devDependencies": {
-    "electron": "^33.0.0",
+    "electron": "^44.3.0",
     "electron-builder": "^25.1.8",
     "jimp": "^1.6.1",
     "png-to-ico": "^3.0.2"

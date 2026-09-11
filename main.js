@@ -3,6 +3,7 @@ const path = require("node:path");
 const os = require("node:os");
 const fs = require("node:fs/promises");
 const { exec, spawn } = require("node:child_process");
+const crypto = require("node:crypto");
 const { autoUpdater } = require("electron-updater");
 
 const STORE_PATH = path.join(app.getPath("userData"), "settings.json");
@@ -61,9 +62,9 @@ function createWindow() {
     },
   });
   win.setMenuBarVisibility(false);
-  win.webContents.on("console-message", (_e, level, message, line, sourceId) => {
+  win.webContents.on("console-message", (event) => {
     const levels = ["LOG", "WARN", "ERROR"];
-    console.log(`[renderer:${levels[level] || level}] ${message} (${sourceId}:${line})`);
+    console.log(`[renderer:${levels[event.level] || event.level}] ${event.message} (${event.sourceId}:${event.lineNumber})`);
   });
   win.loadFile(path.join(__dirname, "renderer", "index.html"));
 }
@@ -286,6 +287,59 @@ function startOmnirouteServer(log) {
   });
 }
 
+function runOmnirouteCli(args) {
+  return new Promise((resolve, reject) => {
+    let out = "";
+    let err = "";
+    const child = spawnOmniroute(args);
+    child.stdout.on("data", (d) => (out += String(d)));
+    child.stderr.on("data", (d) => (err += String(d)));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve(out);
+      else reject(new Error(err.trim() || `omniroute ${args[0]} exited with code ${code}`));
+    });
+  });
+}
+
+// Provisions an admin account and a client API key entirely via the CLI — the customer never
+// touches the web dashboard, never logs in, never copies a key by hand.
+//
+// NOTE: this previously segfaulted under Electron's bundled Node runtime — root cause was
+// Electron 33 shipping Node 20.18, below OmniRoute's own hard floor of 22.22.2 for its
+// better-sqlite3 usage (it logs this explicitly as a "secure runtime policy" warning). Bumping
+// to Electron 44 (Node 24.20) plus a native-module rebuild fixed it — reproduced clean twice.
+async function autoConfigureOmniroute(log) {
+  log("\nFinishing setup (admin account + API key) — no login needed…\n");
+  const password = crypto.randomBytes(18).toString("base64url");
+  await runOmnirouteCli(["setup", "--password", password, "--non-interactive"]);
+  const keyOut = await runOmnirouteCli([
+    "--output",
+    "json",
+    "api",
+    "api-keys",
+    "post-api-keys",
+    "--body",
+    JSON.stringify({ name: "Nutaan Code" }),
+  ]);
+  // stdout also carries plain-text "Loaded env from…" lines (with ANSI color codes — whose own
+  // "\x1b[2m" sequences contain a literal "[" that previously fooled a naive JSON-start regex)
+  // ahead of the JSON payload, so strip those and parse just the JSON object/array within.
+  // eslint-disable-next-line no-control-regex
+  const clean = keyOut.replace(/\x1b\[[0-9;]*m/g, "");
+  const jsonMatch = clean.match(/[[{][\s\S]*[\]}]/);
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonMatch ? jsonMatch[0] : clean);
+  } catch {
+    throw new Error("Could not parse the generated API key.");
+  }
+  const key = (Array.isArray(parsed) ? parsed[0]?.key : parsed?.key) || null;
+  if (!key) throw new Error("No API key came back from setup.");
+  log("Done — API key generated automatically.\n");
+  return key;
+}
+
 async function startAndConfigureOmniroute(log, finish) {
   log("Starting OmniRoute (bundled with this app — nothing to download)…\n");
   try {
@@ -295,12 +349,15 @@ async function startAndConfigureOmniroute(log, finish) {
     return;
   }
 
-  // NOTE: omniroute's own "setup"/"api" CLI subcommands reliably segfault when run under
-  // Electron's Node runtime (ELECTRON_RUN_AS_NODE) — reproduced twice, survives a full native
-  // module rebuild for Electron's ABI, so it isn't an ABI mismatch. "serve" itself is unaffected.
-  // Until that's root-caused, skip attempting auto password/key provisioning here rather than
-  // risk crashing a process that's otherwise working fine — the dashboard fallback is safe.
-  finish({ ok: true, apiKey: null });
+  try {
+    const apiKey = await autoConfigureOmniroute(log);
+    finish({ ok: true, apiKey });
+  } catch (err) {
+    // The server itself is genuinely up even if this last mile failed — don't report total
+    // failure, just leave the key blank so they finish that one step from the dashboard.
+    log(`\nCouldn't finish automatic setup: ${errorMessage(err)}\n`);
+    finish({ ok: true, apiKey: null });
+  }
 }
 
 ipcMain.on("omniroute:setup", async (event) => {
