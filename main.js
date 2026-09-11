@@ -77,11 +77,19 @@ app.whenReady().then(() => {
 });
 
 function setupAutoUpdate() {
-  if (!app.isPackaged) return; // only meaningful for installed builds, not `npm start`
-
   autoUpdater.autoDownload = true;
 
+  autoUpdater.on("checking-for-update", () => {
+    win?.webContents.send("app:update-status", { status: "checking" });
+  });
+  autoUpdater.on("update-available", (info) => {
+    win?.webContents.send("app:update-status", { status: "available", version: info.version });
+  });
+  autoUpdater.on("update-not-available", () => {
+    win?.webContents.send("app:update-status", { status: "not-available" });
+  });
   autoUpdater.on("update-downloaded", (info) => {
+    win?.webContents.send("app:update-status", { status: "downloaded", version: info.version });
     dialog
       .showMessageBox(win, {
         type: "info",
@@ -95,16 +103,32 @@ function setupAutoUpdate() {
         if (result.response === 0) autoUpdater.quitAndInstall();
       });
   });
-
   autoUpdater.on("error", (err) => {
     console.log("[auto-update] error:", err.message);
+    win?.webContents.send("app:update-status", { status: "error", message: err.message });
   });
+
+  if (!app.isPackaged) return; // auto-checks only meaningful for installed builds, not `npm start`
 
   autoUpdater.checkForUpdates().catch((err) => console.log("[auto-update] check failed:", err.message));
   setInterval(() => {
     autoUpdater.checkForUpdates().catch(() => {});
   }, 4 * 60 * 60 * 1000); // re-check every 4h for a long-running session
 }
+
+ipcMain.handle("app:get-version", () => app.getVersion());
+
+ipcMain.handle("app:check-for-updates", async () => {
+  if (!app.isPackaged) {
+    return { ok: false, message: "Updates only run in the installed app, not in dev mode." };
+  }
+  try {
+    await autoUpdater.checkForUpdates();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, message: err.message };
+  }
+});
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

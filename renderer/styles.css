@@ -251,5 +251,7 @@ textarea:focus, input:focus, select:focus { outline: 2px solid var(--accent-dim)
 .advanced summary { cursor: pointer; font-size: 12.5px; color: var(--text-dim); user-select: none; }
 .advanced[open] summary { margin-bottom: 12px; }
 .field select { width: 100%; }
+.update-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
+.update-row .note { margin-top: 0; }
 a { color: var(--accent2); }
 [hidden] { display: none !important; }

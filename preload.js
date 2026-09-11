@@ -12,6 +12,13 @@ contextBridge.exposeInMainWorld("nutaan", {
   editFile: (root, relPath, oldString, newString) =>
     ipcRenderer.invoke("fs:edit-file", root, relPath, oldString, newString),
   runCommand: (root, command) => ipcRenderer.invoke("proc:run-command", root, command),
+  getVersion: () => ipcRenderer.invoke("app:get-version"),
+  checkForUpdates: () => ipcRenderer.invoke("app:check-for-updates"),
+  onUpdateStatus: (callback) => {
+    const listener = (_e, data) => callback(data);
+    ipcRenderer.on("app:update-status", listener);
+    return () => ipcRenderer.removeListener("app:update-status", listener);
+  },
 
   sendAgentMessage: (payload) => ipcRenderer.send("agent:send", payload),
   stopAgent: () => ipcRenderer.send("agent:stop"),

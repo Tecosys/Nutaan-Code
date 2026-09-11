@@ -37,6 +37,8 @@
   const sizeMobile = el("sizeMobile");
   const sizeTablet = el("sizeTablet");
   const sizeDesktop = el("sizeDesktop");
+  const appVersionText = el("appVersionText");
+  const checkUpdatesBtn = el("checkUpdatesBtn");
 
   let settings = { baseUrl: DEFAULT_BASE_URL, apiKey: "", model: DEFAULT_MODEL, autoApprove: false };
   let projects = []; // [{ path, messages: [...] }]
@@ -741,12 +743,46 @@
     if (!settings.apiKey) settingsBtn.click();
   });
 
+  if (checkUpdatesBtn) {
+    checkUpdatesBtn.addEventListener("click", async () => {
+      checkUpdatesBtn.disabled = true;
+      checkUpdatesBtn.textContent = "Checking…";
+      const res = await window.nutaan.checkForUpdates();
+      if (!res.ok) {
+        checkUpdatesBtn.textContent = "Check for updates";
+        checkUpdatesBtn.disabled = false;
+        appVersionText.textContent = res.message || "Could not check for updates.";
+      }
+    });
+  }
+  if (window.nutaan.onUpdateStatus) {
+    window.nutaan.onUpdateStatus((data) => {
+      if (!checkUpdatesBtn) return;
+      if (data.status === "checking") {
+        checkUpdatesBtn.textContent = "Checking…";
+        checkUpdatesBtn.disabled = true;
+      } else if (data.status === "available") {
+        checkUpdatesBtn.textContent = "Downloading update…";
+      } else if (data.status === "downloaded") {
+        checkUpdatesBtn.textContent = "Restart to update";
+      } else if (data.status === "not-available") {
+        checkUpdatesBtn.textContent = "You're up to date";
+        checkUpdatesBtn.disabled = false;
+        setTimeout(() => { checkUpdatesBtn.textContent = "Check for updates"; }, 3000);
+      } else if (data.status === "error") {
+        checkUpdatesBtn.textContent = "Check for updates";
+        checkUpdatesBtn.disabled = false;
+      }
+    });
+  }
+
   // ---------- Browser panel ----------
   function normalizeUrl(value) {
     const v = value.trim();
     if (!v) return null;
-    if (/^https?:\/\//i.test(v)) return v;
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) return v; // already a full URL (http, https, file, about, data, ...)
     if (/^localhost(:\d+)?/i.test(v) || /^127\.0\.0\.1/.test(v)) return "http://" + v;
+    if (/^[a-zA-Z]:[\\/]/.test(v)) return "file:///" + v.replace(/\\/g, "/"); // Windows path, e.g. C:\foo\bar.html
     if (/^[\w-]+(\.[\w-]+)+/.test(v)) return "https://" + v;
     return "https://www.google.com/search?q=" + encodeURIComponent(v);
   }
@@ -899,6 +935,9 @@
 
   // ---------- Init ----------
   (async function init() {
+    if (appVersionText && window.nutaan.getVersion) {
+      window.nutaan.getVersion().then((v) => { appVersionText.textContent = "v" + v; });
+    }
     const saved = await window.nutaan.getSettings();
     settings = { ...settings, ...saved };
     renderAutoApproveBtn();

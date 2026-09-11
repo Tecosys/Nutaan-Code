@@ -7,6 +7,7 @@
   "author": "Tecosys",
   "scripts": {
     "start": "electron .",
+    "build:icon": "node scripts/build-icon.js",
     "dist": "electron-builder --win",
     "release": "electron-builder --win --publish always"
   },
@@ -15,7 +16,9 @@
   },
   "devDependencies": {
     "electron": "^33.0.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "jimp": "^1.6.1",
+    "png-to-ico": "^3.0.2"
   },
   "build": {
     "appId": "com.tecosys.nutaancode",
@@ -33,7 +36,7 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "assets/logo.png"
+      "icon": "assets/icon.ico"
     },
     "nsis": {
       "oneClick": false,
