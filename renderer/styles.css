@@ -328,7 +328,7 @@ textarea:focus, input:focus, select:focus { outline: 2px solid var(--accent-dim)
 .hint { text-align: center; font-size: 11.5px; color: var(--text-dim); margin-top: 8px; max-width: 900px; margin-left: auto; margin-right: auto; }
 
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 20; }
-.modal { background: var(--panel); border-radius: 14px; border: 1px solid var(--border); width: 440px; max-width: 92vw; padding: 22px; }
+.modal { background: var(--panel); border-radius: 14px; border: 1px solid var(--border); width: 440px; max-width: 92vw; padding: 22px; max-height: 88vh; overflow-y: auto; }
 .modal-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
 .modal-brand img { width: 24px; height: 24px; }
 .modal-brand h3 { margin: 0; }

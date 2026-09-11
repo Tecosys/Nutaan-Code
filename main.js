@@ -300,15 +300,41 @@ function startOmnirouteServer(log) {
   });
 }
 
-function runOmnirouteCli(args) {
+const OMNIROUTE_CLI_TIMEOUT_MS = 60_000;
+
+function runOmnirouteCli(args, log = () => {}) {
   return new Promise((resolve, reject) => {
     let out = "";
     let err = "";
+    let settled = false;
     const child = spawnOmniroute(args);
-    child.stdout.on("data", (d) => (out += String(d)));
-    child.stderr.on("data", (d) => (err += String(d)));
-    child.on("error", reject);
+    // Without this, a hung `setup`/`api-keys` call (network stall, a lock, anything) left the UI
+    // frozen on "Starting…" forever with zero feedback and no way to recover but restarting the
+    // app — exactly what was reported. Every CLI call here now has a hard ceiling.
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill();
+      reject(new Error(`omniroute ${args[0]} didn't finish within ${OMNIROUTE_CLI_TIMEOUT_MS / 1000}s.`));
+    }, OMNIROUTE_CLI_TIMEOUT_MS);
+    child.stdout.on("data", (d) => {
+      out += String(d);
+      log(d);
+    });
+    child.stderr.on("data", (d) => {
+      err += String(d);
+      log(d);
+    });
+    child.on("error", (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(e);
+    });
     child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       if (code === 0) resolve(out);
       else reject(new Error(err.trim() || `omniroute ${args[0]} exited with code ${code}`));
     });
@@ -325,16 +351,12 @@ function runOmnirouteCli(args) {
 async function autoConfigureOmniroute(log) {
   log("\nFinishing setup (admin account + API key) — no login needed…\n");
   const password = crypto.randomBytes(18).toString("base64url");
-  await runOmnirouteCli(["setup", "--password", password, "--non-interactive"]);
-  const keyOut = await runOmnirouteCli([
-    "--output",
-    "json",
-    "api",
-    "api-keys",
-    "post-api-keys",
-    "--body",
-    JSON.stringify({ name: "Nutaan Code" }),
-  ]);
+  await runOmnirouteCli(["setup", "--password", password, "--non-interactive"], log);
+  log("Generating an API key…\n");
+  const keyOut = await runOmnirouteCli(
+    ["--output", "json", "api", "api-keys", "post-api-keys", "--body", JSON.stringify({ name: "Nutaan Code" })],
+    log
+  );
   // stdout also carries plain-text "Loaded env from…" lines (with ANSI color codes — whose own
   // "\x1b[2m" sequences contain a literal "[" that previously fooled a naive JSON-start regex)
   // ahead of the JSON payload, so strip those and parse just the JSON object/array within.
@@ -387,7 +409,8 @@ ipcMain.on("omniroute:setup", async (event, payload) => {
   omnirouteSetupRunning = true;
   const sender = event.sender;
   const existingApiKey = payload?.existingApiKey || null;
-  const log = (line) => sender.send("omniroute:setup-log", String(line));
+  // eslint-disable-next-line no-control-regex
+  const log = (line) => sender.send("omniroute:setup-log", String(line).replace(/\x1b\[[0-9;]*m/g, ""));
   const finish = (result) => {
     omnirouteSetupRunning = false;
     sender.send("omniroute:setup-done", result);

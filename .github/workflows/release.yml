@@ -11,13 +11,6 @@ permissions:
 jobs:
   build-and-release:
     runs-on: windows-latest
-    env:
-      # node-gyp's own Visual Studio auto-detection doesn't reliably find windows-latest's
-      # pre-installed VS2022 Build Tools — this must be visible to every step that can trigger a
-      # native rebuild, not just `npm install`: electron-builder's OWN internal @electron/rebuild
-      # (during `--win` packaging) is what actually failed with "Could not find any Visual Studio
-      # installation to use", not the initial install.
-      GYP_MSVS_VERSION: "2022"
     steps:
       - uses: actions/checkout@v4
 
@@ -27,15 +20,21 @@ jobs:
 
       # node-gyp (used to rebuild native modules like @parcel/watcher, a transitive dep of the
       # bundled omniroute dashboard) shells out to Python to generate build files, then needs a
-      # Visual Studio C++ toolchain to actually compile. windows-latest ships VS2022 Build Tools,
-      # but node-gyp's own auto-detection doesn't reliably find them without help — that's what
-      # broke `electron-builder --win`'s native rebuild step first on Python, then (after adding
-      # setup-python) on "Could not find any Visual Studio installation to use".
+      # Visual Studio C++ toolchain to actually compile.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - uses: microsoft/setup-msbuild@v2
+      # microsoft/setup-msbuild + GYP_MSVS_VERSION alone did NOT fix this (verified: same
+      # "Could not find any Visual Studio installation to use" on the next run) — node-gyp 9.x
+      # detects VS via vswhere, querying specifically for the VC.Tools.x86.x64 component, and
+      # apparently windows-latest's preinstalled VS doesn't reliably expose that component to it.
+      # Installing the workload explicitly removes the guesswork instead of hoping the base image
+      # has it, and msvc-dev-cmd then puts cl.exe/link.exe/INCLUDE/LIB on PATH for node-gyp to use.
+      - name: Ensure VC++ Build Tools workload
+        run: choco install visualstudio2022-workload-vctools --no-progress -y
+
+      - uses: ilammy/msvc-dev-cmd@v1
 
       - run: npm install
 
