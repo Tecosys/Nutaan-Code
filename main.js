@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
 const path = require("node:path");
+const os = require("node:os");
 const fs = require("node:fs/promises");
 const { exec } = require("node:child_process");
 
@@ -7,9 +8,15 @@ const STORE_PATH = path.join(app.getPath("userData"), "settings.json");
 const COMMAND_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_CHARS = 20_000;
 const MAX_AGENT_ITERATIONS = 25;
+const BROWSER_ACTION_TIMEOUT_MS = 20_000;
+const MAX_RESPONSE_TOKENS = 8192;
+const STREAM_IDLE_TIMEOUT_MS = 45_000;
+const COMPACT_THRESHOLD_TOKENS = 60_000;
+const KEEP_RECENT_MESSAGES = 10;
 
 let win;
 const pendingPermissions = new Map();
+const pendingBrowserActions = new Map();
 let agentAbort = null;
 
 function resolveSafe(root, relPath) {
@@ -49,6 +56,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      webviewTag: true,
     },
   });
   win.setMenuBarVisibility(false);
@@ -141,16 +149,87 @@ ipcMain.handle("fs:edit-file", async (_e, root, relPath, oldString, newString) =
   return true;
 });
 
-function runCommand(root, command) {
+// ---------- Skills (Claude-Skills-style SKILL.md packs) ----------
+
+const APP_SKILLS_DIR = path.join(__dirname, "skills");
+
+function parseSkillFile(raw) {
+  const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!match) return { name: null, description: null, body: raw.trim() };
+  const meta = {};
+  for (const line of match[1].split("\n")) {
+    const kv = line.match(/^(\w+):\s*(.*)$/);
+    if (kv) meta[kv[1]] = kv[2].trim();
+  }
+  return { name: meta.name || null, description: meta.description || null, body: match[2].trim() };
+}
+
+async function listSkillsIn(dir) {
+  const out = [];
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const skillFile = path.join(dir, entry.name, "SKILL.md");
+    try {
+      const raw = await fs.readFile(skillFile, "utf8");
+      const { name, description } = parseSkillFile(raw);
+      out.push({ id: entry.name, name: name || entry.name, description: description || "" });
+    } catch {
+      // no SKILL.md in this folder, skip
+    }
+  }
+  return out;
+}
+
+function skillSearchDirs(root) {
+  return [
+    APP_SKILLS_DIR,
+    path.join(os.homedir(), ".claude", "skills"), // Claude Code, if installed on this machine
+    path.join(root, ".claude", "skills"), // Claude Code, project-level
+    path.join(root, ".nutaan", "skills"), // Nutaan Code project-level (highest priority)
+  ];
+}
+
+async function collectSkills(root) {
+  const byId = new Map();
+  for (const dir of skillSearchDirs(root)) {
+    for (const s of await listSkillsIn(dir)) byId.set(s.id, s); // later dirs override earlier ones with the same id
+  }
+  return [...byId.values()];
+}
+
+async function readSkillBody(root, id) {
+  for (const dir of skillSearchDirs(root).reverse()) {
+    try {
+      const raw = await fs.readFile(path.join(dir, id, "SKILL.md"), "utf8");
+      return parseSkillFile(raw).body;
+    } catch {
+      // try next
+    }
+  }
+  throw new Error(`No skill found with id "${id}"`);
+}
+
+function runCommand(root, command, signal) {
   return new Promise((resolve) => {
-    exec(command, { cwd: root, timeout: COMMAND_TIMEOUT_MS, windowsHide: true }, (error, stdout, stderr) => {
-      resolve({
-        exitCode: error ? (error.code ?? 1) : 0,
-        stdout: String(stdout || "").slice(0, MAX_OUTPUT_CHARS),
-        stderr: String(stderr || "").slice(0, MAX_OUTPUT_CHARS),
-        timedOut: Boolean(error && error.killed && error.signal),
-      });
-    });
+    exec(
+      command,
+      { cwd: root, timeout: COMMAND_TIMEOUT_MS, windowsHide: true, signal },
+      (error, stdout, stderr) => {
+        resolve({
+          exitCode: error ? (error.code ?? 1) : 0,
+          stdout: String(stdout || "").slice(0, MAX_OUTPUT_CHARS),
+          stderr: String(stderr || "").slice(0, MAX_OUTPUT_CHARS),
+          timedOut: Boolean(error && error.killed && error.signal),
+          aborted: Boolean(error && error.name === "AbortError"),
+        });
+      }
+    );
   });
 }
 
@@ -180,6 +259,26 @@ const TOOLS = [
         type: "object",
         properties: { path: { type: "string" } },
         required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_skills",
+      description: "List available skills — reusable instruction packs for specific kinds of tasks (code review, debugging, writing commit messages, etc). Check this when a task matches one of these areas before improvising your own approach.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "use_skill",
+      description: "Load the full instructions for a skill by id (from list_skills) and follow them for the current task.",
+      parameters: {
+        type: "object",
+        properties: { id: { type: "string" } },
+        required: ["id"],
       },
     },
   },
@@ -230,6 +329,106 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "browser_navigate",
+      description: "Open a URL in the app's built-in browser panel, for testing web apps or looking things up. Prefer this over run_command with a shell 'open'/'start' command.",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string" } },
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_read_page",
+      description: "Read the visible text content and current URL of whatever is currently open in the built-in browser panel.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_click",
+      description: "Click an element in the built-in browser panel, identified by a CSS selector (e.g. 'button.submit', '#login-btn', 'a[href=\"/contact\"]'). Use browser_read_page or browser_screenshot first if you need to figure out the right selector.",
+      parameters: {
+        type: "object",
+        properties: { selector: { type: "string" } },
+        required: ["selector"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_type",
+      description: "Type text into an input/textarea in the built-in browser panel, identified by a CSS selector. Set submit:true to also submit its form afterward (e.g. for a login form).",
+      parameters: {
+        type: "object",
+        properties: {
+          selector: { type: "string" },
+          text: { type: "string" },
+          submit: { type: "boolean" },
+        },
+        required: ["selector", "text"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_scroll",
+      description: "Scroll the page in the built-in browser panel.",
+      parameters: {
+        type: "object",
+        properties: {
+          direction: { type: "string", enum: ["up", "down"] },
+          amount: { type: "number", description: "Pixels to scroll, default 600" },
+        },
+        required: ["direction"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_screenshot",
+      description: "Take a screenshot of what's currently visible in the built-in browser panel. Only useful if you (the model) support image input — plain-text models should rely on browser_read_page instead.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_resize",
+      description: "Switch the built-in browser panel's preview frame to a device size, to test responsive layouts.",
+      parameters: {
+        type: "object",
+        properties: { size: { type: "string", enum: ["mobile", "tablet", "desktop"] } },
+        required: ["size"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_execute_script",
+      description: "Run arbitrary JavaScript in the page currently open in the built-in browser panel and return its result. General-purpose escape hatch for anything browser_click/type/scroll can't do (e.g. reading computed styles, complex multi-step DOM queries, dispatching custom events, calling fetch()). Requires user approval since it can do anything on that page.",
+      parameters: {
+        type: "object",
+        properties: {
+          code: {
+            type: "string",
+            description: "One or more JS statements, executed inside an async function body — use 'return <value>;' to send back a result, and 'await' works directly. Errors are caught and returned to you instead of failing silently.",
+          },
+        },
+        required: ["code"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "run_command",
       description: "Run a shell command in the project root (60s timeout). Requires user approval.",
       parameters: {
@@ -241,7 +440,23 @@ const TOOLS = [
   },
 ];
 
-const SAFE_TOOLS = new Set(["list_dir", "read_file", "search_files"]);
+const URL_OPEN_PATTERN = /^\s*(start|open|xdg-open|cmd(\.exe)?\s*\/c\s*start)\s+["']?(https?:\/\/)/i;
+
+const SAFE_TOOLS = new Set([
+  "list_dir",
+  "read_file",
+  "search_files",
+  "list_skills",
+  "use_skill",
+  "browser_navigate",
+  "browser_read_page",
+  "browser_click",
+  "browser_type",
+  "browser_scroll",
+  "browser_screenshot",
+  "browser_resize",
+  // browser_execute_script is deliberately NOT in this list — it requires approval.
+]);
 const SEARCH_SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "out"]);
 const MAX_SEARCH_MATCHES = 200;
 const MAX_SEARCH_FILES = 3000;
@@ -310,8 +525,45 @@ ipcMain.on("agent:permission-response", (_e, { id, approved }) => {
   }
 });
 
-async function executeTool(sender, root, name, args) {
+function requestBrowserAction(sender, id, payload) {
+  return new Promise((resolve) => {
+    pendingBrowserActions.set(id, resolve);
+    sender.send("agent:browser-action", { id, ...payload });
+    setTimeout(() => {
+      if (pendingBrowserActions.has(id)) {
+        pendingBrowserActions.delete(id);
+        resolve({ ok: false, error: "Timed out waiting for the browser panel" });
+      }
+    }, BROWSER_ACTION_TIMEOUT_MS);
+  });
+}
+
+ipcMain.on("agent:browser-action-response", (_e, { id, result }) => {
+  const resolve = pendingBrowserActions.get(id);
+  if (resolve) {
+    resolve(result);
+    pendingBrowserActions.delete(id);
+  }
+});
+
+async function executeTool(sender, root, name, args, callId, signal) {
   switch (name) {
+    case "browser_navigate":
+      return requestBrowserAction(sender, callId, { action: "navigate", url: args.url });
+    case "browser_read_page":
+      return requestBrowserAction(sender, callId, { action: "read" });
+    case "browser_click":
+      return requestBrowserAction(sender, callId, { action: "click", selector: args.selector });
+    case "browser_type":
+      return requestBrowserAction(sender, callId, { action: "type", selector: args.selector, text: args.text, submit: !!args.submit });
+    case "browser_scroll":
+      return requestBrowserAction(sender, callId, { action: "scroll", direction: args.direction, amount: args.amount });
+    case "browser_screenshot":
+      return requestBrowserAction(sender, callId, { action: "screenshot" });
+    case "browser_resize":
+      return requestBrowserAction(sender, callId, { action: "resize", size: args.size });
+    case "browser_execute_script":
+      return requestBrowserAction(sender, callId, { action: "execute", code: args.code });
     case "list_dir":
       return { entries: await fs.readdir(resolveSafe(root, args.path), { withFileTypes: true }).then((es) =>
         es.filter((e) => !e.name.startsWith(".") && e.name !== "node_modules")
@@ -320,6 +572,10 @@ async function executeTool(sender, root, name, args) {
       return { content: await fs.readFile(resolveSafe(root, args.path), "utf8") };
     case "search_files":
       return searchFiles(root, args.path, args.pattern);
+    case "list_skills":
+      return { skills: await collectSkills(root) };
+    case "use_skill":
+      return { instructions: await readSkillBody(root, args.id) };
     case "write_file": {
       const target = resolveSafe(root, args.path);
       await fs.mkdir(path.dirname(target), { recursive: true });
@@ -336,7 +592,7 @@ async function executeTool(sender, root, name, args) {
       return { ok: true };
     }
     case "run_command":
-      return runCommand(root, args.command);
+      return runCommand(root, args.command, signal);
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -347,33 +603,191 @@ function permissionPreview(name, args) {
   if (name === "edit_file")
     return { title: `Edit ${args.path}`, diff: { oldString: args.old_string, newString: args.new_string } };
   if (name === "run_command") return { title: "Run command", detail: args.command };
+  if (name === "browser_execute_script") return { title: "Run script in browser panel", detail: args.code };
   return { title: name, detail: JSON.stringify(args) };
 }
 
-async function runAgentLoop(sender, { root, baseUrl, apiKey, model, messages }) {
+// ---------- Context compaction ----------
+
+function estimateTokens(msgs) {
+  let chars = 0;
+  for (const m of msgs) {
+    if (typeof m.content === "string") chars += m.content.length;
+    if (m.tool_calls) chars += JSON.stringify(m.tool_calls).length;
+  }
+  return Math.ceil(chars / 4);
+}
+
+function summarizableTranscript(msgs) {
+  return msgs
+    .map((m) => {
+      if (m.role === "tool") return `[tool result: ${String(m.content || "").slice(0, 300)}]`;
+      if (m.tool_calls) return `assistant called: ${m.tool_calls.map((t) => t.function?.name).join(", ")}`;
+      return `${m.role}: ${String(m.content || "").slice(0, 2000)}`;
+    })
+    .join("\n");
+}
+
+async function compactIfNeeded(sender, chatMessages, { baseUrl, apiKey, model }) {
+  if (estimateTokens(chatMessages) < COMPACT_THRESHOLD_TOKENS) return chatMessages;
+  if (chatMessages.length <= KEEP_RECENT_MESSAGES + 2) return chatMessages;
+
+  const systemMsg = chatMessages[0];
+  const recent = chatMessages.slice(-KEEP_RECENT_MESSAGES);
+  const middle = chatMessages.slice(1, chatMessages.length - KEEP_RECENT_MESSAGES);
+  if (middle.length === 0) return chatMessages;
+
+  sender.send("agent:compacting", {});
+
+  try {
+    const res = await fetch(baseUrl.replace(/\/$/, "") + "/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model: model || "auto",
+        max_tokens: 1500,
+        messages: [
+          {
+            role: "system",
+            content:
+              "Summarize this coding-session transcript into a compact brief: what the user wants, what's been done (files touched, decisions made, commands run and their outcomes), and any open threads. Be concrete and specific, no filler.",
+          },
+          { role: "user", content: summarizableTranscript(middle).slice(0, 80_000) },
+        ],
+      }),
+    });
+    const data = await res.json();
+    const summary = data.choices?.[0]?.message?.content;
+    if (!summary) throw new Error("empty summary");
+    return [systemMsg, { role: "system", content: `Summary of earlier conversation (compacted to save context):\n${summary}` }, ...recent];
+  } catch {
+    return [systemMsg, { role: "system", content: "(earlier conversation was trimmed to save context)" }, ...recent];
+  }
+}
+
+async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages }) {
+  const res = await fetch(baseUrl.replace(/\/$/, "") + "/chat/completions", {
+    method: "POST",
+    signal: controller.signal,
+    headers: {
+      "Content-Type": "application/json",
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+    },
+    body: JSON.stringify({
+      model: model || "auto",
+      messages: chatMessages,
+      tools: TOOLS,
+      tool_choice: "auto",
+      max_tokens: MAX_RESPONSE_TOKENS,
+      stream: true,
+    }),
+  });
+
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const errJson = await res.json();
+      detail = errJson?.error?.message || detail;
+    } catch {}
+    return { ok: false, error: detail };
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let content = "";
+  const toolCalls = [];
+
+  async function readChunkWithTimeout() {
+    let timer;
+    try {
+      return await Promise.race([
+        reader.read(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("STREAM_STALLED")), STREAM_IDLE_TIMEOUT_MS);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  while (true) {
+    let done, value;
+    try {
+      ({ done, value } = await readChunkWithTimeout());
+    } catch (err) {
+      reader.cancel().catch(() => {});
+      if (err.message === "STREAM_STALLED") {
+        throw new Error("The model stopped responding mid-stream (no data for 45s) — try again.");
+      }
+      throw err;
+    }
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop();
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const payload = trimmed.slice(5).trim();
+      if (payload === "[DONE]") continue;
+      let json;
+      try {
+        json = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+      const delta = json.choices?.[0]?.delta;
+      if (!delta) continue;
+      if (delta.content) {
+        content += delta.content;
+        sender.send("agent:assistant-delta", { content: delta.content });
+      }
+      if (delta.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index ?? 0;
+          if (!toolCalls[idx]) toolCalls[idx] = { id: "", type: "function", function: { name: "", arguments: "" } };
+          if (tc.id) toolCalls[idx].id = tc.id;
+          if (tc.function?.name) toolCalls[idx].function.name += tc.function.name;
+          if (tc.function?.arguments) toolCalls[idx].function.arguments += tc.function.arguments;
+        }
+      }
+    }
+  }
+
+  const message = { role: "assistant", content: content || null };
+  const calls = toolCalls.filter(Boolean);
+  if (calls.length) message.tool_calls = calls;
+  return { ok: true, message };
+}
+
+async function runAgentLoop(sender, { root, baseUrl, apiKey, model, messages, autoApprove }) {
   const controller = new AbortController();
   agentAbort = controller;
-  const chatMessages = [...messages];
+  let chatMessages = [...messages];
+  const aborted = () => controller.signal.aborted;
 
   for (let i = 0; i < MAX_AGENT_ITERATIONS; i++) {
-    if (controller.signal.aborted) {
+    if (aborted()) {
       sender.send("agent:done", { aborted: true, messages: chatMessages });
       return;
     }
 
-    let res;
+    chatMessages = await compactIfNeeded(sender, chatMessages, { baseUrl, apiKey, model });
+    if (aborted()) {
+      sender.send("agent:done", { aborted: true, messages: chatMessages });
+      return;
+    }
+
+    let streamResult;
     try {
-      res = await fetch(baseUrl.replace(/\/$/, "") + "/chat/completions", {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          "Content-Type": "application/json",
-          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-        },
-        body: JSON.stringify({ model: model || "auto", messages: chatMessages, tools: TOOLS, tool_choice: "auto" }),
-      });
+      streamResult = await streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages });
     } catch (err) {
-      if (controller.signal.aborted) {
+      if (aborted()) {
         sender.send("agent:done", { aborted: true, messages: chatMessages });
         return;
       }
@@ -381,28 +795,18 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, messages }) 
       return;
     }
 
-    if (!res.ok) {
-      let detail = `HTTP ${res.status}`;
-      try {
-        const errJson = await res.json();
-        detail = errJson?.error?.message || detail;
-      } catch {}
-      sender.send("agent:error", { message: detail });
+    if (aborted()) {
+      sender.send("agent:done", { aborted: true, messages: chatMessages });
       return;
     }
 
-    const data = await res.json();
-    const message = data.choices?.[0]?.message;
-    if (!message) {
-      sender.send("agent:error", { message: "Model returned no message" });
+    if (!streamResult.ok) {
+      sender.send("agent:error", { message: streamResult.error });
       return;
     }
 
+    const message = streamResult.message;
     chatMessages.push(message);
-
-    if (message.content) {
-      sender.send("agent:assistant-message", { content: message.content });
-    }
 
     const toolCalls = message.tool_calls || [];
     if (toolCalls.length === 0) {
@@ -411,6 +815,11 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, messages }) 
     }
 
     for (const call of toolCalls) {
+      if (aborted()) {
+        sender.send("agent:done", { aborted: true, messages: chatMessages });
+        return;
+      }
+
       const name = call.function?.name;
       let args = {};
       try {
@@ -421,9 +830,27 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, messages }) 
 
       sender.send("agent:tool-start", { id: call.id, name, args });
 
+      if (name === "run_command" && URL_OPEN_PATTERN.test(args.command || "")) {
+        const result = {
+          error: "Don't shell-open URLs — use the browser_navigate tool instead so it opens in the built-in browser panel.",
+        };
+        sender.send("agent:tool-result", { id: call.id, name, result });
+        chatMessages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
+        continue;
+      }
+
       let approved = true;
       if (!SAFE_TOOLS.has(name)) {
-        approved = await requestPermission(sender, call.id, { name, args, ...permissionPreview(name, args) });
+        if (autoApprove) {
+          sender.send("agent:permission-request", { id: call.id, name, args, autoApproved: true, ...permissionPreview(name, args) });
+        } else {
+          approved = await requestPermission(sender, call.id, { name, args, ...permissionPreview(name, args) });
+        }
+      }
+
+      if (aborted()) {
+        sender.send("agent:done", { aborted: true, messages: chatMessages });
+        return;
       }
 
       let result;
@@ -431,18 +858,50 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, messages }) 
         result = { error: "Denied by user" };
       } else {
         try {
-          result = await executeTool(sender, root, name, args);
+          result = await executeTool(sender, root, name, args, call.id, controller.signal);
         } catch (err) {
           result = { error: err.message };
         }
       }
 
       sender.send("agent:tool-result", { id: call.id, name, result });
-      chatMessages.push({
-        role: "tool",
-        tool_call_id: call.id,
-        content: JSON.stringify(result).slice(0, MAX_OUTPUT_CHARS),
-      });
+
+      const modelLooksVisionCapable = /vision|multimodal/i.test(model || "");
+      if (name === "browser_screenshot" && result && result.ok && result.imageDataUrl && modelLooksVisionCapable) {
+        // Keep the raw image out of the plain-text tool message (it'd blow past MAX_OUTPUT_CHARS and
+        // get corrupted mid-base64) — send a short confirmation there, and the actual image as a
+        // separate multimodal message. Only do this when the model looks vision-capable — pushing a
+        // huge base64 image at a plain-text model bloats context for zero benefit and has caused the
+        // model to silently stall out on later steps in this same conversation.
+        chatMessages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: JSON.stringify({ ok: true, url: result.url, note: "Screenshot captured — see the image in the next message." }),
+        });
+        chatMessages.push({
+          role: "user",
+          content: [
+            { type: "text", text: "(screenshot of the browser panel, requested via browser_screenshot)" },
+            { type: "image_url", image_url: { url: result.imageDataUrl } },
+          ],
+        });
+      } else if (name === "browser_screenshot" && result && result.ok) {
+        chatMessages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: JSON.stringify({
+            ok: true,
+            url: result.url,
+            note: "Screenshot captured and shown to the user in the app — the current model can't see images, so you don't get to view it. Use browser_read_page for text content instead.",
+          }),
+        });
+      } else {
+        chatMessages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: JSON.stringify(result).slice(0, MAX_OUTPUT_CHARS),
+        });
+      }
     }
   }
 
@@ -457,4 +916,8 @@ ipcMain.on("agent:send", (event, payload) => {
 
 ipcMain.on("agent:stop", () => {
   agentAbort?.abort();
+  for (const resolve of pendingPermissions.values()) resolve(false);
+  pendingPermissions.clear();
+  for (const resolve of pendingBrowserActions.values()) resolve({ ok: false, error: "Stopped" });
+  pendingBrowserActions.clear();
 });

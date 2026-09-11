@@ -16,12 +16,15 @@ contextBridge.exposeInMainWorld("nutaan", {
   sendAgentMessage: (payload) => ipcRenderer.send("agent:send", payload),
   stopAgent: () => ipcRenderer.send("agent:stop"),
   respondToPermission: (id, approved) => ipcRenderer.send("agent:permission-response", { id, approved }),
+  respondToBrowserAction: (id, result) => ipcRenderer.send("agent:browser-action-response", { id, result }),
   onAgentEvent: (channel, callback) => {
     const valid = [
-      "agent:assistant-message",
+      "agent:assistant-delta",
       "agent:tool-start",
       "agent:tool-result",
       "agent:permission-request",
+      "agent:browser-action",
+      "agent:compacting",
       "agent:done",
       "agent:error",
     ];

@@ -9,7 +9,7 @@
   const sendBtn = el("sendBtn");
   const statusDot = el("statusDot");
   const statusText = el("statusText");
-  const modelSelect = el("modelSelect");
+  const modelSelectSettings = el("modelSelectSettings");
   const settingsBtn = el("settingsBtn");
   const settingsOverlay = el("settingsOverlay");
   const baseUrlInput = el("baseUrlInput");
@@ -20,12 +20,35 @@
   const openFolderBtn = el("openFolderBtn");
   const projectPathEl = el("projectPath");
   const fileTreeEl = el("fileTree");
-  const dashboardLink = el("dashboardLink");
+  const fileTreeDivider = el("fileTreeDivider");
+  const projectListEl = el("projectList");
+  const browserToggleBtn = el("browserToggleBtn");
+  const browserPane = el("browserPane");
+  const browserView = el("browserView");
+  const browserAddress = el("browserAddress");
+  const browserBack = el("browserBack");
+  const browserForward = el("browserForward");
+  const browserReload = el("browserReload");
+  const browserClose = el("browserClose");
+  const autoApproveBtn = el("autoApproveBtn");
+  const browserViewport = el("browserViewport");
+  const sizeMobile = el("sizeMobile");
+  const sizeTablet = el("sizeTablet");
+  const sizeDesktop = el("sizeDesktop");
 
-  let settings = { baseUrl: DEFAULT_BASE_URL, apiKey: "", model: "auto", projectPath: null };
-  let apiMessages = [];
+  let settings = { baseUrl: DEFAULT_BASE_URL, apiKey: "", model: "auto/coding:free", autoApprove: false };
+  let projects = []; // [{ path, messages: [...] }]
+  let activePath = null;
   let running = false;
   const toolCards = new Map();
+
+  function activeProject() {
+    return projects.find((p) => p.path === activePath) || null;
+  }
+
+  function basename(p) {
+    return String(p).replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+  }
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -40,18 +63,111 @@
     emptyState.hidden = hasContent;
   }
 
+  function inlineFormat(escaped) {
+    return escaped
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>")
+      .replace(/`([^`]+)`/g, "<code>$1</code>");
+  }
+
+  function isTableSeparatorLine(line) {
+    return /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(line) && line.includes("-");
+  }
+
+  function parseTableRow(line) {
+    let s = line.trim();
+    if (s.startsWith("|")) s = s.slice(1);
+    if (s.endsWith("|")) s = s.slice(0, -1);
+    return s.split("|").map((c) => c.trim());
+  }
+
+  function renderMarkdownBlock(text) {
+    const lines = text.split("\n");
+    let html = "";
+    let para = [];
+    const flush = () => {
+      if (para.length) {
+        html += `<p>${inlineFormat(escapeHtml(para.join(" ")))}</p>`;
+        para = [];
+      }
+    };
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const h = line.match(/^(#{1,6})\s+(.*)/);
+      if (h) {
+        flush();
+        html += `<h${h[1].length}>${inlineFormat(escapeHtml(h[2]))}</h${h[1].length}>`;
+        i++;
+        continue;
+      }
+      if (line.includes("|") && i + 1 < lines.length && isTableSeparatorLine(lines[i + 1])) {
+        flush();
+        const header = parseTableRow(line);
+        i += 2;
+        const rows = [];
+        while (i < lines.length && lines[i].includes("|") && lines[i].trim() !== "") {
+          rows.push(parseTableRow(lines[i]));
+          i++;
+        }
+        html +=
+          "<table><thead><tr>" +
+          header.map((c) => `<th>${inlineFormat(escapeHtml(c))}</th>`).join("") +
+          "</tr></thead><tbody>" +
+          rows.map((r) => "<tr>" + r.map((c) => `<td>${inlineFormat(escapeHtml(c))}</td>`).join("") + "</tr>").join("") +
+          "</tbody></table>";
+        continue;
+      }
+      const ulMatch = line.match(/^\s*[-*]\s+(.*)/);
+      if (ulMatch) {
+        flush();
+        const items = [];
+        while (i < lines.length) {
+          const m = lines[i].match(/^\s*[-*]\s+(.*)/);
+          if (!m) break;
+          items.push(m[1]);
+          i++;
+        }
+        html += "<ul>" + items.map((it) => `<li>${inlineFormat(escapeHtml(it))}</li>`).join("") + "</ul>";
+        continue;
+      }
+      const olMatch = line.match(/^\s*\d+\.\s+(.*)/);
+      if (olMatch) {
+        flush();
+        const items = [];
+        while (i < lines.length) {
+          const m = lines[i].match(/^\s*\d+\.\s+(.*)/);
+          if (!m) break;
+          items.push(m[1]);
+          i++;
+        }
+        html += "<ol>" + items.map((it) => `<li>${inlineFormat(escapeHtml(it))}</li>`).join("") + "</ol>";
+        continue;
+      }
+      if (line.trim() === "") {
+        flush();
+        i++;
+        continue;
+      }
+      para.push(line.trim());
+      i++;
+    }
+    flush();
+    return html;
+  }
+
   function renderMarkdownLite(text) {
     const parts = String(text).split(/```(\w*)\n?([\s\S]*?)```/g);
     let html = "";
     for (let i = 0; i < parts.length; i += 3) {
-      html += escapeHtml(parts[i] || "");
+      html += renderMarkdownBlock(parts[i] || "");
       const lang = parts[i + 1];
       const code = parts[i + 2];
       if (code !== undefined) {
         html += `<pre class="code-block">${lang ? `<div class="code-lang">${escapeHtml(lang)}</div>` : ""}<code>${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`;
       }
     }
-    return html.replace(/`([^`]+)`/g, "<code>$1</code>");
+    return html;
   }
 
   function appendBubble(role, content) {
@@ -70,7 +186,20 @@
   function appendToolCard(id, name, args) {
     const wrap = document.createElement("div");
     wrap.className = "tool-card pending";
-    wrap.innerHTML = `<div class="tool-title">${toolLabel(name, args)}</div>`;
+    wrap.innerHTML = `
+      <div class="tool-header">
+        <span class="tool-title">${toolLabel(name, args)}</span>
+        <span class="tool-chev">▸</span>
+      </div>
+      <div class="tool-detail" hidden></div>
+    `;
+    const header = wrap.querySelector(".tool-header");
+    const detail = wrap.querySelector(".tool-detail");
+    header.addEventListener("click", () => {
+      if (!detail.innerHTML.trim()) return;
+      detail.hidden = !detail.hidden;
+      wrap.querySelector(".tool-chev").textContent = detail.hidden ? "▸" : "▾";
+    });
     thread.appendChild(wrap);
     toolCards.set(id, wrap);
     renderEmptyVisibility();
@@ -81,6 +210,16 @@
     if (name === "list_dir") return `Listing <code>${escapeHtml(args.path || ".")}</code>`;
     if (name === "read_file") return `Reading <code>${escapeHtml(args.path || "")}</code>`;
     if (name === "search_files") return `Searching for <code>${escapeHtml(args.pattern || "")}</code>`;
+    if (name === "list_skills") return `Checking available skills`;
+    if (name === "use_skill") return `Using skill <code>${escapeHtml(args.id || "")}</code>`;
+    if (name === "browser_navigate") return `Opening <code>${escapeHtml(args.url || "")}</code> in the browser panel`;
+    if (name === "browser_read_page") return `Reading the browser panel's current page`;
+    if (name === "browser_click") return `Clicking <code>${escapeHtml(args.selector || "")}</code> in the browser panel`;
+    if (name === "browser_type") return `Typing into <code>${escapeHtml(args.selector || "")}</code> in the browser panel`;
+    if (name === "browser_scroll") return `Scrolling the browser panel ${escapeHtml(args.direction || "")}`;
+    if (name === "browser_screenshot") return `Taking a screenshot of the browser panel`;
+    if (name === "browser_resize") return `Switching the browser panel to ${escapeHtml(args.size || "")} view`;
+    if (name === "browser_execute_script") return `Running a script in the browser panel`;
     if (name === "write_file") return `Writing <code>${escapeHtml(args.path || "")}</code>`;
     if (name === "edit_file") return `Editing <code>${escapeHtml(args.path || "")}</code>`;
     if (name === "run_command") return `Running command`;
@@ -93,32 +232,73 @@
     return `<pre class="diff">${oldLines.join("")}${newLines.join("")}</pre>`;
   }
 
+  function permissionStat(req) {
+    if (req.name === "edit_file" && req.diff) {
+      const added = String(req.diff.newString || "").split("\n").length;
+      const removed = String(req.diff.oldString || "").split("\n").length;
+      return `+${added} -${removed}`;
+    }
+    if (req.name === "write_file") return `+${String(req.detail || "").split("\n").length}`;
+    return "";
+  }
+
   function appendPermissionCard(req) {
     const wrap = document.createElement("div");
     wrap.className = "permission-card";
     const body = req.diff ? diffHtml(req.diff) : `<pre>${escapeHtml(req.detail || "")}</pre>`;
+    const stat = permissionStat(req);
     wrap.innerHTML = `
-      <div class="perm-title">${toolLabel(req.name, req.args)} — needs your approval</div>
-      ${body}
+      <div class="perm-header">
+        <span class="perm-title">${toolLabel(req.name, req.args)} — needs your approval</span>
+        ${stat ? `<span class="tool-stat">${escapeHtml(stat)}</span>` : ""}
+      </div>
+      <div class="perm-detail">${body}</div>
       <div class="permission-actions">
         <button class="btn-approve">Approve</button>
         <button class="btn-deny">Deny</button>
       </div>
     `;
-    wrap.querySelector(".btn-approve").addEventListener("click", () => {
-      window.nutaan.respondToPermission(req.id, true);
+    const permDetail = wrap.querySelector(".perm-detail");
+
+    function collapse(labelText) {
       wrap.classList.add("resolved");
-      wrap.querySelector(".permission-actions").insertAdjacentHTML("afterend", '<div class="perm-result">Approved</div>');
-    });
-    wrap.querySelector(".btn-deny").addEventListener("click", () => {
-      window.nutaan.respondToPermission(req.id, false);
-      wrap.classList.add("resolved");
-      wrap.querySelector(".permission-actions").insertAdjacentHTML("afterend", '<div class="perm-result">Denied</div>');
-    });
+      permDetail.hidden = true;
+      wrap.querySelector(".permission-actions").insertAdjacentHTML(
+        "afterend",
+        `<div class="perm-result">${labelText} <span class="tool-chev">▸</span></div>`
+      );
+      wrap.querySelector(".perm-result").addEventListener("click", () => {
+        permDetail.hidden = !permDetail.hidden;
+        wrap.querySelector(".perm-result .tool-chev").textContent = permDetail.hidden ? "▸" : "▾";
+      });
+    }
+
+    if (req.autoApproved) {
+      wrap.querySelector(".perm-title").textContent = toolLabel(req.name, req.args);
+      collapse("Auto-approved");
+    } else {
+      wrap.querySelector(".btn-approve").addEventListener("click", () => {
+        window.nutaan.respondToPermission(req.id, true);
+        collapse("Approved");
+      });
+      wrap.querySelector(".btn-deny").addEventListener("click", () => {
+        window.nutaan.respondToPermission(req.id, false);
+        collapse("Denied");
+      });
+    }
     thread.appendChild(wrap);
     toolCards.set(req.id, wrap);
     renderEmptyVisibility();
     scrollToBottom();
+  }
+
+  function setToolStat(cardEl, text) {
+    const header = cardEl.querySelector(".tool-header");
+    if (!header) return;
+    const stat = document.createElement("span");
+    stat.className = "tool-stat";
+    stat.textContent = text;
+    header.insertBefore(stat, header.querySelector(".tool-chev"));
   }
 
   function resolveToolCard(id, name, result) {
@@ -130,21 +310,48 @@
       if (resultLine && isError) resultLine.textContent += ` — ${result.error}`;
       return;
     }
+
     cardEl.classList.remove("pending");
     cardEl.classList.add(isError ? "err" : "ok");
+    const detail = cardEl.querySelector(".tool-detail");
+
     if (isError) {
-      cardEl.innerHTML += `<pre>${escapeHtml(result.error)}</pre>`;
+      detail.innerHTML = `<pre>${escapeHtml(result.error)}</pre>`;
+    } else if (name === "list_dir" && result.entries) {
+      setToolStat(cardEl, `${result.entries.length} item${result.entries.length === 1 ? "" : "s"}`);
+      const lines = result.entries.map((e) => (e.isDir ? `${e.name}/` : e.name)).join("\n");
+      detail.innerHTML = `<pre>${escapeHtml(lines || "(empty)")}</pre>`;
     } else if (name === "read_file" && result.content) {
+      const lines = result.content.split("\n").length;
+      setToolStat(cardEl, `${lines} lines`);
       const preview = result.content.length > 600 ? result.content.slice(0, 600) + "\n…" : result.content;
-      cardEl.innerHTML += `<pre>${escapeHtml(preview)}</pre>`;
+      detail.innerHTML = `<pre>${escapeHtml(preview)}</pre>`;
     } else if (name === "run_command") {
       const out = (result.stdout || "") + (result.stderr ? "\n" + result.stderr : "");
-      if (out.trim()) cardEl.innerHTML += `<pre>${escapeHtml(out.slice(0, 800))}</pre>`;
+      if (out.trim()) detail.innerHTML = `<pre>${escapeHtml(out.slice(0, 800))}</pre>`;
     } else if (name === "search_files" && result.matches) {
+      setToolStat(cardEl, `${result.matches.length} match${result.matches.length === 1 ? "" : "es"}`);
       const lines = result.matches.slice(0, 30).map((m) => `${m.file}:${m.line}: ${m.text}`).join("\n");
-      cardEl.innerHTML += `<pre>${escapeHtml(lines || "No matches")}${result.truncated ? "\n…" : ""}</pre>`;
+      detail.innerHTML = `<pre>${escapeHtml(lines || "No matches")}${result.truncated ? "\n…" : ""}</pre>`;
+    } else if (name === "list_skills" && result.skills) {
+      setToolStat(cardEl, `${result.skills.length} skill${result.skills.length === 1 ? "" : "s"}`);
+      const lines = result.skills.map((s) => `${s.id} — ${s.description}`).join("\n");
+      detail.innerHTML = `<pre>${escapeHtml(lines || "No skills available")}</pre>`;
+    } else if (name === "browser_navigate" && result.url) {
+      detail.innerHTML = `<pre>${escapeHtml(result.title ? `${result.title}\n${result.url}` : result.url)}</pre>`;
+    } else if (name === "browser_read_page" && result.text) {
+      const preview = result.text.length > 600 ? result.text.slice(0, 600) + "\n…" : result.text;
+      detail.innerHTML = `<pre>${escapeHtml(preview)}</pre>`;
+    } else if (name === "browser_screenshot" && result.imageDataUrl) {
+      const img = document.createElement("img");
+      img.src = result.imageDataUrl;
+      img.className = "tool-screenshot";
+      detail.appendChild(img);
     }
-    scrollToBottom();
+
+    if (!detail.innerHTML.trim()) {
+      cardEl.querySelector(".tool-chev").style.visibility = "hidden";
+    }
   }
 
   function setStatus(ok, text) {
@@ -155,30 +362,27 @@
   async function refreshModels() {
     const res = await window.nutaan.listModels(settings.baseUrl, settings.apiKey);
     if (!res.ok) {
-      setStatus(false, settings.apiKey ? "Connection failed" : "No API key set");
+      setStatus(false, settings.apiKey ? "Not connected" : "Not set up yet");
       return;
     }
-    setStatus(true, "Connected");
-    const current = modelSelect.value;
-    modelSelect.innerHTML = "";
-    const auto = document.createElement("option");
-    auto.value = "auto";
-    auto.textContent = "auto (let OmniRoute pick)";
-    modelSelect.appendChild(auto);
+    setStatus(true, "Ready");
+    modelSelectSettings.innerHTML = "";
     for (const id of res.models) {
       const opt = document.createElement("option");
       opt.value = id;
       opt.textContent = id;
-      modelSelect.appendChild(opt);
+      modelSelectSettings.appendChild(opt);
     }
-    modelSelect.value = [...modelSelect.options].some((o) => o.value === settings.model) ? settings.model : "auto";
+    modelSelectSettings.value = [...modelSelectSettings.options].some((o) => o.value === settings.model)
+      ? settings.model
+      : "auto/coding:free";
   }
 
   function updateEmptyHint() {
-    if (!settings.projectPath) {
+    if (!activePath) {
       emptyHint.textContent = "Open a project folder to get started.";
     } else {
-      emptyHint.textContent = "Ask Nutaan Code to build, fix, or explain something in " + settings.projectPath;
+      emptyHint.textContent = "Ask Nutaan Code to build, fix, or explain something in " + activePath;
     }
   }
 
@@ -186,7 +390,7 @@
   async function buildTreeNode(container, relPath, depth) {
     let entries;
     try {
-      entries = await window.nutaan.listDir(settings.projectPath, relPath);
+      entries = await window.nutaan.listDir(activePath, relPath);
     } catch {
       return;
     }
@@ -194,7 +398,8 @@
       const row = document.createElement("div");
       row.className = "tree-row";
       row.style.paddingLeft = 8 + depth * 14 + "px";
-      row.innerHTML = `<span class="chev">${entry.isDir ? "▸" : ""}</span><span>${entry.isDir ? "📁" : "📄"} ${escapeHtml(entry.name)}</span>`;
+      row.title = entry.name;
+      row.innerHTML = `<span class="chev">${entry.isDir ? "▸" : ""}</span><span class="tree-label">${entry.isDir ? "📁" : "📄"} ${escapeHtml(entry.name)}</span>`;
       container.appendChild(row);
 
       if (entry.isDir) {
@@ -224,29 +429,137 @@
 
   async function refreshTree() {
     fileTreeEl.innerHTML = "";
-    if (!settings.projectPath) return;
+    fileTreeDivider.hidden = !activePath;
+    if (!activePath) {
+      projectPathEl.textContent = "";
+      return;
+    }
+    projectPathEl.textContent = activePath;
+    projectPathEl.title = activePath;
     await buildTreeNode(fileTreeEl, ".", 0);
   }
 
   // ---------- Agent conversation ----------
-  function systemPrompt() {
+  function systemPrompt(root) {
     return [
       "You are Nutaan Code, a careful personal coding assistant running as a desktop app on the user's own machine.",
-      `The current project root is: ${settings.projectPath}`,
-      "You have tools to list directories, read files, write files, edit files (exact string replace), and run shell commands, all scoped to the project root.",
+      `The current project root is: ${root}`,
+      "You have tools to list directories, read files, write files, edit files (exact string replace), search file contents, and run shell commands, all scoped to the project root.",
+      "You also have list_skills and use_skill — check list_skills when a task matches a specific kind of work (reviewing code, debugging, writing a commit message, etc.) and follow the matching skill's instructions via use_skill before improvising.",
+      "You have browser_navigate, browser_read_page, browser_click, browser_type, browser_scroll, browser_screenshot, browser_resize, and browser_execute_script to actually drive the app's built-in browser panel — navigate, read text, click elements by CSS selector, fill and submit forms, scroll, capture screenshots, switch between mobile/tablet/desktop preview sizes to check responsive layouts, and (with approval) run arbitrary JavaScript for anything the other tools can't do. Use these to genuinely test a running web app, check how a site responds at different sizes, fill in a login form, or look something up, instead of shelling out to open an external browser.",
       "Prefer edit_file over write_file for existing files, and only change what's needed.",
       "write_file, edit_file, and run_command require the user's explicit approval before they execute — expect some to be denied, and adapt.",
       "Explain briefly what you're about to do before taking actions that change files or run commands.",
+      "If the request is ambiguous or missing something you can't reasonably infer, ask a short clarifying question instead of guessing.",
     ].join("\n");
   }
 
-  function resetConversation() {
-    apiMessages = [{ role: "system", content: systemPrompt() }];
+  function renderThreadFromMessages(messages) {
     thread.innerHTML = "";
     thread.appendChild(emptyState);
     toolCards.clear();
+    for (const m of messages) {
+      if ((m.role === "user" || m.role === "assistant") && m.content) {
+        appendBubble(m.role, m.content);
+      }
+    }
     renderEmptyVisibility();
     updateEmptyHint();
+  }
+
+  function resetConversation() {
+    const proj = activeProject();
+    if (!proj) return;
+    proj.messages = [{ role: "system", content: systemPrompt(proj.path) }];
+    persistProjects();
+    renderThreadFromMessages(proj.messages);
+  }
+
+  async function persistProjects() {
+    settings.projects = projects.map((p) => ({ path: p.path, messages: p.messages }));
+    settings.activeProjectPath = activePath;
+    await window.nutaan.setSettings(settings);
+  }
+
+  function renderProjectList() {
+    projectListEl.innerHTML = "";
+    for (const p of projects) {
+      const row = document.createElement("div");
+      row.className = "project-row" + (p.path === activePath ? " active" : "");
+      row.innerHTML = `<span class="proj-icon">📁</span><span class="proj-name">${escapeHtml(basename(p.path))}</span><span class="proj-close" title="Remove from list">✕</span>`;
+      row.title = p.path;
+      row.addEventListener("click", (e) => {
+        if (e.target.classList.contains("proj-close")) return;
+        switchProject(p.path);
+      });
+      row.querySelector(".proj-close").addEventListener("click", (e) => {
+        e.stopPropagation();
+        removeProject(p.path);
+      });
+      projectListEl.appendChild(row);
+    }
+  }
+
+  async function switchProject(path) {
+    if (running || path === activePath) return;
+    activePath = path;
+    renderProjectList();
+    await refreshTree();
+    const proj = activeProject();
+    renderThreadFromMessages(proj.messages);
+    persistProjects();
+  }
+
+  function removeProject(path) {
+    if (running) return;
+    projects = projects.filter((p) => p.path !== path);
+    if (activePath === path) {
+      activePath = projects.length ? projects[0].path : null;
+    }
+    renderProjectList();
+    refreshTree();
+    if (activePath) {
+      renderThreadFromMessages(activeProject().messages);
+    } else {
+      thread.innerHTML = "";
+      thread.appendChild(emptyState);
+      renderEmptyVisibility();
+      updateEmptyHint();
+    }
+    persistProjects();
+  }
+
+  async function openProject(path) {
+    let proj = projects.find((p) => p.path === path);
+    if (!proj) {
+      proj = { path, messages: [{ role: "system", content: systemPrompt(path) }] };
+      projects.unshift(proj);
+    }
+    activePath = path;
+    renderProjectList();
+    await refreshTree();
+    renderThreadFromMessages(proj.messages);
+    persistProjects();
+  }
+
+  let thinkingEl = null;
+
+  function showThinking() {
+    hideThinking();
+    const row = document.createElement("div");
+    row.className = "row assistant";
+    row.innerHTML = `<div class="bubble thinking"><span></span><span></span><span></span></div>`;
+    thread.appendChild(row);
+    thinkingEl = row;
+    renderEmptyVisibility();
+    scrollToBottom();
+  }
+
+  function hideThinking() {
+    if (thinkingEl) {
+      thinkingEl.remove();
+      thinkingEl = null;
+    }
   }
 
   function setRunning(value) {
@@ -262,49 +575,109 @@
       return;
     }
     if (!text) return;
-    if (!settings.projectPath) {
+    const proj = activeProject();
+    if (!proj) {
       appendBubble("error", "Open a project folder first (top-left button).");
       return;
     }
-    if (apiMessages.length === 0) apiMessages = [{ role: "system", content: systemPrompt() }];
+    if (proj.messages.length === 0) proj.messages = [{ role: "system", content: systemPrompt(proj.path) }];
 
-    apiMessages.push({ role: "user", content: text });
+    proj.messages.push({ role: "user", content: text });
     appendBubble("user", text);
     input.value = "";
     input.style.height = "auto";
     setRunning(true);
+    showThinking();
 
     window.nutaan.sendAgentMessage({
-      root: settings.projectPath,
+      root: proj.path,
       baseUrl: settings.baseUrl,
       apiKey: settings.apiKey,
       model: settings.model,
-      messages: apiMessages,
+      autoApprove: settings.autoApprove,
+      messages: proj.messages,
     });
   }
 
-  window.nutaan.onAgentEvent("agent:assistant-message", ({ content }) => {
-    appendBubble("assistant", content);
+  function renderAutoApproveBtn() {
+    autoApproveBtn.textContent = settings.autoApprove ? "⚡ Auto-approve: On" : "⚡ Auto-approve: Off";
+    autoApproveBtn.classList.toggle("on", !!settings.autoApprove);
+  }
+
+  autoApproveBtn.addEventListener("click", async () => {
+    settings.autoApprove = !settings.autoApprove;
+    renderAutoApproveBtn();
+    await window.nutaan.setSettings(settings);
+  });
+
+  let streamBubble = null;
+  let streamText = "";
+
+  function finalizeStream() {
+    if (streamBubble) {
+      streamBubble.innerHTML = renderMarkdownLite(streamText);
+      streamBubble = null;
+      streamText = "";
+    }
+  }
+
+  window.nutaan.onAgentEvent("agent:assistant-delta", ({ content }) => {
+    if (!streamBubble) {
+      hideThinking();
+      streamBubble = appendBubble("assistant", "");
+    }
+    streamText += content;
+    streamBubble.innerHTML = renderMarkdownLite(streamText) + '<span class="cursor"></span>';
+    scrollToBottom();
   });
 
   window.nutaan.onAgentEvent("agent:tool-start", ({ id, name, args }) => {
-    if (name === "list_dir" || name === "read_file" || name === "search_files") appendToolCard(id, name, args);
+    hideThinking();
+    finalizeStream();
+    const visibleTools = [
+      "list_dir", "read_file", "search_files", "list_skills", "use_skill",
+      "browser_navigate", "browser_read_page", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_resize",
+    ];
+    if (visibleTools.includes(name)) appendToolCard(id, name, args);
   });
 
   window.nutaan.onAgentEvent("agent:permission-request", (req) => {
+    hideThinking();
+    finalizeStream();
     appendPermissionCard(req);
+  });
+
+  window.nutaan.onAgentEvent("agent:compacting", () => {
+    hideThinking();
+    finalizeStream();
+    const wrap = document.createElement("div");
+    wrap.className = "tool-card ok";
+    wrap.innerHTML = `<div class="tool-title">Compacting conversation to make room for more context…</div>`;
+    thread.appendChild(wrap);
+    renderEmptyVisibility();
+    scrollToBottom();
+    showThinking();
   });
 
   window.nutaan.onAgentEvent("agent:tool-result", ({ id, name, result }) => {
     resolveToolCard(id, name, result);
+    if (running) showThinking();
   });
 
   window.nutaan.onAgentEvent("agent:done", ({ messages }) => {
-    if (messages) apiMessages = messages;
+    hideThinking();
+    finalizeStream();
+    const proj = activeProject();
+    if (messages && proj) {
+      proj.messages = messages;
+      persistProjects();
+    }
     setRunning(false);
   });
 
   window.nutaan.onAgentEvent("agent:error", ({ message }) => {
+    hideThinking();
+    finalizeStream();
     appendBubble("error", message);
     setRunning(false);
   });
@@ -322,27 +695,21 @@
     input.style.height = Math.min(input.scrollHeight, 160) + "px";
   });
 
-  modelSelect.addEventListener("change", async () => {
-    settings.model = modelSelect.value;
-    await window.nutaan.setSettings(settings);
-  });
-
   newChatBtn.addEventListener("click", resetConversation);
 
   openFolderBtn.addEventListener("click", async () => {
+    if (running) return;
     const picked = await window.nutaan.pickFolder();
     if (!picked) return;
-    settings.projectPath = picked;
-    await window.nutaan.setSettings(settings);
-    projectPathEl.textContent = picked;
-    projectPathEl.title = picked;
-    await refreshTree();
-    resetConversation();
+    await openProject(picked);
   });
 
   settingsBtn.addEventListener("click", () => {
     baseUrlInput.value = settings.baseUrl;
     apiKeyInput.value = settings.apiKey;
+    if ([...modelSelectSettings.options].some((o) => o.value === settings.model)) {
+      modelSelectSettings.value = settings.model;
+    }
     settingsOverlay.hidden = false;
   });
   settingsCancel.addEventListener("click", () => { settingsOverlay.hidden = true; });
@@ -352,27 +719,192 @@
   settingsSave.addEventListener("click", async () => {
     settings.baseUrl = baseUrlInput.value.trim() || DEFAULT_BASE_URL;
     settings.apiKey = apiKeyInput.value.trim();
+    settings.model = modelSelectSettings.value || "auto/coding:free";
     await window.nutaan.setSettings(settings);
     settingsOverlay.hidden = true;
     refreshModels();
   });
-  dashboardLink.addEventListener("click", (e) => {
-    e.preventDefault();
-    const dashboardUrl = settings.baseUrl.replace(/\/v1\/?$/, "");
-    window.nutaan.openExternal(dashboardUrl);
+
+  // ---------- Browser panel ----------
+  function normalizeUrl(value) {
+    const v = value.trim();
+    if (!v) return null;
+    if (/^https?:\/\//i.test(v)) return v;
+    if (/^localhost(:\d+)?/i.test(v) || /^127\.0\.0\.1/.test(v)) return "http://" + v;
+    if (/^[\w-]+(\.[\w-]+)+/.test(v)) return "https://" + v;
+    return "https://www.google.com/search?q=" + encodeURIComponent(v);
+  }
+
+  function navigateBrowser(value) {
+    const url = normalizeUrl(value);
+    if (!url) return;
+    browserView.src = url;
+  }
+
+  browserToggleBtn.addEventListener("click", () => {
+    browserPane.hidden = !browserPane.hidden;
+  });
+  browserClose.addEventListener("click", () => { browserPane.hidden = true; });
+  browserAddress.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") navigateBrowser(browserAddress.value);
+  });
+  browserBack.addEventListener("click", () => { if (browserView.canGoBack()) browserView.goBack(); });
+  browserForward.addEventListener("click", () => { if (browserView.canGoForward()) browserView.goForward(); });
+  browserReload.addEventListener("click", () => browserView.reload());
+  browserView.addEventListener("did-navigate", (e) => { browserAddress.value = e.url; });
+  browserView.addEventListener("did-navigate-in-page", (e) => { browserAddress.value = e.url; });
+
+  function setBrowserSize(mode) {
+    browserViewport.classList.remove("device", "device-mobile", "device-tablet");
+    [sizeMobile, sizeTablet, sizeDesktop].forEach((b) => b.classList.remove("active"));
+    if (mode === "mobile") {
+      browserViewport.classList.add("device", "device-mobile");
+      sizeMobile.classList.add("active");
+    } else if (mode === "tablet") {
+      browserViewport.classList.add("device", "device-tablet");
+      sizeTablet.classList.add("active");
+    } else {
+      sizeDesktop.classList.add("active");
+    }
+  }
+  sizeMobile.addEventListener("click", () => setBrowserSize("mobile"));
+  sizeTablet.addEventListener("click", () => setBrowserSize("tablet"));
+  sizeDesktop.addEventListener("click", () => setBrowserSize("desktop"));
+
+  window.nutaan.onAgentEvent("agent:browser-action", async (req) => {
+    browserPane.hidden = false;
+    try {
+      if (req.action === "navigate") {
+        const url = normalizeUrl(req.url) || req.url;
+        await new Promise((resolve) => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            browserView.removeEventListener("did-finish-load", finish);
+            browserView.removeEventListener("did-fail-load", finish);
+            resolve();
+          };
+          browserView.addEventListener("did-finish-load", finish);
+          browserView.addEventListener("did-fail-load", finish);
+          browserView.src = url;
+          setTimeout(finish, 10000);
+        });
+        const finalUrl = browserView.getURL ? browserView.getURL() : url;
+        browserAddress.value = finalUrl;
+        window.nutaan.respondToBrowserAction(req.id, { ok: true, url: finalUrl, title: browserView.getTitle ? browserView.getTitle() : "" });
+      } else if (req.action === "read") {
+        const text = await browserView.executeJavaScript(
+          "document.body ? document.body.innerText.slice(0, 5000) : ''"
+        );
+        window.nutaan.respondToBrowserAction(req.id, {
+          ok: true,
+          url: browserView.getURL ? browserView.getURL() : "",
+          text,
+        });
+      } else if (req.action === "click") {
+        const result = await browserView.executeJavaScript(`
+          (function() {
+            var el = document.querySelector(${JSON.stringify(req.selector)});
+            if (!el) return { ok: false, error: "No element matches selector" };
+            el.scrollIntoView({ block: "center" });
+            el.click();
+            return { ok: true };
+          })()
+        `);
+        window.nutaan.respondToBrowserAction(req.id, result);
+      } else if (req.action === "type") {
+        const result = await browserView.executeJavaScript(`
+          (function() {
+            var el = document.querySelector(${JSON.stringify(req.selector)});
+            if (!el) return { ok: false, error: "No element matches selector" };
+            el.focus();
+            var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value") ||
+                         Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value");
+            if (setter && setter.set) setter.set.call(el, ${JSON.stringify(req.text)});
+            else el.value = ${JSON.stringify(req.text)};
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            ${req.submit ? 'if (el.form) { if (el.form.requestSubmit) el.form.requestSubmit(); else el.form.submit(); }' : ""}
+            return { ok: true };
+          })()
+        `);
+        window.nutaan.respondToBrowserAction(req.id, result);
+      } else if (req.action === "scroll") {
+        const dy = req.direction === "up" ? -(req.amount || 600) : (req.amount || 600);
+        await browserView.executeJavaScript(`window.scrollBy(0, ${dy})`);
+        window.nutaan.respondToBrowserAction(req.id, { ok: true });
+      } else if (req.action === "screenshot") {
+        if (browserView.isLoading && browserView.isLoading()) {
+          await new Promise((resolve) => {
+            let settled = false;
+            const finish = () => {
+              if (settled) return;
+              settled = true;
+              browserView.removeEventListener("did-stop-loading", finish);
+              resolve();
+            };
+            browserView.addEventListener("did-stop-loading", finish);
+            setTimeout(finish, 8000);
+          });
+        }
+        const image = await browserView.capturePage();
+        window.nutaan.respondToBrowserAction(req.id, {
+          ok: true,
+          url: browserView.getURL ? browserView.getURL() : "",
+          imageDataUrl: image.toDataURL(),
+        });
+      } else if (req.action === "resize") {
+        setBrowserSize(req.size === "mobile" || req.size === "tablet" ? req.size : "desktop");
+        window.nutaan.respondToBrowserAction(req.id, { ok: true, size: req.size });
+      } else if (req.action === "execute") {
+        const wrapped = `
+          (async () => {
+            try {
+              ${req.code}
+            } catch (__nutaanErr) {
+              return { __nutaanError: String((__nutaanErr && __nutaanErr.message) || __nutaanErr) };
+            }
+          })()
+        `;
+        const raw = await browserView.executeJavaScript(wrapped);
+        if (raw && typeof raw === "object" && "__nutaanError" in raw) {
+          window.nutaan.respondToBrowserAction(req.id, { ok: false, error: raw.__nutaanError });
+        } else {
+          window.nutaan.respondToBrowserAction(req.id, { ok: true, value: raw === undefined ? null : raw });
+        }
+      } else {
+        window.nutaan.respondToBrowserAction(req.id, { ok: false, error: "Unknown browser action" });
+      }
+    } catch (err) {
+      window.nutaan.respondToBrowserAction(req.id, { ok: false, error: err.message });
+    }
   });
 
   // ---------- Init ----------
   (async function init() {
     const saved = await window.nutaan.getSettings();
     settings = { ...settings, ...saved };
-    if (settings.projectPath) {
-      projectPathEl.textContent = settings.projectPath;
-      projectPathEl.title = settings.projectPath;
-      await refreshTree();
+    renderAutoApproveBtn();
+
+    if (Array.isArray(saved.projects) && saved.projects.length) {
+      projects = saved.projects.map((p) => ({ path: p.path, messages: p.messages || [] }));
+    } else if (saved.projectPath) {
+      // migrate from the old single-project shape
+      projects = [{ path: saved.projectPath, messages: [{ role: "system", content: systemPrompt(saved.projectPath) }] }];
     }
-    resetConversation();
-    if (modelSelect) modelSelect.value = settings.model || "auto";
+    activePath = saved.activeProjectPath && projects.some((p) => p.path === saved.activeProjectPath)
+      ? saved.activeProjectPath
+      : (projects[0]?.path || null);
+
+    renderProjectList();
+    if (activePath) {
+      await refreshTree();
+      renderThreadFromMessages(activeProject().messages);
+    } else {
+      updateEmptyHint();
+    }
+    persistProjects();
     await refreshModels();
   })();
 })();

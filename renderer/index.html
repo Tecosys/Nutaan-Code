@@ -15,9 +15,12 @@
       <span>Nutaan Code</span>
     </div>
 
-    <button class="open-folder-btn" id="openFolderBtn">Open Project Folder</button>
-    <div class="project-path" id="projectPath">No project open</div>
+    <button class="open-folder-btn" id="openFolderBtn">+ Open Project</button>
 
+    <div class="project-list" id="projectList"></div>
+
+    <div class="sidebar-divider" id="fileTreeDivider" hidden></div>
+    <div class="project-path" id="projectPath"></div>
     <div class="file-tree" id="fileTree"></div>
 
     <div class="sidebar-footer">
@@ -29,27 +32,48 @@
 
   <main class="workspace">
     <header class="workspace-header">
-      <select id="modelSelect"><option value="auto">auto</option></select>
+      <button class="auto-approve-btn" id="autoApproveBtn" title="When on, file edits and commands run immediately without asking">⚡ Auto-approve: Off</button>
+      <button class="icon-btn" id="browserToggleBtn" title="Toggle browser">🌐</button>
       <button class="icon-btn" id="newChatBtn" title="New chat">＋</button>
     </header>
 
-    <div class="thread-wrap">
-      <div class="thread" id="thread">
-        <div class="empty-state" id="emptyState">
-          <img src="../assets/logo.png" alt="" class="empty-logo" />
-          <h2>Nutaan Code</h2>
-          <div id="emptyHint">Open a project folder to get started.</div>
+    <div class="workspace-body">
+      <div class="chat-pane">
+        <div class="thread-wrap">
+          <div class="thread" id="thread">
+            <div class="empty-state" id="emptyState">
+              <img src="../assets/logo.png" alt="" class="empty-logo" />
+              <h2>Nutaan Code</h2>
+              <div id="emptyHint">Open a project folder to get started.</div>
+            </div>
+          </div>
+        </div>
+
+        <footer class="composer-wrap">
+          <div class="composer">
+            <textarea id="input" placeholder="Ask Nutaan Code to build, fix, or explain something…" rows="1"></textarea>
+            <button class="send-btn" id="sendBtn">Send</button>
+          </div>
+          <div class="hint">Runs entirely on your machine. Files only change with your approval.</div>
+        </footer>
+      </div>
+
+      <div class="browser-pane" id="browserPane" hidden>
+        <div class="browser-bar">
+          <button class="icon-btn small" id="browserBack" title="Back">←</button>
+          <button class="icon-btn small" id="browserForward" title="Forward">→</button>
+          <button class="icon-btn small" id="browserReload" title="Reload">⟳</button>
+          <input type="text" id="browserAddress" placeholder="Enter a URL or localhost:3000…" />
+          <button class="icon-btn small" id="sizeMobile" title="Mobile view">📱</button>
+          <button class="icon-btn small" id="sizeTablet" title="Tablet view">📟</button>
+          <button class="icon-btn small active" id="sizeDesktop" title="Desktop view">🖥️</button>
+          <button class="icon-btn small" id="browserClose" title="Close">✕</button>
+        </div>
+        <div class="browser-viewport" id="browserViewport">
+          <webview id="browserView" src="about:blank" allowpopups></webview>
         </div>
       </div>
     </div>
-
-    <footer class="composer-wrap">
-      <div class="composer">
-        <textarea id="input" placeholder="Ask Nutaan Code to build, fix, or explain something…" rows="1"></textarea>
-        <button class="send-btn" id="sendBtn">Send</button>
-      </div>
-      <div class="hint">Runs entirely on your machine through your local OmniRoute gateway.</div>
-    </footer>
   </main>
 </div>
 
@@ -60,17 +84,22 @@
       <h3>Settings</h3>
     </div>
     <div class="field">
-      <label for="baseUrlInput">OmniRoute Base URL</label>
-      <input type="text" id="baseUrlInput" placeholder="http://localhost:20128/v1" />
+      <label for="modelSelectSettings">Model</label>
+      <select id="modelSelectSettings"><option value="auto/coding:free">auto/coding:free</option></select>
+      <div class="note">Nutaan Code picks and switches between free/fast models automatically. Change this only if you want to pin a specific one.</div>
     </div>
-    <div class="field">
-      <label for="apiKeyInput">API key</label>
-      <input type="password" id="apiKeyInput" placeholder="Paste your OmniRoute API key" autocomplete="off" />
-      <div class="note">
-        Generate one from your local OmniRoute dashboard
-        (<a href="#" id="dashboardLink">localhost:20128</a>). Stored only on this device.
+    <details class="advanced">
+      <summary>Advanced</summary>
+      <div class="field">
+        <label for="baseUrlInput">Server URL</label>
+        <input type="text" id="baseUrlInput" placeholder="http://localhost:20128/v1" />
       </div>
-    </div>
+      <div class="field">
+        <label for="apiKeyInput">API key</label>
+        <input type="password" id="apiKeyInput" placeholder="Auto-configured" autocomplete="off" />
+        <div class="note">Stored only on this device. Only touch this if you're pointing Nutaan Code at a different server.</div>
+      </div>
+    </details>
     <div class="modal-actions">
       <button class="btn-secondary" id="settingsCancel">Cancel</button>
       <button class="btn-primary" id="settingsSave">Save</button>
