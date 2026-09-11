@@ -8,9 +8,9 @@ const { autoUpdater } = require("electron-updater");
 const STORE_PATH = path.join(app.getPath("userData"), "settings.json");
 const COMMAND_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_CHARS = 20_000;
-const MAX_AGENT_ITERATIONS = 25;
+const MAX_AGENT_ITERATIONS = 50;
 const BROWSER_ACTION_TIMEOUT_MS = 20_000;
-const MAX_RESPONSE_TOKENS = 8192;
+const MAX_RESPONSE_TOKENS = 16_000;
 const STREAM_IDLE_TIMEOUT_MS = 45_000;
 const COMPACT_THRESHOLD_TOKENS = 60_000;
 const KEEP_RECENT_MESSAGES = 10;
@@ -126,7 +126,10 @@ ipcMain.handle("app:check-for-updates", async () => {
     await autoUpdater.checkForUpdates();
     return { ok: true };
   } catch (err) {
-    return { ok: false, message: err.message };
+    // electron-updater's error message can embed the raw HTTP response (headers, cookies, body) of a
+    // failed feed request — never surface that verbatim in the UI. Keep just the first line/sentence.
+    const short = String(err.message || "Update check failed").split("\n")[0].slice(0, 160);
+    return { ok: false, message: short };
   }
 });
 
@@ -269,6 +272,83 @@ async function readSkillBody(root, id) {
     }
   }
   throw new Error(`No skill found with id "${id}"`);
+}
+
+// ---------- Memory (long-term, shared across every project) ----------
+// Lives outside any project root at ~/.nutaan/memory/ — that's the whole point: a fact learned
+// while working in one codebase should be available the next time you open a different one.
+// Each entry is a markdown file with the same "---\nkey: value\n---\nbody" frontmatter as skills.
+
+const MEMORY_DIR = path.join(os.homedir(), ".nutaan", "memory");
+const MEMORY_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/;
+
+function memoryPath(id) {
+  if (!MEMORY_ID_PATTERN.test(id || "")) throw new Error(`Invalid memory id "${id}" — use letters, numbers, - and _ only`);
+  return resolveSafe(MEMORY_DIR, id + ".md");
+}
+
+async function listMemoryEntries() {
+  let files;
+  try {
+    files = await fs.readdir(MEMORY_DIR, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const f of files) {
+    if (!f.isFile() || !f.name.endsWith(".md")) continue;
+    const id = f.name.slice(0, -3);
+    try {
+      const raw = await fs.readFile(path.join(MEMORY_DIR, f.name), "utf8");
+      const { name, description, body } = parseSkillFile(raw);
+      const typeMatch = raw.match(/^---\n[\s\S]*?\btype:\s*(\S+)/);
+      out.push({ id, name: name || id, type: typeMatch ? typeMatch[1] : "note", description: description || body.slice(0, 80) });
+    } catch {
+      // skip unreadable file
+    }
+  }
+  return out;
+}
+
+async function buildMemoryContext() {
+  const entries = await listMemoryEntries();
+  if (entries.length === 0) return null;
+  const lines = entries.map((e) => `- **${e.id}** (${e.type}): ${e.description}`);
+  return (
+    "You have persistent memory shared across every project on this machine, stored at ~/.nutaan/memory/ " +
+    "(not scoped to the current project folder). Existing entries:\n" +
+    lines.join("\n") +
+    "\n\nUse memory_read to load one in full when it's relevant to the current task. Use memory_write to save " +
+    "durable facts worth remembering next time — user/project preferences, corrections about how to approach " +
+    "this codebase or this person's workflow, cross-project conventions — not routine task details or anything " +
+    "already obvious from the code itself. Update an existing entry (same id) instead of creating a near-duplicate."
+  );
+}
+
+async function webFetch(url) {
+  if (!/^https?:\/\//i.test(url)) throw new Error("web_fetch needs a full http(s):// URL");
+  const res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(15_000) });
+  const contentType = res.headers.get("content-type") || "";
+  const raw = await res.text();
+  if (!contentType.includes("html")) {
+    return { url: res.url, content: raw.slice(0, MAX_OUTPUT_CHARS) };
+  }
+  const titleMatch = raw.match(/<title[^>]*>([^<]*)<\/title>/i);
+  const text = raw
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n\s*\n+/g, "\n\n")
+    .trim();
+  return { url: res.url, title: titleMatch ? titleMatch[1].trim() : null, content: text.slice(0, MAX_OUTPUT_CHARS) };
 }
 
 function runCommand(root, command, signal) {
@@ -485,12 +565,61 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "web_fetch",
+      description: "Fetch a URL (e.g. a docs page the user gave you) and return its readable text content. Use this whenever the user hands you a link, or you need the actual content of a page you found — don't guess at what a URL contains.",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string" } },
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "run_command",
       description: "Run a shell command in the project root (60s timeout). Requires user approval.",
       parameters: {
         type: "object",
         properties: { command: { type: "string" } },
         required: ["command"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory_list",
+      description: "List your persistent memory entries (shared across every project, not just this one) with their id, type, and one-line description. A summary of these is already given to you at the start of each conversation — call this only if you need the full up-to-date list, e.g. after writing a new one.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory_read",
+      description: "Read the full content of one memory entry by id (from memory_list or the memory summary you were given).",
+      parameters: {
+        type: "object",
+        properties: { id: { type: "string" } },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory_write",
+      description: "Create or overwrite one persistent memory entry, visible in every project from now on. Requires user approval. Use short kebab-case ids (e.g. 'user-prefers-typescript', 'feedback-no-inline-comments'). Only save durable, cross-project-worthy facts — not routine details of the current task.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Short kebab-case identifier, e.g. 'user-role' or 'feedback-testing-style'" },
+          type: { type: "string", enum: ["user", "feedback", "project", "reference"], description: "user: who they are/how they work. feedback: corrections or confirmed approaches. project: facts about ongoing work. reference: pointers to external systems." },
+          description: { type: "string", description: "One-line summary shown in the memory index" },
+          content: { type: "string", description: "The memory body in markdown" },
+        },
+        required: ["id", "type", "description", "content"],
       },
     },
   },
@@ -511,7 +640,10 @@ const SAFE_TOOLS = new Set([
   "browser_scroll",
   "browser_screenshot",
   "browser_resize",
-  // browser_execute_script is deliberately NOT in this list — it requires approval.
+  "memory_list",
+  "memory_read",
+  "web_fetch",
+  // browser_execute_script and memory_write are deliberately NOT in this list — they require approval.
 ]);
 const SEARCH_SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "out"]);
 const MAX_SEARCH_MATCHES = 200;
@@ -647,8 +779,20 @@ async function executeTool(sender, root, name, args, callId, signal) {
       await fs.writeFile(target, content.replace(args.old_string, args.new_string), "utf8");
       return { ok: true };
     }
+    case "web_fetch":
+      return webFetch(args.url);
     case "run_command":
       return runCommand(root, args.command, signal);
+    case "memory_list":
+      return { entries: await listMemoryEntries() };
+    case "memory_read":
+      return { content: await fs.readFile(memoryPath(args.id), "utf8") };
+    case "memory_write": {
+      await fs.mkdir(MEMORY_DIR, { recursive: true });
+      const frontmatter = `---\nname: ${args.id}\ntype: ${args.type}\ndescription: ${args.description}\n---\n\n`;
+      await fs.writeFile(memoryPath(args.id), frontmatter + (args.content || "").trim() + "\n", "utf8");
+      return { ok: true };
+    }
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -660,6 +804,7 @@ function permissionPreview(name, args) {
     return { title: `Edit ${args.path}`, diff: { oldString: args.old_string, newString: args.new_string } };
   if (name === "run_command") return { title: "Run command", detail: args.command };
   if (name === "browser_execute_script") return { title: "Run script in browser panel", detail: args.code };
+  if (name === "memory_write") return { title: `Save memory: ${args.id}`, detail: args.content };
   return { title: name, detail: JSON.stringify(args) };
 }
 
@@ -739,6 +884,10 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
       tool_choice: "auto",
       max_tokens: MAX_RESPONSE_TOKENS,
       stream: true,
+      // OpenRouter-specific: lets the model pull in live web results on its own when useful,
+      // on top of the explicit web_fetch tool for when the user hands us a specific URL.
+      // Ignored by non-OpenRouter OpenAI-compatible servers.
+      ...(baseUrl.includes("openrouter.ai") ? { plugins: [{ id: "web" }] } : {}),
     }),
   });
 
@@ -826,6 +975,9 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, messages, au
   agentAbort = controller;
   let chatMessages = [...messages];
   const aborted = () => controller.signal.aborted;
+  // Read fresh each turn (not persisted into chatMessages) so memory_write calls take effect
+  // immediately without bloating the saved conversation with a repeated block every turn.
+  const memoryContext = await buildMemoryContext().catch(() => null);
 
   for (let i = 0; i < MAX_AGENT_ITERATIONS; i++) {
     if (aborted()) {
@@ -839,9 +991,13 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, messages, au
       return;
     }
 
+    const requestMessages = memoryContext
+      ? [chatMessages[0], { role: "system", content: memoryContext }, ...chatMessages.slice(1)]
+      : chatMessages;
+
     let streamResult;
     try {
-      streamResult = await streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages });
+      streamResult = await streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages: requestMessages });
     } catch (err) {
       if (aborted()) {
         sender.send("agent:done", { aborted: true, messages: chatMessages });

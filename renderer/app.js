@@ -751,7 +751,7 @@
       if (!res.ok) {
         checkUpdatesBtn.textContent = "Check for updates";
         checkUpdatesBtn.disabled = false;
-        appVersionText.textContent = res.message || "Could not check for updates.";
+        appVersionText.textContent = String(res.message || "Could not check for updates.").slice(0, 160);
       }
     });
   }
