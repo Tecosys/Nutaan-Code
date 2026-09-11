@@ -2,8 +2,8 @@
   <img src="assets/logo.png" width="72" alt="Nutaan Code logo" />
 </p>
 
-<h1 align="center">Nutaan Code</h1>
-<p align="center">A personal AI coding agent desktop app, built in-house at Tecosys.</p>
+<h1 align="center">Nutaan Code (Private)</h1>
+<p align="center">A personal AI coding agent desktop app, built in-house at Tecosys for nutaan.com users.</p>
 
 Reads your project's files, proposes edits, runs commands, generates real image assets, and can drive a built-in browser panel to actually test what it builds. Every file write, edit, and shell command stops for your approval first (or runs immediately if you turn on Auto-approve) — same permission model as Claude Code.
 
@@ -15,20 +15,16 @@ Reads your project's files, proposes edits, runs commands, generates real image 
 
 ## Install — no terminal, no dev setup
 
-1. Go to the [Releases page](https://github.com/Tecosys/Nutaan-Code/releases) and download the latest `Nutaan-Code-Setup-x.x.x.exe`.
+1. Go to your Releases page and download the latest `Nutaan-Code-Setup-x.x.x.exe`.
 2. Run it — it installs like any Windows app (Start Menu + desktop shortcut).
 
    > **Windows shows a blue "Windows protected your PC" screen?** That's expected — the installer isn't code-signed yet (that costs a paid certificate), so Windows doesn't recognize the publisher. It's not a virus or a broken download. Click **More info**, then **Run anyway**. This one-time warning goes away for that file once you've run it.
 3. Launch Nutaan Code. On first run it opens **⚙ Settings** for you automatically:
-   - Click **Get a free API key →** — this opens OpenRouter's key page in Nutaan Code's own built-in browser panel, so you never leave the app. Sign in (Google/GitHub/email) and create a key.
-   - Paste the key into the **API key** field and hit **Save**. A free (`:free`) model is picked by default — no card needed.
+   - Under **Advanced**, set the **Server URL** to your OpenAI-compatible endpoint.
+   - Paste your **API key** into the **API key** field and hit **Save**. The Model dropdown populates from your server's model list once connected.
 4. Click **+ Open Project**, pick a folder, and start chatting.
 
-Want a lot more free models? OpenRouter is the easy default, but **OmniRoute** ships bundled with the app (nothing to download separately) and pools ~1.5B free tokens/month across 42 providers — Settings offers to switch you over with one click, key generated automatically.
-
-Prefer NVIDIA's models? **[NVIDIA NIM](https://build.nvidia.com)** gives you 3M tokens free per month across a wide model catalog, no setup — grab a key from their dashboard, paste it into the API key field, and set the Server URL (under Advanced) to `https://integrate.api.nvidia.com/v1`.
-
-Want to use a specific paid model later (e.g. an Anthropic Claude model)? Add credit on your provider and pick it from the Model dropdown — no code changes needed, since Nutaan Code speaks the standard OpenAI-compatible API any of these providers expose.
+Nutaan Code speaks the standard OpenAI-compatible `/v1/chat/completions` API, so any server that implements it works — no code changes needed to switch models or providers, just update the Server URL and API key in Settings.
 
 ## Features
 
@@ -48,8 +44,8 @@ Want to use a specific paid model later (e.g. an Anthropic Claude model)? Add cr
 Bug reports, feature ideas, and pull requests are all welcome. If you're picking up something non-trivial, opening an issue first to align on approach is appreciated but not required — small fixes can just be a PR.
 
 ```bash
-git clone https://github.com/Tecosys/Nutaan-Code.git
-cd Nutaan-Code
+git clone <this-repo-url>
+cd nutaan-code-private
 npm install
 npm start
 ```
@@ -75,10 +71,10 @@ Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which builds th
 
 - `main.js` — Electron main process: owns the file system and shell access, the tool-calling agent loop (streamed via SSE) against the configured OpenAI-compatible `/v1/chat/completions` endpoint, the permission gate, image generation, memory, and auto-update.
 - `preload.js` — the only bridge between the renderer (UI) and the main process, via `contextBridge`.
-- `renderer/` — the UI: project sidebar, file tree, chat thread, tool-call cards, permission prompts, the settings modal, the Code tab, and the embedded browser panel (also used to fetch an OpenRouter key without leaving the app).
+- `renderer/` — the UI: project sidebar, file tree, chat thread, tool-call cards, permission prompts, the settings modal, the Code tab, and the embedded browser panel.
 - `skills/` — built-in skill packs.
 
-Every install uses **its own** API key, entered locally — nothing is shared between installs, and nothing leaves the machine except through whichever endpoint (OpenRouter by default) each person configures.
+Every install uses **its own** API key and Server URL, entered locally — nothing is shared between installs, and nothing leaves the machine except through whichever endpoint each person configures in Settings.
 
 ---
 

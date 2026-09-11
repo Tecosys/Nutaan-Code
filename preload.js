@@ -20,19 +20,6 @@ contextBridge.exposeInMainWorld("nutaan", {
     return () => ipcRenderer.removeListener("app:update-status", listener);
   },
 
-  setupOmniroute: (existingApiKey) => ipcRenderer.send("omniroute:setup", { existingApiKey }),
-  reconnectOmniroute: (existingApiKey) => ipcRenderer.invoke("omniroute:reconnect", { existingApiKey }),
-  onOmnirouteSetupLog: (callback) => {
-    const listener = (_e, line) => callback(line);
-    ipcRenderer.on("omniroute:setup-log", listener);
-    return () => ipcRenderer.removeListener("omniroute:setup-log", listener);
-  },
-  onOmnirouteSetupDone: (callback) => {
-    const listener = (_e, result) => callback(result);
-    ipcRenderer.on("omniroute:setup-done", listener);
-    return () => ipcRenderer.removeListener("omniroute:setup-done", listener);
-  },
-
   sendAgentMessage: (payload) => ipcRenderer.send("agent:send", payload),
   stopAgent: () => ipcRenderer.send("agent:stop"),
   respondToPermission: (id, approved) => ipcRenderer.send("agent:permission-response", { id, approved }),

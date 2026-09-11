@@ -1,7 +1,6 @@
 (function () {
-  const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
-  const OPENROUTER_KEYS_URL = "https://openrouter.ai/keys";
-  const DEFAULT_MODEL = "nex-agi/nex-n2.5-mini:free";
+  const DEFAULT_BASE_URL = "";
+  const DEFAULT_MODEL = "";
 
   const el = (id) => document.getElementById(id);
   const thread = el("thread");
@@ -542,32 +541,8 @@
 
   async function refreshModels() {
     let res = await window.nutaan.listModels(settings.baseUrl, settings.apiKey);
-    if (!res.ok && /ECONNREFUSED/.test(res.error || "") && /localhost|127\.0\.0\.1/i.test(settings.baseUrl) && settings.baseUrl !== DEFAULT_BASE_URL) {
-      // Nothing is listening at this local address — it's an old default left over from before this
-      // app used OpenRouter (upgrading preserves settings, it doesn't reset them), never a working
-      // setup we'd be destroying. Self-heal instead of leaving the user stuck on a dead config forever.
-      const oldBaseUrl = settings.baseUrl;
-      settings.baseUrl = DEFAULT_BASE_URL;
-      await window.nutaan.setSettings(settings);
-      res = await window.nutaan.listModels(settings.baseUrl, settings.apiKey);
-      if (res.ok) {
-        appendBubble("error", `Your Server URL was still set to ${oldBaseUrl} (nothing was running there) — leftover from before this app used OpenRouter by default. Reset it to ${DEFAULT_BASE_URL} automatically, no action needed.`);
-      }
-    }
-    if (!res.ok && /ECONNREFUSED/.test(res.error || "") && settings.baseUrl === OMNIROUTE_URL && settings.apiKey) {
-      // OmniRoute runs as a background process the user never manages directly — if it's not
-      // listening (e.g. the machine rebooted since it was last started), just restart it and
-      // reuse the same key instead of making them re-open Settings and click "set up" again.
-      setStatus(null, "Reconnecting to OmniRoute…");
-      const restarted = await window.nutaan.reconnectOmniroute(settings.apiKey);
-      if (restarted.ok && restarted.apiKey) {
-        settings.apiKey = restarted.apiKey;
-        await window.nutaan.setSettings(settings);
-        res = await window.nutaan.listModels(settings.baseUrl, settings.apiKey);
-      }
-    }
     if (!res.ok) {
-      if (!settings.apiKey) {
+      if (!settings.apiKey || !settings.baseUrl) {
         setStatus(false, "Not set up yet");
       } else {
         const reason = String(res.error || "unknown error").slice(0, 200);
@@ -576,7 +551,7 @@
         appendBubble(
           "error",
           isLocalRefused
-            ? `Can't reach the model server: ${reason}\n\nNutaan Code is trying to reach ${settings.baseUrl}, a local address, but nothing is running there. Open ⚙ Settings → Advanced and change the Server URL to ${DEFAULT_BASE_URL} (or start your local server if you meant to use one).`
+            ? `Can't reach the model server: ${reason}\n\nNutaan Code is trying to reach ${settings.baseUrl}, a local address, but nothing is running there. Open ⚙ Settings → Advanced and check the Server URL (or start your local server if you meant to use one).`
             : `Can't reach the model server: ${reason}\n\nThis means your computer/network can't reach the server URL in Settings — it's not about whether your API key is right or wrong. If you're on a work/school network, it may be blocking it; try a different network (e.g. your phone's hotspot) to confirm.`
         );
       }
@@ -621,7 +596,7 @@
   }
 
   function updateModelBadge() {
-    if (modelBadge) modelBadge.textContent = settings.model || DEFAULT_MODEL;
+    if (modelBadge) modelBadge.textContent = settings.model || "No model set";
   }
 
   async function selectModel(id) {
@@ -1182,11 +1157,11 @@
       return;
     }
 
-    // A model id left over from a different provider (e.g. an OmniRoute-style "auto/gpt5.1" after
-    // the Server URL self-healed back to OpenRouter) isn't in the live catalog at all — that alone
-    // is a reliable signal the model is wrong for this baseUrl, independent of whatever error text
-    // the server happens to return for a request it can't fulfill (seen in practice as anything
-    // from a plain 404 to an opaque "Stream ended before producing a non-ping SSE event").
+    // A model id left over from a previous Server URL isn't in the live catalog at all — that
+    // alone is a reliable signal the model is wrong for this baseUrl, independent of whatever
+    // error text the server happens to return for a request it can't fulfill (seen in practice
+    // as anything from a plain 404 to an opaque "Stream ended before producing a non-ping SSE
+    // event").
     const looksLikeUnknownModel = settings.model && availableModels.length > 0 && !availableModels.includes(settings.model);
     const looksLikeModelAuthIssue =
       looksLikeUnknownModel ||
@@ -1258,122 +1233,6 @@
     settingsOverlay.hidden = true;
     refreshModels();
   });
-  const getKeyLink = el("getKeyLink");
-  if (getKeyLink) {
-    getKeyLink.addEventListener("click", (e) => {
-      e.preventDefault();
-      browserPane.hidden = false;
-      navigateBrowser(OPENROUTER_KEYS_URL);
-    });
-  }
-  const OMNIROUTE_URL = "http://localhost:20128/v1";
-  const omnirouteSwitchLink = el("omnirouteSwitchLink");
-  const omnirouteSteps = el("omnirouteSteps");
-  const omnirouteSetupBtn = el("omnirouteSetupBtn");
-  const omnirouteLog = el("omnirouteLog");
-  const omnirouteIntro = el("omnirouteIntro");
-  const omnirouteAfter = el("omnirouteAfter");
-  const omnirouteDashboardLink = el("omnirouteDashboardLink");
-  const advancedDetails = el("advancedDetails");
-  if (omnirouteSwitchLink) {
-    omnirouteSwitchLink.addEventListener("click", (e) => {
-      e.preventDefault();
-      omnirouteSteps.hidden = !omnirouteSteps.hidden;
-    });
-  }
-  if (omnirouteSetupBtn) {
-    omnirouteSetupBtn.addEventListener("click", () => {
-      omnirouteSetupBtn.disabled = true;
-      omnirouteSetupBtn.textContent = "Starting…";
-      omnirouteIntro.textContent = "Starting OmniRoute — it ships with Nutaan Code, so this only takes a few seconds.";
-      omnirouteLog.hidden = false;
-      omnirouteLog.textContent = "";
-      const existingApiKey = settings.baseUrl === OMNIROUTE_URL ? settings.apiKey : null;
-      window.nutaan.setupOmniroute(existingApiKey);
-    });
-  }
-  window.nutaan.onOmnirouteSetupLog((line) => {
-    omnirouteLog.textContent += line;
-    omnirouteLog.scrollTop = omnirouteLog.scrollHeight;
-  });
-  window.nutaan.onOmnirouteSetupDone(async (result) => {
-    omnirouteSetupBtn.disabled = false;
-    if (result.ok) {
-      omnirouteSetupBtn.hidden = true;
-      baseUrlInput.value = OMNIROUTE_URL;
-      if (advancedDetails) advancedDetails.open = true;
-
-      if (result.apiKey) {
-        settings.baseUrl = OMNIROUTE_URL;
-        settings.apiKey = result.apiKey;
-        apiKeyInput.value = result.apiKey;
-        await window.nutaan.setSettings(settings);
-        omnirouteIntro.textContent = "All set — OmniRoute is running and connected. Nothing else to do.";
-        omnirouteAfter.hidden = true;
-        refreshModels();
-      } else {
-        omnirouteIntro.textContent = result.alreadyRunning
-          ? "OmniRoute is already running on this machine."
-          : "OmniRoute is installed and running — just need an API key for it.";
-        omnirouteAfter.hidden = false;
-      }
-    } else {
-      omnirouteSetupBtn.textContent = "Try again";
-      omnirouteIntro.textContent = `Setup failed: ${result.error} `;
-      const link = document.createElement("a");
-      link.href = "#";
-      link.textContent = "Install Node.js yourself instead →";
-      link.addEventListener("click", (e) => {
-        e.preventDefault();
-        browserPane.hidden = false;
-        navigateBrowser("https://nodejs.org");
-      });
-      omnirouteIntro.appendChild(link);
-    }
-  });
-  if (omnirouteDashboardLink) {
-    omnirouteDashboardLink.addEventListener("click", (e) => {
-      e.preventDefault();
-      browserPane.hidden = false;
-      navigateBrowser("http://localhost:20128");
-    });
-  }
-
-  const PROVIDER_URLS = {
-    openai: "https://api.openai.com/v1",
-    nvidia: "https://integrate.api.nvidia.com/v1",
-    together: "https://api.together.xyz/v1",
-  };
-  document.querySelectorAll(".chip[data-provider]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      baseUrlInput.value = PROVIDER_URLS[btn.dataset.provider];
-      if (advancedDetails) advancedDetails.open = true;
-      apiKeyInput.focus();
-    });
-  });
-  const azureChip = el("azureChip");
-  const azureFields = el("azureFields");
-  const azureResource = el("azureResource");
-  const azureDeployment = el("azureDeployment");
-  const azureApplyBtn = el("azureApplyBtn");
-  if (azureChip) {
-    azureChip.addEventListener("click", () => {
-      azureFields.hidden = !azureFields.hidden;
-    });
-  }
-  if (azureApplyBtn) {
-    azureApplyBtn.addEventListener("click", () => {
-      const resource = azureResource.value.trim();
-      const deployment = azureDeployment.value.trim();
-      if (!resource || !deployment) {
-        azureResource.focus();
-        return;
-      }
-      baseUrlInput.value = `https://${resource}.openai.azure.com/openai/deployments/${deployment}`;
-      if (advancedDetails) advancedDetails.open = true;
-      apiKeyInput.focus();
-    });
-  }
   statusText.addEventListener("click", () => {
     if (!settings.apiKey) settingsBtn.click();
     else if (statusText.title) appendBubble("error", "Can't reach the model server: " + statusText.title);

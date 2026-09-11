@@ -18,24 +18,6 @@ jobs:
         with:
           node-version: 24
 
-      # node-gyp (used to rebuild native modules like @parcel/watcher, a transitive dep of the
-      # bundled omniroute dashboard) shells out to Python to generate build files, then needs a
-      # Visual Studio C++ toolchain to actually compile.
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      # microsoft/setup-msbuild + GYP_MSVS_VERSION alone did NOT fix this (verified: same
-      # "Could not find any Visual Studio installation to use" on the next run) — node-gyp 9.x
-      # detects VS via vswhere, querying specifically for the VC.Tools.x86.x64 component, and
-      # apparently windows-latest's preinstalled VS doesn't reliably expose that component to it.
-      # Installing the workload explicitly removes the guesswork instead of hoping the base image
-      # has it, and msvc-dev-cmd then puts cl.exe/link.exe/INCLUDE/LIB on PATH for node-gyp to use.
-      - name: Ensure VC++ Build Tools workload
-        run: choco install visualstudio2022-workload-vctools --no-progress -y
-
-      - uses: ilammy/msvc-dev-cmd@v1
-
       - run: npm install
 
       - run: npx electron-builder --win --publish always

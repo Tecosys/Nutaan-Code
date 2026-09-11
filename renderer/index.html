@@ -114,53 +114,22 @@
       <img src="../assets/logo.png" alt="" />
       <h3>Settings</h3>
     </div>
-    <div class="omniroute-callout omniroute-primary" id="omnirouteCallout">
-      <div class="omniroute-primary-title">⚡ OmniRoute <span class="recommended-badge">Recommended</span></div>
-      <div class="note">~1.5B free tokens/mo pooled across 42 providers — far more headroom than any single provider's free tier. Runs locally alongside Nutaan Code, nothing to install by hand.</div>
-      <a href="#" id="omnirouteSwitchLink" hidden>Set up OmniRoute →</a>
-      <div class="omniroute-steps" id="omnirouteSteps">
-        <button class="btn-primary" id="omnirouteSetupBtn" type="button">Set it up for me</button>
-        <div class="note" id="omnirouteIntro"></div>
-        <pre class="omniroute-log" id="omnirouteLog" hidden></pre>
-        <div class="note" id="omnirouteAfter" hidden>
-          Now open <a href="#" id="omnirouteDashboardLink">localhost:20128</a> (opens here), sign in, add a provider or two, and generate an API key. Server URL below is set for you — paste that key above and hit Save.
-        </div>
-      </div>
-    </div>
-    <details class="advanced" id="openrouterDetails">
-      <summary>Or use OpenRouter directly</summary>
-      <div class="field">
-        <label for="apiKeyInput">API key</label>
-        <input type="password" id="apiKeyInput" placeholder="Paste your OpenRouter API key" autocomplete="off" />
-        <div class="note">Stored only on this device. <a href="#" id="getKeyLink">Get a free API key →</a> (opens right here in the app — no account needed to browse, free models don't need a card). OpenRouter's free tier is shared per-key across all its free models and can rate-limit under heavy use — OmniRoute above pools far more headroom.</div>
-      </div>
-      <div class="field">
-        <label for="modelSelectSettings">Model</label>
-        <select id="modelSelectSettings"><option value="nex-agi/nex-n2.5-mini:free">nex-agi/nex-n2.5-mini:free</option></select>
-        <div class="note">Free models are marked <code>:free</code>. Pick a paid one (e.g. an Anthropic Claude model) for higher quality once you've added credit on OpenRouter.</div>
-      </div>
-    </details>
     <div class="field">
-      <label>Or connect a provider directly</label>
-      <div class="provider-chips">
-        <button type="button" class="chip" data-provider="openai">OpenAI</button>
-        <button type="button" class="chip" data-provider="nvidia">NVIDIA NIM</button>
-        <button type="button" class="chip" data-provider="together">Together AI</button>
-        <button type="button" class="chip" id="azureChip">Azure OpenAI</button>
-      </div>
-      <div class="azure-fields" id="azureFields" hidden>
-        <input type="text" id="azureResource" placeholder="Resource name (the xxx in xxx.openai.azure.com)" />
-        <input type="text" id="azureDeployment" placeholder="Deployment name" />
-        <button type="button" class="btn-secondary" id="azureApplyBtn">Use this</button>
-      </div>
-      <div class="note">Each just needs an API key from that provider's own dashboard, pasted above — Server URL below is set for you.</div>
+      <label for="apiKeyInput">API key</label>
+      <input type="password" id="apiKeyInput" placeholder="Paste your API key" autocomplete="off" />
+      <div class="note">Stored only on this device.</div>
+    </div>
+    <div class="field">
+      <label for="modelSelectSettings">Model</label>
+      <select id="modelSelectSettings"></select>
+      <div class="note">Loaded from your server's model list once connected.</div>
     </div>
     <details class="advanced" id="advancedDetails">
       <summary>Advanced</summary>
       <div class="field">
         <label for="baseUrlInput">Server URL</label>
-        <input type="text" id="baseUrlInput" placeholder="https://openrouter.ai/api/v1" />
-        <div class="note">Any OpenAI-compatible endpoint works — OpenRouter by default, or point this at OmniRoute (<code>http://localhost:20128/v1</code>) or anything else.</div>
+        <input type="text" id="baseUrlInput" placeholder="https://api.example.com/v1" />
+        <div class="note">Any OpenAI-compatible endpoint works — point this at your server.</div>
       </div>
       <div class="field">
         <label for="imageModelInput">Image model override (optional)</label>

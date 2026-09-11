@@ -12,17 +12,13 @@
     "release": "electron-builder --win --publish always"
   },
   "dependencies": {
-    "electron-updater": "^6.3.9",
-    "omniroute": "^3.8.50"
+    "electron-updater": "^6.3.9"
   },
   "devDependencies": {
     "electron": "^44.3.0",
     "electron-builder": "^25.1.8",
     "jimp": "^1.6.1",
     "png-to-ico": "^3.0.2"
-  },
-  "overrides": {
-    "node-gyp": "^12.1.0"
   },
   "build": {
     "appId": "com.tecosys.nutaancode",
@@ -38,9 +34,6 @@
       "skills/**/*",
       "assets/**/*",
       "package.json",
-      "node_modules/**/*"
-    ],
-    "asarUnpack": [
       "node_modules/**/*"
     ],
     "win": {

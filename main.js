@@ -2,8 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
 const path = require("node:path");
 const os = require("node:os");
 const fs = require("node:fs/promises");
-const { exec, spawn } = require("node:child_process");
-const crypto = require("node:crypto");
+const { exec } = require("node:child_process");
 const { autoUpdater } = require("electron-updater");
 
 const STORE_PATH = path.join(app.getPath("userData"), "settings.json");
@@ -219,240 +218,9 @@ ipcMain.handle("ai:list-models", async (_e, { baseUrl, apiKey }) => {
     return { ok: true, models, imageModels };
   } catch (err) {
     // err.cause often carries the real reason for a network-level failure (DNS, proxy, TLS) that
-    // err.message alone doesn't show — e.g. a corporate network blocking openrouter.ai outright.
+    // err.message alone doesn't show — e.g. a corporate network blocking the server outright.
     const causeCode = err.cause?.code;
     return { ok: false, error: causeCode ? `${err.message} (${causeCode})` : err.message };
-  }
-});
-
-let omnirouteSetupRunning = false;
-
-function omnirouteServeAlreadyRunning() {
-  return fetch("http://localhost:20128/v1/models", { signal: AbortSignal.timeout(2000) })
-    .then((res) => res.status !== 0)
-    .catch(() => false);
-}
-
-function omnirouteKeyStillWorks(apiKey) {
-  if (!apiKey) return Promise.resolve(false);
-  return fetch("http://localhost:20128/v1/models", {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(3000),
-  })
-    .then((res) => res.ok)
-    .catch(() => false);
-}
-
-function errorMessage(err, fallback) {
-  return (err && (err.message || String(err))) || fallback || "Unknown error";
-}
-
-// OmniRoute ships bundled as a real dependency of this app (see package.json) — no separate
-// download, no runtime npm install, no dependency on the customer having Node.js at all. We run
-// its bin script using Electron's own bundled Node runtime (ELECTRON_RUN_AS_NODE), the same trick
-// Electron apps use to run any Node CLI without requiring a system Node install.
-function omnirouteBinPath() {
-  const appPath = app.getAppPath();
-  const base = appPath.endsWith(".asar") ? `${appPath}.unpacked` : appPath;
-  return path.join(base, "node_modules", "omniroute", "bin", "omniroute.mjs");
-}
-
-function spawnOmniroute(args) {
-  return spawn(process.execPath, [omnirouteBinPath(), ...args], {
-    windowsHide: true,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
-  });
-}
-
-function startOmnirouteServer(log) {
-  return new Promise((resolve, reject) => {
-    // --no-open: without this, OmniRoute's own CLI launches the user's real system browser
-    // straight at its (unauthenticated) dashboard/login every time the server starts — we run
-    // it headless and drive setup entirely through the CLI, so that popup is never wanted.
-    const serve = spawnOmniroute(["serve", "--no-open"]);
-    serve.unref();
-    let settled = false;
-    let buf = "";
-    const onData = (d) => {
-      log(d);
-      buf += String(d);
-      // Match against the accumulated buffer, not each chunk in isolation — the "OmniRoute is
-      // running!" line can land split across two stdout chunks and silently never match otherwise.
-      if (!settled && /omniroute is running/i.test(buf)) {
-        settled = true;
-        resolve();
-      }
-    };
-    serve.stdout.on("data", onData);
-    serve.stderr.on("data", onData);
-    serve.on("error", (err) => {
-      if (!settled) {
-        settled = true;
-        reject(err);
-      }
-    });
-    setTimeout(async () => {
-      if (settled) return;
-      settled = true;
-      if (await omnirouteServeAlreadyRunning()) resolve();
-      else reject(new Error("The server didn't report ready in time."));
-    }, 25_000);
-  });
-}
-
-const OMNIROUTE_CLI_TIMEOUT_MS = 60_000;
-
-function runOmnirouteCli(args, log = () => {}) {
-  return new Promise((resolve, reject) => {
-    let out = "";
-    let err = "";
-    let settled = false;
-    const child = spawnOmniroute(args);
-    // Without this, a hung `setup`/`api-keys` call (network stall, a lock, anything) left the UI
-    // frozen on "Starting…" forever with zero feedback and no way to recover but restarting the
-    // app — exactly what was reported. Every CLI call here now has a hard ceiling.
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      child.kill();
-      reject(new Error(`omniroute ${args[0]} didn't finish within ${OMNIROUTE_CLI_TIMEOUT_MS / 1000}s.`));
-    }, OMNIROUTE_CLI_TIMEOUT_MS);
-    child.stdout.on("data", (d) => {
-      out += String(d);
-      log(d);
-    });
-    child.stderr.on("data", (d) => {
-      err += String(d);
-      log(d);
-    });
-    child.on("error", (e) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(e);
-    });
-    child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (code === 0) resolve(out);
-      else reject(new Error(err.trim() || `omniroute ${args[0]} exited with code ${code}`));
-    });
-  });
-}
-
-// Provisions an admin account and a client API key entirely via the CLI — the customer never
-// touches the web dashboard, never logs in, never copies a key by hand.
-//
-// NOTE: this previously segfaulted under Electron's bundled Node runtime — root cause was
-// Electron 33 shipping Node 20.18, below OmniRoute's own hard floor of 22.22.2 for its
-// better-sqlite3 usage (it logs this explicitly as a "secure runtime policy" warning). Bumping
-// to Electron 44 (Node 24.20) plus a native-module rebuild fixed it — reproduced clean twice.
-async function autoConfigureOmniroute(log) {
-  log("\nFinishing setup (admin account + API key) — no login needed…\n");
-  const password = crypto.randomBytes(18).toString("base64url");
-  await runOmnirouteCli(["setup", "--password", password, "--non-interactive"], log);
-  log("Generating an API key…\n");
-  const keyOut = await runOmnirouteCli(
-    ["--output", "json", "api", "api-keys", "post-api-keys", "--body", JSON.stringify({ name: "Nutaan Code" })],
-    log
-  );
-  // stdout also carries plain-text "Loaded env from…" lines (with ANSI color codes — whose own
-  // "\x1b[2m" sequences contain a literal "[" that previously fooled a naive JSON-start regex)
-  // ahead of the JSON payload, so strip those and parse just the JSON object/array within.
-  // eslint-disable-next-line no-control-regex
-  const clean = keyOut.replace(/\x1b\[[0-9;]*m/g, "");
-  const jsonMatch = clean.match(/[[{][\s\S]*[\]}]/);
-  let parsed;
-  try {
-    parsed = JSON.parse(jsonMatch ? jsonMatch[0] : clean);
-  } catch {
-    throw new Error("Could not parse the generated API key.");
-  }
-  const key = (Array.isArray(parsed) ? parsed[0]?.key : parsed?.key) || null;
-  if (!key) throw new Error("No API key came back from setup.");
-  log("Done — API key generated automatically.\n");
-  return key;
-}
-
-async function startAndConfigureOmniroute(log, finish, existingApiKey) {
-  log("Starting OmniRoute (bundled with this app — nothing to download)…\n");
-  try {
-    await startOmnirouteServer(log);
-  } catch (err) {
-    finish({ ok: false, error: errorMessage(err, "The server failed to start.") });
-    return;
-  }
-
-  // Re-use a previously-generated key when the server was just restarted (e.g. after a reboot)
-  // rather than re-running setup, which would create a brand-new admin account and orphan the
-  // old API key every single time — exactly what made this feel like "setup never sticks."
-  if (existingApiKey && (await omnirouteKeyStillWorks(existingApiKey))) {
-    log("Your existing OmniRoute key still works — reconnected, nothing else to do.\n");
-    finish({ ok: true, apiKey: existingApiKey });
-    return;
-  }
-
-  try {
-    const apiKey = await autoConfigureOmniroute(log);
-    finish({ ok: true, apiKey });
-  } catch (err) {
-    // The server itself is genuinely up even if this last mile failed — don't report total
-    // failure, just leave the key blank so they finish that one step from the dashboard.
-    log(`\nCouldn't finish automatic setup: ${errorMessage(err)}\n`);
-    finish({ ok: true, apiKey: null });
-  }
-}
-
-ipcMain.on("omniroute:setup", async (event, payload) => {
-  if (omnirouteSetupRunning) return;
-  omnirouteSetupRunning = true;
-  const sender = event.sender;
-  const existingApiKey = payload?.existingApiKey || null;
-  // eslint-disable-next-line no-control-regex
-  const log = (line) => sender.send("omniroute:setup-log", String(line).replace(/\x1b\[[0-9;]*m/g, ""));
-  const finish = (result) => {
-    omnirouteSetupRunning = false;
-    sender.send("omniroute:setup-done", result);
-  };
-
-  if (await omnirouteServeAlreadyRunning()) {
-    if (existingApiKey && (await omnirouteKeyStillWorks(existingApiKey))) {
-      log("OmniRoute is already running and your key still works — nothing to do.\n");
-      finish({ ok: true, alreadyRunning: true, apiKey: existingApiKey });
-      return;
-    }
-    log("OmniRoute is already running on this machine — nothing to install.\n");
-    finish({ ok: true, alreadyRunning: true });
-    return;
-  }
-
-  startAndConfigureOmniroute(log, finish, existingApiKey);
-});
-
-// Separate request/response channel (not the "omniroute:setup" broadcast pair above) used only by
-// the silent background reconnect in the renderer when a chat request fails because the OmniRoute
-// server isn't listening. It must not share a channel with the "Set it up for me" button flow —
-// they used to both listen on the same setup-done broadcast, so a silent reconnect triggered here
-// would also fire the button flow's handler and vice versa, stomping on whichever settings.baseUrl/
-// apiKey the OTHER flow was mid-way through writing. Keeping this on its own invoke/response pair
-// means the two can never step on each other.
-ipcMain.handle("omniroute:reconnect", async (_event, { existingApiKey } = {}) => {
-  if (omnirouteSetupRunning) return { ok: false, error: "Setup is already running." };
-  omnirouteSetupRunning = true;
-  const noop = () => {};
-  try {
-    if (await omnirouteServeAlreadyRunning()) {
-      if (existingApiKey && (await omnirouteKeyStillWorks(existingApiKey))) {
-        return { ok: true, alreadyRunning: true, apiKey: existingApiKey };
-      }
-      return { ok: true, alreadyRunning: true };
-    }
-    return await new Promise((resolve) => {
-      startAndConfigureOmniroute(noop, resolve, existingApiKey);
-    });
-  } finally {
-    omnirouteSetupRunning = false;
   }
 });
 
@@ -1324,10 +1092,6 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
       tool_choice: "auto",
       max_tokens: MAX_RESPONSE_TOKENS,
       stream: true,
-      // OpenRouter-specific: lets the model pull in live web results on its own when useful,
-      // on top of the explicit web_fetch tool for when the user hands us a specific URL.
-      // Ignored by non-OpenRouter OpenAI-compatible servers.
-      ...(baseUrl.includes("openrouter.ai") ? { plugins: [{ id: "web" }] } : {}),
     }),
   });
 
@@ -1500,7 +1264,8 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
 
       if (attempt >= MAX_TRANSIENT_RETRIES) {
         // This model's upstream provider is down, not just briefly hiccuping — if it's a free
-        // OpenRouter model, try the next free model instead of dead-ending the whole turn on it.
+        // model (naming convention: ":free" suffix), try the next free model instead of
+        // dead-ending the whole turn on it.
         const canSwitch = model.endsWith(":free") && !isAzureEndpoint(baseUrl) && triedModels.size <= MAX_MODEL_SWITCHES;
         const nextModel = canSwitch ? await pickNextFreeModel(baseUrl, apiKey, triedModels) : null;
         if (!nextModel) {
