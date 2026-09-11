@@ -113,12 +113,40 @@
       <select id="modelSelectSettings"><option value="meta-llama/llama-3.3-70b-instruct:free">meta-llama/llama-3.3-70b-instruct:free</option></select>
       <div class="note">Free models are marked <code>:free</code>. Pick a paid one (e.g. an Anthropic Claude model) for higher quality once you've added credit on OpenRouter.</div>
     </div>
-    <details class="advanced">
+    <div class="omniroute-callout" id="omnirouteCallout">
+      <a href="#" id="omnirouteSwitchLink">Want a lot more free models (~1.5B tokens/mo across 42 providers)? Switch to OmniRoute →</a>
+      <div class="omniroute-steps" id="omnirouteSteps" hidden>
+        <div class="note" id="omnirouteIntro">
+          Runs locally alongside Nutaan Code — nothing to install by hand.
+        </div>
+        <button class="btn-secondary" id="omnirouteSetupBtn" type="button">Set it up for me</button>
+        <pre class="omniroute-log" id="omnirouteLog" hidden></pre>
+        <div class="note" id="omnirouteAfter" hidden>
+          Now open <a href="#" id="omnirouteDashboardLink">localhost:20128</a> (opens here), sign in, add a provider or two, and generate an API key. Server URL below is set for you — paste that key above and hit Save.
+        </div>
+      </div>
+    </div>
+    <div class="field">
+      <label>Or connect a provider directly</label>
+      <div class="provider-chips">
+        <button type="button" class="chip" data-provider="openai">OpenAI</button>
+        <button type="button" class="chip" data-provider="nvidia">NVIDIA NIM</button>
+        <button type="button" class="chip" data-provider="together">Together AI</button>
+        <button type="button" class="chip" id="azureChip">Azure OpenAI</button>
+      </div>
+      <div class="azure-fields" id="azureFields" hidden>
+        <input type="text" id="azureResource" placeholder="Resource name (the xxx in xxx.openai.azure.com)" />
+        <input type="text" id="azureDeployment" placeholder="Deployment name" />
+        <button type="button" class="btn-secondary" id="azureApplyBtn">Use this</button>
+      </div>
+      <div class="note">Each just needs an API key from that provider's own dashboard, pasted above — Server URL below is set for you.</div>
+    </div>
+    <details class="advanced" id="advancedDetails">
       <summary>Advanced</summary>
       <div class="field">
         <label for="baseUrlInput">Server URL</label>
         <input type="text" id="baseUrlInput" placeholder="https://openrouter.ai/api/v1" />
-        <div class="note">Only change this if you're pointing Nutaan Code at a different OpenAI-compatible server.</div>
+        <div class="note">Any OpenAI-compatible endpoint works — OpenRouter by default, or point this at OmniRoute (<code>http://localhost:20128/v1</code>) or anything else.</div>
       </div>
       <div class="field">
         <label for="imageModelInput">Image model override (optional)</label>

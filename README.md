@@ -17,6 +17,8 @@ It talks to models through any OpenAI-compatible endpoint — [OpenRouter](https
 
 The app auto-updates itself after this — no need to reinstall for new versions. Want to use a specific paid model later (e.g. an Anthropic Claude model)? Add credit on OpenRouter and pick it from the Model dropdown in Settings — no code changes needed, since Nutaan Code speaks the standard OpenAI-compatible API any provider on OpenRouter exposes.
 
+**Want a lot more free models?** OpenRouter is the easy default, but [OmniRoute](https://github.com/diegosouzapw/OmniRoute) aggregates ~1.5B free tokens/month across 42 providers. In **⚙ Settings** there's a **"Switch to OmniRoute"** link that walks through the one-time local install and pre-fills the server URL — nothing to configure by hand.
+
 ## Features
 
 - **Multi-project sidebar** — each open project keeps its own persistent chat history.

@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
 const path = require("node:path");
 const os = require("node:os");
 const fs = require("node:fs/promises");
-const { exec } = require("node:child_process");
+const { exec, spawn } = require("node:child_process");
 const { autoUpdater } = require("electron-updater");
 
 const STORE_PATH = path.join(app.getPath("userData"), "settings.json");
@@ -161,9 +161,42 @@ function isImageOnlyModel(m) {
   return false;
 }
 
+const AZURE_API_VERSION = "2024-08-01-preview";
+
+function isAzureEndpoint(baseUrl) {
+  return /\.openai\.azure\.com/i.test(baseUrl || "");
+}
+
+// Azure OpenAI diverges from the plain OpenAI-compatible shape everything else here assumes:
+// api-key header instead of Authorization: Bearer, a required api-version query param, and the
+// deployment name baked into the URL path instead of picked via a model id.
+function buildAuthHeaders(baseUrl, apiKey) {
+  if (!apiKey) return {};
+  return isAzureEndpoint(baseUrl) ? { "api-key": apiKey } : { Authorization: `Bearer ${apiKey}` };
+}
+
+function buildEndpointUrl(baseUrl, endpointPath) {
+  const trimmed = baseUrl.replace(/\/$/, "");
+  if (isAzureEndpoint(baseUrl)) {
+    const sep = trimmed.includes("?") ? "&" : "?";
+    return `${trimmed}${endpointPath}${sep}api-version=${AZURE_API_VERSION}`;
+  }
+  return `${trimmed}${endpointPath}`;
+}
+
+function azureDeploymentName(baseUrl) {
+  const m = baseUrl.match(/\/deployments\/([^/?]+)/i);
+  return m ? decodeURIComponent(m[1]) : "azure-deployment";
+}
+
 async function fetchModels(baseUrl, apiKey) {
+  if (isAzureEndpoint(baseUrl)) {
+    // Azure's deployment-scoped endpoints don't expose a matching /models list — the "model" is
+    // just whichever deployment the URL points at.
+    return [{ id: azureDeploymentName(baseUrl) }];
+  }
   const res = await fetch(baseUrl.replace(/\/$/, "") + "/models", {
-    headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+    headers: buildAuthHeaders(baseUrl, apiKey),
   });
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
@@ -189,6 +222,104 @@ ipcMain.handle("ai:list-models", async (_e, { baseUrl, apiKey }) => {
     const causeCode = err.cause?.code;
     return { ok: false, error: causeCode ? `${err.message} (${causeCode})` : err.message };
   }
+});
+
+let omnirouteSetupRunning = false;
+
+function omnirouteServeAlreadyRunning() {
+  return fetch("http://localhost:20128/v1/models", { signal: AbortSignal.timeout(2000) })
+    .then((res) => res.status !== 0)
+    .catch(() => false);
+}
+
+function errorMessage(err, fallback) {
+  return (err && (err.message || String(err))) || fallback || "Unknown error";
+}
+
+// OmniRoute ships bundled as a real dependency of this app (see package.json) — no separate
+// download, no runtime npm install, no dependency on the customer having Node.js at all. We run
+// its bin script using Electron's own bundled Node runtime (ELECTRON_RUN_AS_NODE), the same trick
+// Electron apps use to run any Node CLI without requiring a system Node install.
+function omnirouteBinPath() {
+  const appPath = app.getAppPath();
+  const base = appPath.endsWith(".asar") ? `${appPath}.unpacked` : appPath;
+  return path.join(base, "node_modules", "omniroute", "bin", "omniroute.mjs");
+}
+
+function spawnOmniroute(args) {
+  return spawn(process.execPath, [omnirouteBinPath(), ...args], {
+    windowsHide: true,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+  });
+}
+
+function startOmnirouteServer(log) {
+  return new Promise((resolve, reject) => {
+    const serve = spawnOmniroute(["serve"]);
+    serve.unref();
+    let settled = false;
+    let buf = "";
+    const onData = (d) => {
+      log(d);
+      buf += String(d);
+      // Match against the accumulated buffer, not each chunk in isolation — the "OmniRoute is
+      // running!" line can land split across two stdout chunks and silently never match otherwise.
+      if (!settled && /omniroute is running/i.test(buf)) {
+        settled = true;
+        resolve();
+      }
+    };
+    serve.stdout.on("data", onData);
+    serve.stderr.on("data", onData);
+    serve.on("error", (err) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
+    setTimeout(async () => {
+      if (settled) return;
+      settled = true;
+      if (await omnirouteServeAlreadyRunning()) resolve();
+      else reject(new Error("The server didn't report ready in time."));
+    }, 25_000);
+  });
+}
+
+async function startAndConfigureOmniroute(log, finish) {
+  log("Starting OmniRoute (bundled with this app — nothing to download)…\n");
+  try {
+    await startOmnirouteServer(log);
+  } catch (err) {
+    finish({ ok: false, error: errorMessage(err, "The server failed to start.") });
+    return;
+  }
+
+  // NOTE: omniroute's own "setup"/"api" CLI subcommands reliably segfault when run under
+  // Electron's Node runtime (ELECTRON_RUN_AS_NODE) — reproduced twice, survives a full native
+  // module rebuild for Electron's ABI, so it isn't an ABI mismatch. "serve" itself is unaffected.
+  // Until that's root-caused, skip attempting auto password/key provisioning here rather than
+  // risk crashing a process that's otherwise working fine — the dashboard fallback is safe.
+  finish({ ok: true, apiKey: null });
+}
+
+ipcMain.on("omniroute:setup", async (event) => {
+  if (omnirouteSetupRunning) return;
+  omnirouteSetupRunning = true;
+  const sender = event.sender;
+  const log = (line) => sender.send("omniroute:setup-log", String(line));
+  const finish = (result) => {
+    omnirouteSetupRunning = false;
+    sender.send("omniroute:setup-done", result);
+  };
+
+  if (await omnirouteServeAlreadyRunning()) {
+    log("OmniRoute is already running on this machine — nothing to install.\n");
+    finish({ ok: true, alreadyRunning: true });
+    return;
+  }
+
+  startAndConfigureOmniroute(log, finish);
 });
 
 ipcMain.handle("fs:list-dir", async (_e, root, relPath) => {
@@ -370,12 +501,12 @@ async function webFetch(url) {
 
 async function generateImage(baseUrl, apiKey, model, prompt, timeoutMs = 120_000) {
   if (!model) throw new Error("No image model configured — set one in ⚙ Settings → Advanced → Image model first.");
-  const res = await fetch(baseUrl.replace(/\/$/, "") + "/images/generations", {
+  const res = await fetch(buildEndpointUrl(baseUrl, "/images/generations"), {
     method: "POST",
     signal: AbortSignal.timeout(timeoutMs),
     headers: {
       "Content-Type": "application/json",
-      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      ...buildAuthHeaders(baseUrl, apiKey),
     },
     body: JSON.stringify({ model, prompt, n: 1 }),
   });
@@ -952,11 +1083,11 @@ async function compactIfNeeded(sender, chatMessages, { baseUrl, apiKey, model })
   sender.send("agent:compacting", {});
 
   try {
-    const res = await fetch(baseUrl.replace(/\/$/, "") + "/chat/completions", {
+    const res = await fetch(buildEndpointUrl(baseUrl, "/chat/completions"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        ...buildAuthHeaders(baseUrl, apiKey),
       },
       body: JSON.stringify({
         model: model || "auto",
@@ -981,12 +1112,12 @@ async function compactIfNeeded(sender, chatMessages, { baseUrl, apiKey, model })
 }
 
 async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages }) {
-  const res = await fetch(baseUrl.replace(/\/$/, "") + "/chat/completions", {
+  const res = await fetch(buildEndpointUrl(baseUrl, "/chat/completions"), {
     method: "POST",
     signal: controller.signal,
     headers: {
       "Content-Type": "application/json",
-      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      ...buildAuthHeaders(baseUrl, apiKey),
     },
     body: JSON.stringify({
       model: model || "auto",

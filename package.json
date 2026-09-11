@@ -12,7 +12,8 @@
     "release": "electron-builder --win --publish always"
   },
   "dependencies": {
-    "electron-updater": "^6.3.9"
+    "electron-updater": "^6.3.9",
+    "omniroute": "^3.8.50"
   },
   "devDependencies": {
     "electron": "^33.0.0",
@@ -32,7 +33,11 @@
       "renderer/**/*",
       "skills/**/*",
       "assets/**/*",
-      "package.json"
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/omniroute/**/*"
     ],
     "win": {
       "target": "nsis",

@@ -315,6 +315,19 @@ textarea:focus, input:focus, select:focus { outline: 2px solid var(--accent-dim)
 .btn-secondary { background: transparent; border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 14px; font-size: 13px; }
 .btn-primary { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 600; border:none; }
 .note { font-size: 12px; color: var(--text-dim); line-height: 1.5; margin-top: 2px; }
+.provider-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 20px;
+  padding: 6px 12px; font-size: 12.5px; cursor: pointer;
+}
+.chip:hover { border-color: var(--accent2); color: var(--accent2); }
+.azure-fields { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.omniroute-callout { margin-bottom: 14px; font-size: 12.5px; }
+.omniroute-callout > a { font-weight: 600; }
+.omniroute-steps { margin-top: 8px; background: var(--accent-dim); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.omniroute-steps pre { font-family: var(--mono); font-size: 12px; background: rgba(0,0,0,0.15); border-radius: 6px; padding: 8px 10px; margin: 6px 0; white-space: pre-wrap; }
+.omniroute-log { max-height: 160px; overflow-y: auto; margin-top: 8px; }
+#omnirouteSetupBtn { margin-top: 8px; }
 .advanced { margin-top: 4px; border-top: 1px solid var(--border); padding-top: 12px; }
 .advanced summary { cursor: pointer; font-size: 12.5px; color: var(--text-dim); user-select: none; }
 .advanced[open] summary { margin-bottom: 12px; }

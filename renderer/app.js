@@ -445,17 +445,30 @@
     setStatus(true, "Ready");
     availableModels = res.models;
     modelSelectSettings.innerHTML = "";
-    for (const id of res.models) {
-      const opt = document.createElement("option");
-      opt.value = id;
-      opt.textContent = id;
-      modelSelectSettings.appendChild(opt);
-    }
+
+    const freeIds = res.models.filter((id) => id.endsWith(":free")).sort();
+    const paidIds = res.models.filter((id) => !id.endsWith(":free")).sort();
+
+    const addGroup = (label, ids) => {
+      if (!ids.length) return;
+      const group = document.createElement("optgroup");
+      group.label = label;
+      for (const id of ids) {
+        const opt = document.createElement("option");
+        opt.value = id;
+        opt.textContent = id;
+        group.appendChild(opt);
+      }
+      modelSelectSettings.appendChild(group);
+    };
+    addGroup(`Free (${freeIds.length})`, freeIds);
+    addGroup(`Paid — needs credit (${paidIds.length})`, paidIds);
+
     const ids = res.models;
     if (ids.includes(settings.model)) {
       modelSelectSettings.value = settings.model;
     } else {
-      modelSelectSettings.value = ids.find((id) => id.endsWith(":free")) || ids[0] || DEFAULT_MODEL;
+      modelSelectSettings.value = freeIds[0] || ids[0] || DEFAULT_MODEL;
     }
     updateModelBadge();
   }
@@ -885,6 +898,36 @@
   window.nutaan.onAgentEvent("agent:error", ({ message }) => {
     hideThinking();
     finalizeStream();
+
+    const looksLikeInvalidKey = /user not found|invalid.?api.?key|invalid_api_key|no such user|unknown key/i.test(message || "");
+    if (looksLikeInvalidKey) {
+      appendBubble(
+        "error",
+        `${message}\n\nYour API key looks invalid or wasn't recognized — not a model or payment problem. Open ⚙ Settings and double-check it was pasted in full with no extra spaces, or generate a fresh one.`
+      );
+      setRunning(false);
+      return;
+    }
+
+    const looksLikeModelAuthIssue =
+      /auth|unauthorized|401|403|missing.*header|payment|insufficient|credit/i.test(message || "") &&
+      settings.model &&
+      !settings.model.endsWith(":free");
+    if (looksLikeModelAuthIssue) {
+      const fallback = availableModels.find((id) => id.endsWith(":free"));
+      if (fallback) {
+        const badModel = settings.model;
+        settings.model = fallback;
+        window.nutaan.setSettings(settings);
+        updateModelBadge();
+        appendBubble(
+          "error",
+          `${message}\n\n"${badModel}" looks like it needs payment/credits you don't have. Switched your model to the free "${fallback}" — try sending again.`
+        );
+        setRunning(false);
+        return;
+      }
+    }
     appendBubble("error", message);
     setRunning(false);
   });
@@ -939,6 +982,113 @@
       e.preventDefault();
       browserPane.hidden = false;
       navigateBrowser(OPENROUTER_KEYS_URL);
+    });
+  }
+  const OMNIROUTE_URL = "http://localhost:20128/v1";
+  const omnirouteSwitchLink = el("omnirouteSwitchLink");
+  const omnirouteSteps = el("omnirouteSteps");
+  const omnirouteSetupBtn = el("omnirouteSetupBtn");
+  const omnirouteLog = el("omnirouteLog");
+  const omnirouteIntro = el("omnirouteIntro");
+  const omnirouteAfter = el("omnirouteAfter");
+  const omnirouteDashboardLink = el("omnirouteDashboardLink");
+  const advancedDetails = el("advancedDetails");
+  if (omnirouteSwitchLink) {
+    omnirouteSwitchLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      omnirouteSteps.hidden = !omnirouteSteps.hidden;
+    });
+  }
+  if (omnirouteSetupBtn) {
+    omnirouteSetupBtn.addEventListener("click", () => {
+      omnirouteSetupBtn.disabled = true;
+      omnirouteSetupBtn.textContent = "Starting…";
+      omnirouteIntro.textContent = "Starting OmniRoute — it ships with Nutaan Code, so this only takes a few seconds.";
+      omnirouteLog.hidden = false;
+      omnirouteLog.textContent = "";
+      window.nutaan.setupOmniroute();
+    });
+  }
+  window.nutaan.onOmnirouteSetupLog((line) => {
+    omnirouteLog.textContent += line;
+    omnirouteLog.scrollTop = omnirouteLog.scrollHeight;
+  });
+  window.nutaan.onOmnirouteSetupDone(async (result) => {
+    omnirouteSetupBtn.disabled = false;
+    if (result.ok) {
+      omnirouteSetupBtn.hidden = true;
+      baseUrlInput.value = OMNIROUTE_URL;
+      if (advancedDetails) advancedDetails.open = true;
+
+      if (result.apiKey) {
+        settings.baseUrl = OMNIROUTE_URL;
+        settings.apiKey = result.apiKey;
+        apiKeyInput.value = result.apiKey;
+        await window.nutaan.setSettings(settings);
+        omnirouteIntro.textContent = "All set — OmniRoute is running and connected. Nothing else to do.";
+        omnirouteAfter.hidden = true;
+        refreshModels();
+      } else {
+        omnirouteIntro.textContent = result.alreadyRunning
+          ? "OmniRoute is already running on this machine."
+          : "OmniRoute is installed and running — just need an API key for it.";
+        omnirouteAfter.hidden = false;
+      }
+    } else {
+      omnirouteSetupBtn.textContent = "Try again";
+      omnirouteIntro.textContent = `Setup failed: ${result.error} `;
+      const link = document.createElement("a");
+      link.href = "#";
+      link.textContent = "Install Node.js yourself instead →";
+      link.addEventListener("click", (e) => {
+        e.preventDefault();
+        browserPane.hidden = false;
+        navigateBrowser("https://nodejs.org");
+      });
+      omnirouteIntro.appendChild(link);
+    }
+  });
+  if (omnirouteDashboardLink) {
+    omnirouteDashboardLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      browserPane.hidden = false;
+      navigateBrowser("http://localhost:20128");
+    });
+  }
+
+  const PROVIDER_URLS = {
+    openai: "https://api.openai.com/v1",
+    nvidia: "https://integrate.api.nvidia.com/v1",
+    together: "https://api.together.xyz/v1",
+  };
+  document.querySelectorAll(".chip[data-provider]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      baseUrlInput.value = PROVIDER_URLS[btn.dataset.provider];
+      if (advancedDetails) advancedDetails.open = true;
+      apiKeyInput.focus();
+    });
+  });
+  const azureChip = el("azureChip");
+  const azureFields = el("azureFields");
+  const azureResource = el("azureResource");
+  const azureDeployment = el("azureDeployment");
+  const azureApplyBtn = el("azureApplyBtn");
+  if (azureChip) {
+    azureChip.addEventListener("click", () => {
+      azureFields.hidden = !azureFields.hidden;
+    });
+  }
+  if (azureApplyBtn) {
+    azureApplyBtn.addEventListener("click", () => {
+      const resource = azureResource.value.trim();
+      const deployment = azureDeployment.value.trim();
+      if (!resource || !deployment) {
+        azureResource.focus();
+        return;
+      }
+      baseUrlInput.value = `https://${resource}.openai.azure.com/openai/deployments/${deployment}`;
+      if (advancedDetails) advancedDetails.open = true;
+      apiKeyInput.focus();
     });
   }
   statusText.addEventListener("click", () => {
