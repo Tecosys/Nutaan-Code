@@ -13,8 +13,11 @@
   const statusText = el("statusText");
   const modelSelectSettings = el("modelSelectSettings");
   const settingsBtn = el("settingsBtn");
+  const sidebarToggleBtn = el("sidebarToggleBtn");
+  const appEl = el("app");
   const settingsOverlay = el("settingsOverlay");
   const baseUrlInput = el("baseUrlInput");
+  const imageModelInput = el("imageModelInput");
   const apiKeyInput = el("apiKeyInput");
   const settingsSave = el("settingsSave");
   const settingsCancel = el("settingsCancel");
@@ -39,15 +42,56 @@
   const sizeDesktop = el("sizeDesktop");
   const appVersionText = el("appVersionText");
   const checkUpdatesBtn = el("checkUpdatesBtn");
+  const modelBadge = el("modelBadge");
+  const modelMenu = el("modelMenu");
 
   let settings = { baseUrl: DEFAULT_BASE_URL, apiKey: "", model: DEFAULT_MODEL, autoApprove: false };
-  let projects = []; // [{ path, messages: [...] }]
+  let projects = []; // [{ path, expanded, activeChatId, chats: [{ id, title, updatedAt, messages }] }]
   let activePath = null;
   let running = false;
   const toolCards = new Map();
+  let idCounter = 0;
+
+  function genId() {
+    return "id" + Date.now().toString(36) + (idCounter++).toString(36);
+  }
+
+  function relTime(iso) {
+    if (!iso) return "";
+    const diffMs = Date.now() - new Date(iso).getTime();
+    const min = Math.floor(diffMs / 60000);
+    if (min < 1) return "Just now";
+    if (min < 60) return min + "m ago";
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return hr + "h ago";
+    const day = Math.floor(hr / 24);
+    if (day === 1) return "Yesterday";
+    if (day < 7) return day + "d ago";
+    return new Date(iso).toLocaleDateString();
+  }
+
+  function deriveChatTitle(text) {
+    const t = String(text || "").trim().replace(/\s+/g, " ");
+    return t.length > 48 ? t.slice(0, 48) + "…" : t || "New chat";
+  }
 
   function activeProject() {
     return projects.find((p) => p.path === activePath) || null;
+  }
+
+  function activeChat() {
+    const proj = activeProject();
+    if (!proj) return null;
+    return proj.chats.find((c) => c.id === proj.activeChatId) || proj.chats[0] || null;
+  }
+
+  function makeChat(root, title) {
+    return {
+      id: genId(),
+      title: title || "New chat",
+      updatedAt: new Date().toISOString(),
+      messages: [{ role: "system", content: systemPrompt(root) }],
+    };
   }
 
   function basename(p) {
@@ -65,6 +109,8 @@
   function renderEmptyVisibility() {
     const hasContent = thread.querySelectorAll(".row, .tool-card, .permission-card").length > 0;
     emptyState.hidden = hasContent;
+    const chatPane = document.querySelector(".chat-pane");
+    if (chatPane) chatPane.classList.toggle("is-empty", !hasContent);
   }
 
   function inlineFormat(escaped) {
@@ -358,18 +404,27 @@
     }
   }
 
-  function setStatus(ok, text) {
+  function setStatus(ok, text, title) {
     statusDot.className = "dot " + (ok === null ? "" : ok ? "online" : "offline");
     statusText.textContent = text;
+    statusText.title = title || "";
   }
+
+  let availableModels = [];
 
   async function refreshModels() {
     const res = await window.nutaan.listModels(settings.baseUrl, settings.apiKey);
     if (!res.ok) {
-      setStatus(false, settings.apiKey ? "Not connected" : "Not set up yet");
+      if (!settings.apiKey) {
+        setStatus(false, "Not set up yet");
+      } else {
+        const reason = String(res.error || "unknown error").slice(0, 200);
+        setStatus(false, "Not connected — hover for why", reason);
+      }
       return;
     }
     setStatus(true, "Ready");
+    availableModels = res.models;
     modelSelectSettings.innerHTML = "";
     for (const id of res.models) {
       const opt = document.createElement("option");
@@ -383,6 +438,44 @@
     } else {
       modelSelectSettings.value = ids.find((id) => id.endsWith(":free")) || ids[0] || DEFAULT_MODEL;
     }
+    updateModelBadge();
+  }
+
+  function updateModelBadge() {
+    if (modelBadge) modelBadge.textContent = settings.model || DEFAULT_MODEL;
+  }
+
+  async function selectModel(id) {
+    settings.model = id;
+    updateModelBadge();
+    modelMenu.hidden = true;
+    await window.nutaan.setSettings(settings);
+  }
+
+  function toggleModelMenu() {
+    if (!modelMenu.hidden) {
+      modelMenu.hidden = true;
+      return;
+    }
+    if (availableModels.length === 0) {
+      settingsBtn.click(); // no cached list yet (e.g. never connected) — fall back to full Settings
+      return;
+    }
+    modelMenu.innerHTML = "";
+    // free models first, then the rest, alphabetically within each group
+    const sorted = [...availableModels].sort((a, b) => {
+      const af = a.endsWith(":free"), bf = b.endsWith(":free");
+      if (af !== bf) return af ? -1 : 1;
+      return a.localeCompare(b);
+    });
+    for (const id of sorted) {
+      const opt = document.createElement("div");
+      opt.className = "model-opt" + (id === settings.model ? " active" : "");
+      opt.textContent = id;
+      opt.addEventListener("click", () => selectModel(id));
+      modelMenu.appendChild(opt);
+    }
+    modelMenu.hidden = false;
   }
 
   function updateEmptyHint() {
@@ -453,7 +546,7 @@
       `The current project root is: ${root}`,
       "You have tools to list directories, read files, write files, edit files (exact string replace), search file contents, and run shell commands, all scoped to the project root.",
       "You also have list_skills and use_skill — check list_skills when a task matches a specific kind of work (reviewing code, debugging, writing a commit message, etc.) and follow the matching skill's instructions via use_skill before improvising.",
-      "You have browser_navigate, browser_read_page, browser_click, browser_type, browser_scroll, browser_screenshot, browser_resize, and browser_execute_script to actually drive the app's built-in browser panel — navigate, read text, click elements by CSS selector, fill and submit forms, scroll, capture screenshots, switch between mobile/tablet/desktop preview sizes to check responsive layouts, and (with approval) run arbitrary JavaScript for anything the other tools can't do. Use these to genuinely test a running web app, check how a site responds at different sizes, fill in a login form, or look something up, instead of shelling out to open an external browser.",
+      "You have browser_navigate, browser_read_page, browser_click, browser_type, browser_scroll, browser_screenshot, browser_resize, and browser_execute_script to actually drive the app's built-in browser panel — navigate, read text, click elements by CSS selector, fill and submit forms, scroll, capture screenshots, switch between mobile/tablet/desktop preview sizes to check responsive layouts, and (with approval) run arbitrary JavaScript for anything the other tools can't do. Use these to genuinely test a running web app, check how a site responds at different sizes, fill in a login form, or look something up — not to answer questions about this project's own code.",
       "Prefer edit_file over write_file for existing files, and only change what's needed.",
       "write_file, edit_file, and run_command require the user's explicit approval before they execute — expect some to be denied, and adapt.",
       "Explain briefly what you're about to do before taking actions that change files or run commands.",
@@ -474,16 +567,39 @@
     updateEmptyHint();
   }
 
-  function resetConversation() {
+  function newChat() {
     const proj = activeProject();
-    if (!proj) return;
-    proj.messages = [{ role: "system", content: systemPrompt(proj.path) }];
+    if (!proj || running) return;
+    const chat = makeChat(proj.path);
+    proj.chats.unshift(chat);
+    proj.activeChatId = chat.id;
+    proj.expanded = true;
+    renderProjectList();
+    renderThreadFromMessages(chat.messages);
     persistProjects();
-    renderThreadFromMessages(proj.messages);
+  }
+
+  function deleteChat(path, chatId) {
+    if (running) return;
+    const proj = projects.find((p) => p.path === path);
+    if (!proj) return;
+    const chat = proj.chats.find((c) => c.id === chatId);
+    if (chat && !confirm(`Delete "${chat.title}"? This can't be undone.`)) return;
+    proj.chats = proj.chats.filter((c) => c.id !== chatId);
+    if (proj.chats.length === 0) proj.chats.push(makeChat(proj.path));
+    if (proj.activeChatId === chatId) proj.activeChatId = proj.chats[0].id;
+    renderProjectList();
+    if (path === activePath) renderThreadFromMessages(activeChat().messages);
+    persistProjects();
   }
 
   async function persistProjects() {
-    settings.projects = projects.map((p) => ({ path: p.path, messages: p.messages }));
+    settings.projects = projects.map((p) => ({
+      path: p.path,
+      expanded: p.expanded,
+      activeChatId: p.activeChatId,
+      chats: p.chats.map((c) => ({ id: c.id, title: c.title, updatedAt: c.updatedAt, messages: c.messages })),
+    }));
     settings.activeProjectPath = activePath;
     await window.nutaan.setSettings(settings);
   }
@@ -491,34 +607,87 @@
   function renderProjectList() {
     projectListEl.innerHTML = "";
     for (const p of projects) {
+      const wrap = document.createElement("div");
       const row = document.createElement("div");
       row.className = "project-row" + (p.path === activePath ? " active" : "");
-      row.innerHTML = `<span class="proj-icon">📁</span><span class="proj-name">${escapeHtml(basename(p.path))}</span><span class="proj-close" title="Remove from list">✕</span>`;
+      row.innerHTML =
+        `<span class="proj-chev">${p.expanded ? "▾" : "▸"}</span>` +
+        `<span class="proj-icon">📁</span><span class="proj-name">${escapeHtml(basename(p.path))}</span>` +
+        `<span class="proj-count">${p.chats.length}</span>` +
+        `<span class="proj-close" title="Remove from list">✕</span>`;
       row.title = p.path;
       row.addEventListener("click", (e) => {
         if (e.target.classList.contains("proj-close")) return;
+        if (e.target.classList.contains("proj-chev")) {
+          p.expanded = !p.expanded;
+          renderProjectList();
+          persistProjects();
+          return;
+        }
         switchProject(p.path);
       });
       row.querySelector(".proj-close").addEventListener("click", (e) => {
         e.stopPropagation();
         removeProject(p.path);
       });
-      projectListEl.appendChild(row);
+      wrap.appendChild(row);
+
+      if (p.expanded) {
+        const list = document.createElement("div");
+        list.className = "chat-list";
+        for (const c of p.chats) {
+          const crow = document.createElement("div");
+          const isActiveChat = p.path === activePath && c.id === p.activeChatId;
+          crow.className = "chat-row" + (isActiveChat ? " active" : "");
+          crow.innerHTML =
+            `<span class="chat-title">${escapeHtml(c.title)}</span>` +
+            `<span class="chat-time">${escapeHtml(relTime(c.updatedAt))}</span>` +
+            `<span class="chat-close" title="Delete chat">✕</span>`;
+          crow.addEventListener("click", (e) => {
+            if (e.target.classList.contains("chat-close")) return;
+            selectChat(p.path, c.id);
+          });
+          crow.querySelector(".chat-close").addEventListener("click", (e) => {
+            e.stopPropagation();
+            deleteChat(p.path, c.id);
+          });
+          list.appendChild(crow);
+        }
+        wrap.appendChild(list);
+      }
+      projectListEl.appendChild(wrap);
     }
+  }
+
+  async function selectChat(path, chatId) {
+    if (running) return;
+    const proj = projects.find((p) => p.path === path);
+    if (!proj) return;
+    const pathChanged = path !== activePath;
+    activePath = path;
+    proj.activeChatId = chatId;
+    proj.expanded = true;
+    renderProjectList();
+    if (pathChanged) await refreshTree();
+    renderThreadFromMessages(activeChat().messages);
+    persistProjects();
   }
 
   async function switchProject(path) {
     if (running || path === activePath) return;
+    const proj = projects.find((p) => p.path === path);
+    if (!proj) return;
+    proj.expanded = true;
     activePath = path;
     renderProjectList();
     await refreshTree();
-    const proj = activeProject();
-    renderThreadFromMessages(proj.messages);
+    renderThreadFromMessages(activeChat().messages);
     persistProjects();
   }
 
   function removeProject(path) {
     if (running) return;
+    if (!confirm(`Remove "${basename(path)}" from the list? Its chat history goes with it. This can't be undone.`)) return;
     projects = projects.filter((p) => p.path !== path);
     if (activePath === path) {
       activePath = projects.length ? projects[0].path : null;
@@ -526,7 +695,7 @@
     renderProjectList();
     refreshTree();
     if (activePath) {
-      renderThreadFromMessages(activeProject().messages);
+      renderThreadFromMessages(activeChat().messages);
     } else {
       thread.innerHTML = "";
       thread.appendChild(emptyState);
@@ -539,13 +708,15 @@
   async function openProject(path) {
     let proj = projects.find((p) => p.path === path);
     if (!proj) {
-      proj = { path, messages: [{ role: "system", content: systemPrompt(path) }] };
+      const chat = makeChat(path);
+      proj = { path, expanded: true, activeChatId: chat.id, chats: [chat] };
       projects.unshift(proj);
     }
     activePath = path;
+    proj.expanded = true;
     renderProjectList();
     await refreshTree();
-    renderThreadFromMessages(proj.messages);
+    renderThreadFromMessages(activeChat().messages);
     persistProjects();
   }
 
@@ -571,7 +742,8 @@
 
   function setRunning(value) {
     running = value;
-    sendBtn.textContent = value ? "Stop" : "Send";
+    sendBtn.textContent = value ? "■" : "↑";
+    sendBtn.title = value ? "Stop" : "Send";
     sendBtn.classList.toggle("stop", value);
   }
 
@@ -579,17 +751,24 @@
     const text = input.value.trim();
     if (running) {
       window.nutaan.stopAgent();
+      appendBubble("error", "Stopped. Your draft is still in the box — press Send again to continue.");
       return;
     }
     if (!text) return;
     const proj = activeProject();
-    if (!proj) {
-      appendBubble("error", "Open a project folder first (top-left button).");
+    const chat = activeChat();
+    if (!proj || !chat) {
+      openFolderBtn.click();
       return;
     }
-    if (proj.messages.length === 0) proj.messages = [{ role: "system", content: systemPrompt(proj.path) }];
+    if (chat.messages.length === 0) chat.messages = [{ role: "system", content: systemPrompt(proj.path) }];
+    if (chat.title === "New chat") {
+      chat.title = deriveChatTitle(text);
+      renderProjectList();
+    }
+    chat.updatedAt = new Date().toISOString();
 
-    proj.messages.push({ role: "user", content: text });
+    chat.messages.push({ role: "user", content: text });
     appendBubble("user", text);
     input.value = "";
     input.style.height = "auto";
@@ -601,8 +780,9 @@
       baseUrl: settings.baseUrl,
       apiKey: settings.apiKey,
       model: settings.model,
+      imageModel: settings.imageModel,
       autoApprove: settings.autoApprove,
-      messages: proj.messages,
+      messages: chat.messages,
     });
   }
 
@@ -674,9 +854,10 @@
   window.nutaan.onAgentEvent("agent:done", ({ messages }) => {
     hideThinking();
     finalizeStream();
-    const proj = activeProject();
-    if (messages && proj) {
-      proj.messages = messages;
+    const chat = activeChat();
+    if (messages && chat) {
+      chat.messages = messages;
+      chat.updatedAt = new Date().toISOString();
       persistProjects();
     }
     setRunning(false);
@@ -702,7 +883,7 @@
     input.style.height = Math.min(input.scrollHeight, 160) + "px";
   });
 
-  newChatBtn.addEventListener("click", resetConversation);
+  newChatBtn.addEventListener("click", newChat);
 
   openFolderBtn.addEventListener("click", async () => {
     if (running) return;
@@ -714,6 +895,7 @@
   settingsBtn.addEventListener("click", () => {
     baseUrlInput.value = settings.baseUrl;
     apiKeyInput.value = settings.apiKey;
+    imageModelInput.value = settings.imageModel || "";
     if ([...modelSelectSettings.options].some((o) => o.value === settings.model)) {
       modelSelectSettings.value = settings.model;
     }
@@ -727,6 +909,7 @@
     settings.baseUrl = baseUrlInput.value.trim() || DEFAULT_BASE_URL;
     settings.apiKey = apiKeyInput.value.trim();
     settings.model = modelSelectSettings.value || DEFAULT_MODEL;
+    settings.imageModel = imageModelInput.value.trim();
     await window.nutaan.setSettings(settings);
     settingsOverlay.hidden = true;
     refreshModels();
@@ -741,6 +924,20 @@
   }
   statusText.addEventListener("click", () => {
     if (!settings.apiKey) settingsBtn.click();
+    else if (statusText.title) appendBubble("error", "Can't reach the model server: " + statusText.title);
+  });
+  if (modelBadge) modelBadge.addEventListener("click", (e) => { e.stopPropagation(); toggleModelMenu(); });
+  if (sidebarToggleBtn) {
+    sidebarToggleBtn.addEventListener("click", async () => {
+      const collapsed = appEl.classList.toggle("sidebar-collapsed");
+      settings.sidebarCollapsed = collapsed;
+      await window.nutaan.setSettings(settings);
+    });
+  }
+  document.addEventListener("click", (e) => {
+    if (modelMenu && !modelMenu.hidden && !modelMenu.contains(e.target) && e.target !== modelBadge) {
+      modelMenu.hidden = true;
+    }
   });
 
   if (checkUpdatesBtn) {
@@ -941,12 +1138,30 @@
     const saved = await window.nutaan.getSettings();
     settings = { ...settings, ...saved };
     renderAutoApproveBtn();
+    updateModelBadge();
+    if (settings.sidebarCollapsed) appEl.classList.add("sidebar-collapsed");
 
     if (Array.isArray(saved.projects) && saved.projects.length) {
-      projects = saved.projects.map((p) => ({ path: p.path, messages: p.messages || [] }));
+      projects = saved.projects.map((p) => {
+        if (Array.isArray(p.chats)) {
+          // already the current shape
+          return {
+            path: p.path,
+            expanded: p.expanded !== false,
+            activeChatId: p.activeChatId,
+            chats: p.chats.length ? p.chats : [makeChat(p.path)],
+          };
+        }
+        // migrate from the old single-thread-per-project shape
+        const messages = p.messages && p.messages.length ? p.messages : [{ role: "system", content: systemPrompt(p.path) }];
+        const firstUser = messages.find((m) => m.role === "user");
+        const chat = { id: genId(), title: firstUser ? deriveChatTitle(firstUser.content) : "Chat 1", updatedAt: new Date().toISOString(), messages };
+        return { path: p.path, expanded: true, activeChatId: chat.id, chats: [chat] };
+      });
     } else if (saved.projectPath) {
-      // migrate from the old single-project shape
-      projects = [{ path: saved.projectPath, messages: [{ role: "system", content: systemPrompt(saved.projectPath) }] }];
+      // migrate from the very old single-project shape
+      const chat = makeChat(saved.projectPath);
+      projects = [{ path: saved.projectPath, expanded: true, activeChatId: chat.id, chats: [chat] }];
     }
     activePath = saved.activeProjectPath && projects.some((p) => p.path === saved.activeProjectPath)
       ? saved.activeProjectPath
@@ -955,7 +1170,7 @@
     renderProjectList();
     if (activePath) {
       await refreshTree();
-      renderThreadFromMessages(activeProject().messages);
+      renderThreadFromMessages(activeChat().messages);
     } else {
       updateEmptyHint();
     }

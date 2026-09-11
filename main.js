@@ -153,24 +153,41 @@ ipcMain.handle("shell:open-external", async (_e, url) => {
   if (/^https?:\/\//.test(url)) await shell.openExternal(url);
 });
 
+// A model is image-only if the server tags it that way, or its output is image but not text —
+// covers both this gateway's explicit `type: "image"` and any future/other shape using modalities.
+function isImageOnlyModel(m) {
+  if (m.type === "image") return true;
+  if (Array.isArray(m.output_modalities) && m.output_modalities.includes("image") && !m.output_modalities.includes("text")) return true;
+  return false;
+}
+
+async function fetchModels(baseUrl, apiKey) {
+  const res = await fetch(baseUrl.replace(/\/$/, "") + "/models", {
+    headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+  });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const errJson = await res.json();
+      detail = errJson?.error?.message || detail;
+    } catch {}
+    throw new Error(detail);
+  }
+  const data = await res.json();
+  return Array.isArray(data.data) ? data.data : [];
+}
+
 ipcMain.handle("ai:list-models", async (_e, { baseUrl, apiKey }) => {
   try {
-    const res = await fetch(baseUrl.replace(/\/$/, "") + "/models", {
-      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
-    });
-    if (!res.ok) {
-      let detail = `HTTP ${res.status}`;
-      try {
-        const errJson = await res.json();
-        detail = errJson?.error?.message || detail;
-      } catch {}
-      return { ok: false, error: detail };
-    }
-    const data = await res.json();
-    const models = Array.isArray(data.data) ? data.data.map((m) => m.id) : [];
-    return { ok: true, models };
+    const allModels = await fetchModels(baseUrl, apiKey);
+    const models = allModels.filter((m) => !isImageOnlyModel(m)).map((m) => m.id);
+    const imageModels = allModels.filter(isImageOnlyModel).map((m) => m.id);
+    return { ok: true, models, imageModels };
   } catch (err) {
-    return { ok: false, error: err.message };
+    // err.cause often carries the real reason for a network-level failure (DNS, proxy, TLS) that
+    // err.message alone doesn't show — e.g. a corporate network blocking openrouter.ai outright.
+    const causeCode = err.cause?.code;
+    return { ok: false, error: causeCode ? `${err.message} (${causeCode})` : err.message };
   }
 });
 
@@ -349,6 +366,32 @@ async function webFetch(url) {
     .replace(/\n\s*\n+/g, "\n\n")
     .trim();
   return { url: res.url, title: titleMatch ? titleMatch[1].trim() : null, content: text.slice(0, MAX_OUTPUT_CHARS) };
+}
+
+async function generateImage(baseUrl, apiKey, model, prompt, timeoutMs = 120_000) {
+  if (!model) throw new Error("No image model configured — set one in ⚙ Settings → Advanced → Image model first.");
+  const res = await fetch(baseUrl.replace(/\/$/, "") + "/images/generations", {
+    method: "POST",
+    signal: AbortSignal.timeout(timeoutMs),
+    headers: {
+      "Content-Type": "application/json",
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+    },
+    body: JSON.stringify({ model, prompt, n: 1 }),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error(data?.error?.message || `HTTP ${res.status}`);
+  }
+  const item = data?.data?.[0];
+  if (!item) throw new Error("Server returned no image data");
+  if (item.b64_json) return Buffer.from(item.b64_json, "base64");
+  if (item.url) {
+    const imgRes = await fetch(item.url, { signal: AbortSignal.timeout(30_000) });
+    if (!imgRes.ok) throw new Error(`Failed to download generated image: HTTP ${imgRes.status}`);
+    return Buffer.from(await imgRes.arrayBuffer());
+  }
+  throw new Error("Server response had neither b64_json nor url");
 }
 
 function runCommand(root, command, signal) {
@@ -577,6 +620,33 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "view_image",
+      description: "Look at an image file in the project (e.g. one you just generated with generate_image, or a screenshot the user added) if the current model can see images. Returns an error telling you the model can't view images otherwise — don't retry it if so.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string", description: "Path relative to the project root" } },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "generate_image",
+      description: "Generate an image from a text prompt and save it as a file in the project (e.g. a hero image, an icon, a placeholder photo). Only works if the user has configured an image model in Settings — if this fails saying none is configured, tell the user to add one rather than retrying. Requires user approval.",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: { type: "string", description: "Description of the image to generate" },
+          path: { type: "string", description: "Where to save it, relative to the project root, e.g. 'assets/hero.png'" },
+        },
+        required: ["prompt", "path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "run_command",
       description: "Run a shell command in the project root (60s timeout). Requires user approval.",
       parameters: {
@@ -643,7 +713,8 @@ const SAFE_TOOLS = new Set([
   "memory_list",
   "memory_read",
   "web_fetch",
-  // browser_execute_script and memory_write are deliberately NOT in this list — they require approval.
+  "view_image",
+  // browser_execute_script, memory_write, and generate_image are deliberately NOT in this list — they require approval.
 ]);
 const SEARCH_SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "out"]);
 const MAX_SEARCH_MATCHES = 200;
@@ -734,7 +805,7 @@ ipcMain.on("agent:browser-action-response", (_e, { id, result }) => {
   }
 });
 
-async function executeTool(sender, root, name, args, callId, signal) {
+async function executeTool(sender, root, name, args, callId, signal, imageConfig) {
   switch (name) {
     case "browser_navigate":
       return requestBrowserAction(sender, callId, { action: "navigate", url: args.url });
@@ -781,6 +852,45 @@ async function executeTool(sender, root, name, args, callId, signal) {
     }
     case "web_fetch":
       return webFetch(args.url);
+    case "view_image": {
+      const target = resolveSafe(root, args.path);
+      const ext = path.extname(target).slice(1).toLowerCase();
+      const mime = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" }[ext];
+      if (!mime) throw new Error(`Unsupported image type ".${ext}" — expected png, jpg, gif, or webp`);
+      const buffer = await fs.readFile(target);
+      return { ok: true, dataUrl: `data:${mime};base64,${buffer.toString("base64")}` };
+    }
+    case "generate_image": {
+      let buffer, usedModel;
+      if (imageConfig.imageModel) {
+        // explicit override: one attempt, full timeout, no silent substitution
+        buffer = await generateImage(imageConfig.baseUrl, imageConfig.apiKey, imageConfig.imageModel, args.prompt);
+        usedModel = imageConfig.imageModel;
+      } else {
+        // auto-detected: some backends (e.g. community/queue-based image networks) can
+        // legitimately take 1-2 minutes for ANY model — that's normal queue time, not a broken
+        // model, so a short per-attempt timeout kills good requests before they finish. Try up to
+        // 2 candidates with a genuinely generous timeout each rather than failing fast repeatedly.
+        const allModels = await fetchModels(imageConfig.baseUrl, imageConfig.apiKey);
+        const candidates = allModels.filter(isImageOnlyModel).slice(0, 2);
+        if (candidates.length === 0) throw new Error("No image-generation model is available on this server, and none is configured in Settings.");
+        const errors = [];
+        for (const candidate of candidates) {
+          try {
+            buffer = await generateImage(imageConfig.baseUrl, imageConfig.apiKey, candidate.id, args.prompt, 100_000);
+            usedModel = candidate.id;
+            break;
+          } catch (err) {
+            errors.push(`${candidate.id}: ${err.message}`);
+          }
+        }
+        if (!buffer) throw new Error(`Tried ${candidates.length} image models, neither succeeded:\n${errors.join("\n")}`);
+      }
+      const target = resolveSafe(root, args.path);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.writeFile(target, buffer);
+      return { ok: true, bytes: buffer.length, model: usedModel };
+    }
     case "run_command":
       return runCommand(root, args.command, signal);
     case "memory_list":
@@ -805,6 +915,7 @@ function permissionPreview(name, args) {
   if (name === "run_command") return { title: "Run command", detail: args.command };
   if (name === "browser_execute_script") return { title: "Run script in browser panel", detail: args.code };
   if (name === "memory_write") return { title: `Save memory: ${args.id}`, detail: args.content };
+  if (name === "generate_image") return { title: `Generate image: ${args.path}`, detail: args.prompt };
   return { title: name, detail: JSON.stringify(args) };
 }
 
@@ -970,7 +1081,17 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
   return { ok: true, message };
 }
 
-async function runAgentLoop(sender, { root, baseUrl, apiKey, model, messages, autoApprove }) {
+// Injected fresh every turn (see requestMessages below) rather than baked into the chat's stored
+// system message, so it applies to chats that were already created before this instruction existed.
+const TOOL_PRIORITY_REMINDER =
+  "Reminder: a question phrased around 'this project' / 'my code' / a feature name with no URL is " +
+  "about the local codebase, not the web. Check it first with list_dir/search_files/read_file. Only " +
+  "use browser_navigate or web_fetch afterward, and only if what you found is genuinely missing, or " +
+  "the user is clearly asking about something external (a live site, a third-party product, a URL " +
+  "they gave you). Searching the web before checking code you already have direct access to is slower " +
+  "and often wrong — never do that as a first resort.";
+
+async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, messages, autoApprove }) {
   const controller = new AbortController();
   agentAbort = controller;
   let chatMessages = [...messages];
@@ -991,9 +1112,11 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, messages, au
       return;
     }
 
-    const requestMessages = memoryContext
-      ? [chatMessages[0], { role: "system", content: memoryContext }, ...chatMessages.slice(1)]
-      : chatMessages;
+    const extraSystemMessages = [
+      { role: "system", content: TOOL_PRIORITY_REMINDER },
+      ...(memoryContext ? [{ role: "system", content: memoryContext }] : []),
+    ];
+    const requestMessages = [chatMessages[0], ...extraSystemMessages, ...chatMessages.slice(1)];
 
     let streamResult;
     try {
@@ -1070,7 +1193,7 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, messages, au
         result = { error: "Denied by user" };
       } else {
         try {
-          result = await executeTool(sender, root, name, args, call.id, controller.signal);
+          result = await executeTool(sender, root, name, args, call.id, controller.signal, { baseUrl, apiKey, imageModel });
         } catch (err) {
           result = { error: err.message };
         }
@@ -1106,6 +1229,25 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, messages, au
             url: result.url,
             note: "Screenshot captured and shown to the user in the app — the current model can't see images, so you don't get to view it. Use browser_read_page for text content instead.",
           }),
+        });
+      } else if (name === "view_image" && result && result.ok && result.dataUrl && modelLooksVisionCapable) {
+        chatMessages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: JSON.stringify({ ok: true, note: "Image loaded — see the next message." }),
+        });
+        chatMessages.push({
+          role: "user",
+          content: [
+            { type: "text", text: `(image at ${args.path}, requested via view_image)` },
+            { type: "image_url", image_url: { url: result.dataUrl } },
+          ],
+        });
+      } else if (name === "view_image" && result && result.ok) {
+        chatMessages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: JSON.stringify({ ok: false, error: "The current model can't see images — pick a vision-capable model in Settings if you need this." }),
         });
       } else {
         chatMessages.push({

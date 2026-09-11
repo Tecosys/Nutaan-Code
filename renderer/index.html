@@ -12,7 +12,7 @@
   <aside class="sidebar">
     <div class="brand">
       <img src="../assets/logo.png" alt="" class="brand-logo" />
-      <span>Nutaan Code</span>
+      <span class="brand-text">Nutaan Code</span>
     </div>
 
     <button class="open-folder-btn" id="openFolderBtn">+ Open Project</button>
@@ -26,12 +26,18 @@
     <div class="sidebar-footer">
       <span class="dot" id="statusDot"></span>
       <span class="status-text" id="statusText">Not connected</span>
-      <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
+      <button class="icon-btn" id="settingsBtn" title="Settings">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </button>
     </div>
   </aside>
 
   <main class="workspace">
     <header class="workspace-header">
+      <button class="icon-btn" id="sidebarToggleBtn" title="Toggle sidebar">☰</button>
       <button class="auto-approve-btn" id="autoApproveBtn" title="When on, file edits and commands run immediately without asking">⚡ Auto-approve: Off</button>
       <button class="icon-btn" id="browserToggleBtn" title="Toggle browser">🌐</button>
       <button class="icon-btn" id="newChatBtn" title="New chat">＋</button>
@@ -52,7 +58,14 @@
         <footer class="composer-wrap">
           <div class="composer">
             <textarea id="input" placeholder="Ask Nutaan Code to build, fix, or explain something…" rows="1"></textarea>
-            <button class="send-btn" id="sendBtn">Send</button>
+            <div class="composer-toolbar">
+              <div class="model-picker">
+                <button class="model-badge" id="modelBadge" title="Change model"></button>
+                <div class="model-menu" id="modelMenu" hidden></div>
+              </div>
+              <div class="composer-spacer"></div>
+              <button class="send-btn" id="sendBtn" title="Send">↑</button>
+            </div>
           </div>
           <div class="hint">Runs entirely on your machine. Files only change with your approval.</div>
         </footer>
@@ -60,13 +73,20 @@
 
       <div class="browser-pane" id="browserPane" hidden>
         <div class="browser-bar">
-          <button class="icon-btn small" id="browserBack" title="Back">←</button>
-          <button class="icon-btn small" id="browserForward" title="Forward">→</button>
-          <button class="icon-btn small" id="browserReload" title="Reload">⟳</button>
-          <input type="text" id="browserAddress" placeholder="Enter a URL or localhost:3000…" />
-          <button class="icon-btn small" id="sizeMobile" title="Mobile view">📱</button>
-          <button class="icon-btn small" id="sizeTablet" title="Tablet view">📟</button>
-          <button class="icon-btn small active" id="sizeDesktop" title="Desktop view">🖥️</button>
+          <div class="nav-group">
+            <button class="nav-btn" id="browserBack" title="Back">‹</button>
+            <button class="nav-btn" id="browserForward" title="Forward">›</button>
+            <button class="nav-btn" id="browserReload" title="Reload">↻</button>
+          </div>
+          <div class="address-wrap">
+            <span class="address-dot" id="addressDot"></span>
+            <input type="text" id="browserAddress" placeholder="Enter a URL or localhost:3000…" />
+          </div>
+          <div class="device-group">
+            <button class="device-btn" id="sizeMobile" title="Mobile view">📱</button>
+            <button class="device-btn" id="sizeTablet" title="Tablet view">📟</button>
+            <button class="device-btn active" id="sizeDesktop" title="Desktop view">🖥️</button>
+          </div>
           <button class="icon-btn small" id="browserClose" title="Close">✕</button>
         </div>
         <div class="browser-viewport" id="browserViewport">
@@ -99,6 +119,11 @@
         <label for="baseUrlInput">Server URL</label>
         <input type="text" id="baseUrlInput" placeholder="https://openrouter.ai/api/v1" />
         <div class="note">Only change this if you're pointing Nutaan Code at a different OpenAI-compatible server.</div>
+      </div>
+      <div class="field">
+        <label for="imageModelInput">Image model override (optional)</label>
+        <input type="text" id="imageModelInput" placeholder="auto-detected — only set this to override" />
+        <div class="note">When the agent generates an image, it automatically picks an image-capable model from your server. Only set this if your server has several and you want a specific one used.</div>
       </div>
     </details>
     <div class="field update-row">
