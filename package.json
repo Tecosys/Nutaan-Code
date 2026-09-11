@@ -1,0 +1,13 @@
+{
+  "name": "nutaan-code",
+  "version": "0.1.0",
+  "description": "Nutaan Code — a personal AI coding agent desktop app powered by OmniRoute",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}

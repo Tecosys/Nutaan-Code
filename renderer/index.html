@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+<title>Nutaan Code</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<div id="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <img src="../assets/logo.png" alt="" class="brand-logo" />
+      <span>Nutaan Code</span>
+    </div>
+
+    <button class="open-folder-btn" id="openFolderBtn">Open Project Folder</button>
+    <div class="project-path" id="projectPath">No project open</div>
+
+    <div class="file-tree" id="fileTree"></div>
+
+    <div class="sidebar-footer">
+      <span class="dot" id="statusDot"></span>
+      <span class="status-text" id="statusText">Not connected</span>
+      <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
+    </div>
+  </aside>
+
+  <main class="workspace">
+    <header class="workspace-header">
+      <select id="modelSelect"><option value="auto">auto</option></select>
+      <button class="icon-btn" id="newChatBtn" title="New chat">＋</button>
+    </header>
+
+    <div class="thread-wrap">
+      <div class="thread" id="thread">
+        <div class="empty-state" id="emptyState">
+          <img src="../assets/logo.png" alt="" class="empty-logo" />
+          <h2>Nutaan Code</h2>
+          <div id="emptyHint">Open a project folder to get started.</div>
+        </div>
+      </div>
+    </div>
+
+    <footer class="composer-wrap">
+      <div class="composer">
+        <textarea id="input" placeholder="Ask Nutaan Code to build, fix, or explain something…" rows="1"></textarea>
+        <button class="send-btn" id="sendBtn">Send</button>
+      </div>
+      <div class="hint">Runs entirely on your machine through your local OmniRoute gateway.</div>
+    </footer>
+  </main>
+</div>
+
+<div class="overlay" id="settingsOverlay" hidden>
+  <div class="modal">
+    <div class="modal-brand">
+      <img src="../assets/logo.png" alt="" />
+      <h3>Settings</h3>
+    </div>
+    <div class="field">
+      <label for="baseUrlInput">OmniRoute Base URL</label>
+      <input type="text" id="baseUrlInput" placeholder="http://localhost:20128/v1" />
+    </div>
+    <div class="field">
+      <label for="apiKeyInput">API key</label>
+      <input type="password" id="apiKeyInput" placeholder="Paste your OmniRoute API key" autocomplete="off" />
+      <div class="note">
+        Generate one from your local OmniRoute dashboard
+        (<a href="#" id="dashboardLink">localhost:20128</a>). Stored only on this device.
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-secondary" id="settingsCancel">Cancel</button>
+      <button class="btn-primary" id="settingsSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
