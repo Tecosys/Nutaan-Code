@@ -351,6 +351,16 @@ textarea:focus, input:focus, select:focus { outline: 2px solid var(--accent-dim)
 .omniroute-steps { margin-top: 8px; background: var(--accent-dim); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
 .omniroute-steps pre { font-family: var(--mono); font-size: 12px; background: rgba(0,0,0,0.15); border-radius: 6px; padding: 8px 10px; margin: 6px 0; white-space: pre-wrap; }
 .omniroute-log { max-height: 160px; overflow-y: auto; margin-top: 8px; }
+.omniroute-primary {
+  border: 1px solid var(--accent2); background: var(--accent-dim); border-radius: 10px;
+  padding: 14px 16px; margin-bottom: 18px;
+}
+.omniroute-primary-title { font-size: 15px; font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+.recommended-badge {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+  background: var(--ok); color: #0a1a0f; padding: 2px 8px; border-radius: 20px;
+}
+.omniroute-primary .omniroute-steps { background: rgba(0,0,0,0.12); }
 #omnirouteSetupBtn { margin-top: 8px; }
 .advanced { margin-top: 4px; border-top: 1px solid var(--border); padding-top: 12px; }
 .advanced summary { cursor: pointer; font-size: 12.5px; color: var(--text-dim); user-select: none; }

@@ -11,6 +11,13 @@ permissions:
 jobs:
   build-and-release:
     runs-on: windows-latest
+    env:
+      # node-gyp's own Visual Studio auto-detection doesn't reliably find windows-latest's
+      # pre-installed VS2022 Build Tools — this must be visible to every step that can trigger a
+      # native rebuild, not just `npm install`: electron-builder's OWN internal @electron/rebuild
+      # (during `--win` packaging) is what actually failed with "Could not find any Visual Studio
+      # installation to use", not the initial install.
+      GYP_MSVS_VERSION: "2022"
     steps:
       - uses: actions/checkout@v4
 
@@ -19,12 +26,16 @@ jobs:
           node-version: 24
 
       # node-gyp (used to rebuild native modules like @parcel/watcher, a transitive dep of the
-      # bundled omniroute dashboard) shells out to Python to generate build files. windows-latest
-      # doesn't reliably have one on PATH for npm to find, which is what broke the native rebuild
-      # step inside `electron-builder --win` (node-gyp failed to rebuild @parcel/watcher).
+      # bundled omniroute dashboard) shells out to Python to generate build files, then needs a
+      # Visual Studio C++ toolchain to actually compile. windows-latest ships VS2022 Build Tools,
+      # but node-gyp's own auto-detection doesn't reliably find them without help — that's what
+      # broke `electron-builder --win`'s native rebuild step first on Python, then (after adding
+      # setup-python) on "Could not find any Visual Studio installation to use".
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - uses: microsoft/setup-msbuild@v2
 
       - run: npm install
 
