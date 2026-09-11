@@ -21,9 +21,13 @@
     "jimp": "^1.6.1",
     "png-to-ico": "^3.0.2"
   },
+  "overrides": {
+    "node-gyp": "^12.1.0"
+  },
   "build": {
     "appId": "com.tecosys.nutaancode",
     "productName": "Nutaan Code",
+    "npmRebuild": false,
     "directories": {
       "output": "dist"
     },
