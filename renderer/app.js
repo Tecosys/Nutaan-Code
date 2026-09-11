@@ -1085,12 +1085,19 @@
       return;
     }
 
+    // A model id left over from a different provider (e.g. an OmniRoute-style "auto/gpt5.1" after
+    // the Server URL self-healed back to OpenRouter) isn't in the live catalog at all — that alone
+    // is a reliable signal the model is wrong for this baseUrl, independent of whatever error text
+    // the server happens to return for a request it can't fulfill (seen in practice as anything
+    // from a plain 404 to an opaque "Stream ended before producing a non-ping SSE event").
+    const looksLikeUnknownModel = settings.model && availableModels.length > 0 && !availableModels.includes(settings.model);
     const looksLikeModelAuthIssue =
-      /auth|unauthorized|401|403|missing.*header|payment|insufficient|credit/i.test(message || "") &&
-      settings.model &&
-      !settings.model.endsWith(":free");
+      looksLikeUnknownModel ||
+      (/auth|unauthorized|401|403|missing.*header|payment|insufficient|credit/i.test(message || "") &&
+        settings.model &&
+        !settings.model.endsWith(":free"));
     if (looksLikeModelAuthIssue) {
-      const fallback = availableModels.find((id) => id.endsWith(":free"));
+      const fallback = availableModels.find((id) => id.endsWith(":free")) || availableModels[0];
       if (fallback) {
         const badModel = settings.model;
         settings.model = fallback;
@@ -1098,7 +1105,9 @@
         updateModelBadge();
         appendBubble(
           "error",
-          `${message}\n\n"${badModel}" looks like it needs payment/credits you don't have. Switched your model to the free "${fallback}" — try sending again.`
+          looksLikeUnknownModel
+            ? `${message}\n\n"${badModel}" isn't a valid model for this server (probably left over from switching providers). Switched your model to "${fallback}" — try sending again.`
+            : `${message}\n\n"${badModel}" looks like it needs payment/credits you don't have. Switched your model to the free "${fallback}" — try sending again.`
         );
         setRunning(false);
         return;
