@@ -413,13 +413,32 @@
   let availableModels = [];
 
   async function refreshModels() {
-    const res = await window.nutaan.listModels(settings.baseUrl, settings.apiKey);
+    let res = await window.nutaan.listModels(settings.baseUrl, settings.apiKey);
+    if (!res.ok && /ECONNREFUSED/.test(res.error || "") && /localhost|127\.0\.0\.1/i.test(settings.baseUrl) && settings.baseUrl !== DEFAULT_BASE_URL) {
+      // Nothing is listening at this local address — it's an old default left over from before this
+      // app used OpenRouter (upgrading preserves settings, it doesn't reset them), never a working
+      // setup we'd be destroying. Self-heal instead of leaving the user stuck on a dead config forever.
+      const oldBaseUrl = settings.baseUrl;
+      settings.baseUrl = DEFAULT_BASE_URL;
+      await window.nutaan.setSettings(settings);
+      res = await window.nutaan.listModels(settings.baseUrl, settings.apiKey);
+      if (res.ok) {
+        appendBubble("error", `Your Server URL was still set to ${oldBaseUrl} (nothing was running there) — leftover from before this app used OpenRouter by default. Reset it to ${DEFAULT_BASE_URL} automatically, no action needed.`);
+      }
+    }
     if (!res.ok) {
       if (!settings.apiKey) {
         setStatus(false, "Not set up yet");
       } else {
         const reason = String(res.error || "unknown error").slice(0, 200);
+        const isLocalRefused = /ECONNREFUSED/.test(reason) && /localhost|127\.0\.0\.1/i.test(settings.baseUrl);
         setStatus(false, "Not connected — hover for why", reason);
+        appendBubble(
+          "error",
+          isLocalRefused
+            ? `Can't reach the model server: ${reason}\n\nNutaan Code is trying to reach ${settings.baseUrl}, a local address, but nothing is running there. Open ⚙ Settings → Advanced and change the Server URL to ${DEFAULT_BASE_URL} (or start your local server if you meant to use one).`
+            : `Can't reach the model server: ${reason}\n\nThis means your computer/network can't reach the server URL in Settings — it's not about whether your API key is right or wrong. If you're on a work/school network, it may be blocking it; try a different network (e.g. your phone's hotspot) to confirm.`
+        );
       }
       return;
     }
