@@ -1344,6 +1344,7 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
   const decoder = new TextDecoder();
   let buf = "";
   let content = "";
+  let finishReason = null;
   const toolCalls = [];
 
   async function readChunkWithTimeout() {
@@ -1386,6 +1387,7 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
       } catch {
         continue;
       }
+      if (json.choices?.[0]?.finish_reason) finishReason = json.choices[0].finish_reason;
       const delta = json.choices?.[0]?.delta;
       if (!delta) continue;
       if (delta.content) {
@@ -1424,7 +1426,7 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
   const message = { role: "assistant", content: content || null };
   const calls = toolCalls.filter(Boolean);
   if (calls.length) message.tool_calls = calls;
-  return { ok: true, message };
+  return { ok: true, message, finishReason };
 }
 
 // Injected fresh every turn (see requestMessages below) rather than baked into the chat's stored
@@ -1446,6 +1448,7 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
   // immediately without bloating the saved conversation with a repeated block every turn.
   const memoryContext = await buildMemoryContext().catch(() => null);
   let emptyResponseRetries = 0;
+  let truncatedRetries = 0;
   const MAX_MODEL_SWITCHES = 2;
   const triedModels = new Set([model]);
 
@@ -1525,6 +1528,32 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
 
     const toolCalls = message.tool_calls || [];
     if (toolCalls.length === 0) {
+      // A response cut off by the token limit (finish_reason "length") with no tool call looks
+      // identical to a real, deliberate final answer -- the exact bug that made this look like a
+      // silent, unexplained stop mid-task with no error shown. Nudge it to keep going instead of
+      // treating a truncated answer as if the model chose to stop there.
+      if (streamResult.finishReason === "length") {
+        const MAX_TRUNCATION_RETRIES = 3;
+        if (truncatedRetries < MAX_TRUNCATION_RETRIES) {
+          truncatedRetries++;
+          chatMessages.push({
+            role: "user",
+            content: "(Your last response got cut off by the length limit before you finished. Continue exactly where you left off.)",
+          });
+          sender.send("agent:retrying", {
+            message: "Response was cut off by the length limit — continuing",
+            attempt: truncatedRetries,
+            max: MAX_TRUNCATION_RETRIES,
+            delayMs: 300,
+          });
+          await new Promise((r) => setTimeout(r, 300));
+          continue;
+        }
+        sender.send("agent:error", {
+          message: "The model's response kept getting cut off by the length limit, even after being asked to continue. The task may be too large for one turn — try breaking it into smaller steps.",
+        });
+        return;
+      }
       // A model that stops with neither a tool call nor any text gave up mid-task without saying
       // so — free models do this occasionally. Nudge it to actually finish or explain instead of
       // silently ending the turn as if it succeeded.
