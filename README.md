@@ -9,9 +9,9 @@ Reads your project's files, proposes edits, runs commands, generates real image 
 
 ## Demo
 
-<video src="https://github.com/Tecosys/Nutaan-Code/raw/main/docs/demo.mp4" controls width="100%">
-  Your browser can't play this inline — <a href="docs/demo.mp4">download the recording</a> instead.
-</video>
+[![Watch the demo](docs/demo-thumb.png)](docs/demo.mp4)
+
+*Click the thumbnail to play the full recording.*
 
 ## Install — no terminal, no dev setup
 
@@ -25,6 +25,8 @@ Reads your project's files, proposes edits, runs commands, generates real image 
 4. Click **+ Open Project**, pick a folder, and start chatting.
 
 Want a lot more free models? OpenRouter is the easy default, but **OmniRoute** ships bundled with the app (nothing to download separately) and pools ~1.5B free tokens/month across 42 providers — Settings offers to switch you over with one click, key generated automatically.
+
+Prefer NVIDIA's models? **[NVIDIA NIM](https://build.nvidia.com)** gives you 3M tokens free per month across a wide model catalog, no setup — grab a key from their dashboard, paste it into the API key field, and set the Server URL (under Advanced) to `https://integrate.api.nvidia.com/v1`.
 
 Want to use a specific paid model later (e.g. an Anthropic Claude model)? Add credit on your provider and pick it from the Model dropdown — no code changes needed, since Nutaan Code speaks the standard OpenAI-compatible API any of these providers expose.
 
