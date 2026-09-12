@@ -74,14 +74,26 @@ Ctrl+C in the terminal closes the app. `npm start -- --help` lists the options.
 
 ---
 
+## Getting your API key
+
+Nutaan Code needs one credential: a **nutaan.com API key**. Models are reached through
+nutaan.com, so there's no OpenAI, Anthropic or Google key to set up.
+
+1. **Sign in** at **[https://nutaan.com](https://nutaan.com)** — create an account if you don't have one.
+2. Go to **[https://nutaan.com/dev-console](https://nutaan.com/dev-console)** — it's **Developers** in the dashboard sidebar.
+3. Under **API keys**, click **Create key**, give it a name like `Nutaan Code`, and **copy it**.
+4. Paste it into Nutaan Code when it asks.
+
+The key starts with `nut-`. It's stored only on your machine and is sent nowhere except
+nutaan.com. You can revoke it any time from the same page, and change it later in
+*Settings → nutaan.com account → Change key*.
+
+> Copy the key when it's shown — for security it isn't displayed in full again afterwards.
+
 ## First run
 
-You'll be asked for a **nutaan.com API key** (`nut-…`). Get one from your nutaan.com settings
-under *API keys*. That's the only credential — models are reached through nutaan.com, so there's
-no OpenAI, Anthropic or Google key to manage.
-
-Then **Open a project** and start typing. Turn on **Auto-approve** if you'd rather the agent
-edit files and run commands without asking each time.
+Once activated, **Open a project** and start typing. Turn on **Auto-approve** if you'd rather
+the agent edit files and run commands without asking each time.
 
 ---
 
@@ -155,7 +167,8 @@ release, or use **Run workflow** on the Actions tab to build without publishing.
 
 ## Troubleshooting
 
-**"Not connected" on startup** — the API key wasn't accepted. Re-enter it under *Settings →
+**"Not connected" on startup** — the API key was not accepted. Create a fresh one at
+https://nutaan.com/dev-console and re-enter it under *Settings →
 nutaan.com account → Change key*.
 
 **macOS says the app is damaged or from an unidentified developer** — it's unsigned. Right-click

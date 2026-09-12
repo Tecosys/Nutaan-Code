@@ -265,16 +265,23 @@
   <div class="modal activation-modal">
     <img class="activation-mark" src="../assets/logo.png" alt="" />
     <h2>Activate Nutaan Code</h2>
-    <p class="lead">Nutaan Code runs on your nutaan.com account. Paste your API key to activate this install — the models are already configured for you.</p>
+    <p class="lead">Nutaan Code runs on your nutaan.com account. Paste your API key below — models are already configured, so this is the only credential you need.</p>
     <div class="activation-error" id="activationError" hidden></div>
+
+    <ol class="activation-steps">
+      <li>Sign in at <button class="link-btn inline" id="openNutaanLink">nutaan.com</button></li>
+      <li>Open <strong>Developers</strong> in the sidebar <span class="step-url">nutaan.com/dev-console</span></li>
+      <li>Under <strong>API keys</strong>, click <strong>Create key</strong> and copy it</li>
+    </ol>
+
     <div class="field">
-      <label for="nutaanKeyInput">nutaan.com API key</label>
+      <label for="nutaanKeyInput">Paste your key</label>
       <input type="password" id="nutaanKeyInput" placeholder="nut-…" autocomplete="off" spellcheck="false" />
-      <div class="note">Find it in your nutaan.com settings under API keys. It's stored only on this device.</div>
+      <div class="note">Starts with <code>nut-</code>. Stored only on this device, never sent anywhere except nutaan.com.</div>
     </div>
     <div class="activation-actions">
       <button class="btn-primary" id="activateBtn">Activate</button>
-      <button class="link-btn" id="getKeyLink">Get an API key on nutaan.com</button>
+      <button class="link-btn" id="getKeyLink">Open nutaan.com/dev-console to create a key</button>
     </div>
   </div>
 </div>

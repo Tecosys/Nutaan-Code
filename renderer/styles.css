@@ -1026,6 +1026,20 @@ button, input, textarea, select { font-family: inherit; }
   border-color: rgba(74, 222, 128, 0.4);
 }
 
+/* A path the agent mentions is a thing you can open, so it looks like one. */
+.path-link {
+  color: var(--purple-light);
+  cursor: pointer;
+  border-bottom: 1px dotted rgba(192, 132, 252, 0.45);
+  word-break: break-all;
+}
+.path-link:hover {
+  color: #e9d5ff;
+  background: rgba(168, 85, 247, 0.12);
+  border-radius: 4px;
+  border-bottom-color: transparent;
+}
+
 .cursor {
   display: inline-block;
   width: 7px;
@@ -2451,6 +2465,33 @@ body.resizing webview { pointer-events: none; }
   margin-bottom: 16px;
 }
 .activation-ok[hidden] { display: none; }
+.activation-steps {
+  text-align: left;
+  margin: 0 0 20px;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--text-3);
+}
+.activation-steps li::marker { color: var(--purple-light); font-weight: 700; }
+.activation-steps strong { color: var(--text); font-weight: 600; }
+.step-url {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-faded);
+  background: var(--bg-code);
+  border: 1px solid var(--border-input);
+  border-radius: 5px;
+  padding: 1px 6px;
+  margin-left: 4px;
+  white-space: nowrap;
+}
+.link-btn.inline {
+  font-size: inherit;
+  vertical-align: baseline;
+  text-decoration: underline;
+}
+
 .activation-actions {
   display: flex;
   flex-direction: column;

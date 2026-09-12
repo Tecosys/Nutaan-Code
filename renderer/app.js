@@ -377,7 +377,10 @@
   nutaanKeyInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") activate();
   });
-  getKeyLink.addEventListener("click", () => window.nutaan.openExternal("https://nutaan.com"));
+  // Straight to the page that has the button, not the marketing homepage — the whole point is
+  // that someone stuck on this screen should not have to go hunting for it.
+  getKeyLink.addEventListener("click", () => window.nutaan.openExternal("https://nutaan.com/dev-console"));
+  el("openNutaanLink").addEventListener("click", () => window.nutaan.openExternal("https://nutaan.com"));
   changeKeyBtn.addEventListener("click", () => {
     settingsOverlay.hidden = true;
     showActivation("");
@@ -1373,12 +1376,58 @@
     }
   });
 
+  // Absolute paths the agent mentions become clickable, because reading one out and then
+  // hunting for it in a file manager is work the app can just do. Only real text is touched —
+  // walking text nodes rather than regexing the HTML keeps code blocks and existing markup
+  // intact, and skipping <code>/<pre> stops a path inside a command becoming a link.
+  const PATH_PATTERN = /(?:[A-Za-z]:\\[^\s"'<>|*?]+|\/(?:Users|home|var|opt|etc|tmp)\/[^\s"'<>|*?]+)/g;
+
+  function linkifyPaths(el) {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (node.parentElement?.closest("code, pre, a, .path-link")) return NodeFilter.FILTER_REJECT;
+        return PATH_PATTERN.test(node.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      },
+    });
+    const targets = [];
+    while (walker.nextNode()) targets.push(walker.currentNode);
+
+    for (const node of targets) {
+      const frag = document.createDocumentFragment();
+      let last = 0;
+      const text = node.nodeValue;
+      PATH_PATTERN.lastIndex = 0;
+      let m;
+      while ((m = PATH_PATTERN.exec(text)) !== null) {
+        // Trailing sentence punctuation is part of the prose, not the filename.
+        const raw = m[0].replace(/[.,;:)\]]+$/, "");
+        if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+        const a = document.createElement("span");
+        a.className = "path-link";
+        a.textContent = raw;
+        a.title = `Open ${raw}`;
+        a.dataset.path = raw;
+        frag.appendChild(a);
+        last = m.index + raw.length;
+      }
+      if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+      node.parentNode.replaceChild(frag, node);
+    }
+  }
+
+  thread.addEventListener("click", (e) => {
+    const link = e.target.closest(".path-link");
+    if (!link) return;
+    openDeviceFileInPanel(link.dataset.path);
+  });
+
   function appendBubble(role, content) {
     const row = document.createElement("div");
     row.className = "row " + role;
     const bubble = document.createElement("div");
     bubble.className = "bubble";
     bubble.innerHTML = role === "assistant" ? renderMarkdownLite(content) : escapeHtml(content);
+    if (role === "assistant") linkifyPaths(bubble);
     row.appendChild(bubble);
     thread.appendChild(row);
     renderEmptyVisibility();
@@ -2210,6 +2259,7 @@
       "You also have list_skills and use_skill for specialized, repeatable workflows (reviewing code, debugging, writing a commit message, a security/performance review, a dependency upgrade, etc.) — when the request clearly matches one of those, call list_skills, then use_skill on the matching one before improvising. Skip this entirely for requests that are just normal build/write/explain/fix work with no specialized workflow behind them (e.g. \"build me a website\", \"add a button\") — checking skills for every single request wastes a turn and adds nothing when nothing matches.",
       "You have browser_navigate, browser_read_page, browser_click, browser_type, browser_scroll, browser_screenshot, browser_resize, and browser_execute_script to actually drive the app's built-in browser panel — navigate, read text, click elements by CSS selector, fill and submit forms, scroll, capture screenshots, switch between mobile/tablet/desktop preview sizes, and (with approval) run arbitrary JavaScript for anything the other tools can't do. Use these to genuinely test a running web app, check how a site responds at different sizes, fill in a login form, or look something up — not to answer questions about this project's own code.",
       "For anything with more than about three steps — and for any long instruction with several distinct parts — call task_write first to lay out the plan as a checklist, then keep it updated as you go: exactly one item in_progress, and each one flipped to completed as soon as it's actually done. Don't batch the updates to the end; the checklist is how the user follows what you're doing and what's left.",
+      "When you list files for someone, lead with the filename and what it is, not the full path — a wall of C:\\Users\\... is unreadable. Put the folder after the name in plain words ('in Downloads', 'in Documents/invoices'), keep it to the handful that actually matter, and say why each one is relevant. Mention the full path only when it's genuinely ambiguous; the app turns paths into links the user can click to open, so you never need to tell them where to go looking.",
       "You have persistent memory (memory_list, memory_read, memory_write) that survives across every chat and project, and a knowledge base (kb_add, kb_search) for bulk reference material. When the user tells you something durable about themselves, how they want you to work, or a decision behind this project, save it with memory_write rather than letting it evaporate at the end of the chat. When they point you at documentation worth keeping, kb_add it instead of re-fetching it every time.",
       "Check your own work instead of handing that back to the user. If you changed something visual, or the user asks how something looks, drive the browser panel yourself: browser_navigate to the page (start the dev server first if it isn't running) and browser_screenshot it, or view_image a file directly. Both work on every model — when you can't see images yourself, a vision model describes them for you. Never tell the user to open a file or a URL themselves just to check something you could have looked at.",
       "Prefer edit_file over write_file for existing files, and only change what's needed.",
@@ -2659,6 +2709,7 @@
     finalizeReasoning();
     if (streamBubble) {
       streamBubble.innerHTML = renderMarkdownLite(streamText);
+      linkifyPaths(streamBubble);
       streamBubble = null;
       streamText = "";
     }
