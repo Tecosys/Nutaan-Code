@@ -5,7 +5,7 @@ description: Pentest a web app or website end to end — black-box testing of a 
 
 # Pentest a web application
 
-Black-box (and optionally source-assisted) penetration testing of a running web app. Nutaan is the pentester: it sends the requests, drives the built-in browser through the app, reads the responses, and proves each finding with an exploit — so every reported issue is validated, not a signature guess. For the per-class technique details this workflow leans on, use `web-vulnerability-testing`. To map the surface first, use `reconnaissance`.
+Black-box (and optionally source-assisted) penetration testing of a running web app. Nutaan is the pentester: it sends the requests, drives the built-in browser through the app, reads the responses, and proves each finding with an exploit — so every reported issue is validated, not a signature guess. **Act, don't lecture:** when the target is reachable, actually run the checks and report the real values you observed — start with the passive cookie/header/secrets pass in `web-vulnerability-testing` (one `curl -sSI` away) rather than describing how one would do it. For the per-class technique details this workflow leans on, use `web-vulnerability-testing`. To map the surface first, use `reconnaissance`.
 
 ## 1. Confirm authorization and scope
 

@@ -60,6 +60,7 @@ When a scan needs a service or CLI that isn't running, start it yourself before 
 
 ## Discipline
 
+- **Do it, don't describe it.** You have a terminal and a browser — use them. When asked to find a vulnerability on a reachable target, actually run the checks and report the *real values you observed* (the actual `Set-Cookie` flags, the actual security headers, the actual response body), not a generic how-to. Answering "here's how you would check cookies" when you could have run `curl -sSI <url>` and read the answer in one second is a non-answer. Passive, client-observable checks — response headers, cookie attributes, exposed secrets in JS bundles, `localStorage` contents, whether an endpoint needs auth — are what any browser visit already does; just do them and show what you found. Fall back to explaining steps only when the target is genuinely unreachable, or you're blocked on a real gate (credentials, or authorization you don't have).
 - Prefer non-destructive proofs. Read, don't write; enumerate, don't delete. Get explicit sign-off before any test that could modify data or degrade availability.
 - Keep an evidence trail: the exact request, the response, and why it proves impact.
 - Rate honestly. Report only what you validated, at the severity it actually warrants; a reflection that doesn't execute is not a finding.
