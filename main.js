@@ -1324,6 +1324,25 @@ ipcMain.handle("git:commit", async (_e, { root, paths, message }) => {
   return { ok: true, output: commit.stdout.trim().slice(0, 300) };
 });
 
+// Unified diff for one file (staged + unstaged, vs the last commit) so the code panel can show
+// what actually changed — added/removed lines — instead of just the current file contents. A
+// brand-new untracked file has no HEAD to diff against, so it comes back as all-added.
+ipcMain.handle("git:diff-file", async (_e, root, relPath) => {
+  const q = shellQuote(relPath);
+  const res = await runCommand(root, `git diff HEAD -- ${q}`);
+  const diff = (res.stdout || "").replace(/\s+$/, "");
+  if (diff.trim()) return { diff, hasChanges: true, untracked: false };
+  const st = await runCommand(root, `git status --porcelain -- ${q}`);
+  if (/^\?\?/.test((st.stdout || "").trim())) {
+    try {
+      const content = await fs.readFile(path.join(root, relPath), "utf8");
+      const synth = "@@ new file @@\n" + content.replace(/\n$/, "").split("\n").map((l) => "+" + l).join("\n");
+      return { diff: synth, hasChanges: true, untracked: true };
+    } catch {}
+  }
+  return { diff: "", hasChanges: false };
+});
+
 ipcMain.handle("git:push", async (_e, root) => {
   const remotes = await runCommand(root, "git remote");
   if (!remotes.stdout.trim()) {
@@ -1346,9 +1365,12 @@ ipcMain.handle("git:push", async (_e, root) => {
     // is open elsewhere). Rather than dumping git's "Updates were rejected… integrate the remote
     // changes" hint on the user, do what they'd do by hand — rebase onto the remote and retry.
     if (/rejected|non-fast-forward|fetch first|tip of your current branch is behind|behind its remote/i.test(detail)) {
-      const pull = await runCommand(root, "git pull --rebase");
+      // --autostash so a partial commit (staged some files, left others modified) doesn't block
+      // the rebase with "cannot pull with rebase: you have unstaged changes" — git stashes the
+      // rest, rebases, and restores it.
+      const pull = await runCommand(root, "git pull --rebase --autostash");
       if (pull.exitCode !== 0) {
-        // Conflicts (or a dirty tree). Don't leave the repo mid-rebase — abort and explain.
+        // Conflicts. Don't leave the repo mid-rebase — abort and explain.
         await runCommand(root, "git rebase --abort");
         const why = (pull.stderr || pull.stdout || "").slice(0, 300);
         return {

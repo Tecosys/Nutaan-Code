@@ -58,6 +58,14 @@
   const browserTabsEl = el("browserTabs");
   const segCode = el("segCode");
   const segBrowser = el("segBrowser");
+  const segTerminal = el("segTerminal");
+  const segTerminalBadge = el("segTerminalBadge");
+  const terminalBody = el("terminalBody");
+  const termTaskList = el("termTaskList");
+  const termOutput = el("termOutput");
+  const termTitle = el("termTitle");
+  const termStatus = el("termStatus");
+  const termStopBtn = el("termStopBtn");
   const panelCloseBtn = el("panelCloseBtn");
   const codeBody = el("codeBody");
   const browserBody = el("browserBody");
@@ -67,6 +75,9 @@
   const codeGrid = el("codeGrid");
   const codeGutter = el("codeGutter");
   const codeViewContent = el("codeViewContent");
+  const codeViewToggle = el("codeViewToggle");
+  const cvtDiff = el("cvtDiff");
+  const cvtFile = el("cvtFile");
   const langBadge = el("langBadge");
   const langName = el("langName");
   const codeLineCount = el("codeLineCount");
@@ -969,13 +980,18 @@
   function setPanelMode(mode) {
     panelMode = mode;
     const isCode = mode === "code";
+    const isBrowser = mode === "browser";
+    const isTerm = mode === "terminal";
     segCode.classList.toggle("active", isCode);
-    segBrowser.classList.toggle("active", !isCode);
+    segBrowser.classList.toggle("active", isBrowser);
+    segTerminal.classList.toggle("active", isTerm);
     codeBody.hidden = !isCode;
-    browserBody.hidden = isCode;
+    browserBody.hidden = !isBrowser;
+    terminalBody.hidden = !isTerm;
     fileTabs.hidden = !isCode;
-    browserTabsEl.hidden = isCode;
-    if (!isCode && browserTabs.length === 0) addBrowserTab("about:blank");
+    browserTabsEl.hidden = !isBrowser;
+    if (isBrowser && browserTabs.length === 0) addBrowserTab("about:blank");
+    if (isTerm) refreshTerminal();
   }
 
   function openPanel(mode) {
@@ -1040,11 +1056,23 @@
       .map((p, i) => `<span class="${i === parts.length - 1 ? "seg-last" : ""}">${escapeHtml(p)}</span>`)
       .join(`<span class="sep">›</span>`);
 
-    const body = file.content.slice(0, 200_000);
-    const lines = body.split("\n");
-    codeGutter.innerHTML = lines.map((_, i) => `<div>${i + 1}</div>`).join("");
-    codeViewContent.innerHTML = highlightCode(body);
-    codeLineCount.textContent = `${lines.length} line${lines.length === 1 ? "" : "s"}`;
+    // Diff / File toggle: available for project files (not external co-worker files).
+    const canDiff = !file.external && !!activePath;
+    codeViewToggle.hidden = !canDiff;
+    if (!canDiff && file.viewMode === "diff") file.viewMode = "file";
+    cvtDiff.classList.toggle("active", file.viewMode === "diff");
+    cvtFile.classList.toggle("active", file.viewMode !== "diff");
+
+    if (file.viewMode === "diff") {
+      renderDiffView(file);
+    } else {
+      const body = file.content.slice(0, 200_000);
+      const lines = body.split("\n");
+      codeGutter.innerHTML = lines.map((_, i) => `<div>${i + 1}</div>`).join("");
+      codeViewContent.innerHTML = highlightCode(body);
+      codeViewContent.classList.remove("is-diff");
+      codeLineCount.textContent = `${lines.length} line${lines.length === 1 ? "" : "s"}`;
+    }
 
     const ext = basename(file.path).includes(".") ? basename(file.path).split(".").pop().toLowerCase() : "";
     const [badge, name, color] = LANGS[ext] || ["TXT", "Plain text", "#31343d"];
@@ -1052,6 +1080,65 @@
     langBadge.style.background = color;
     langName.textContent = name;
   }
+
+  // Renders a git diff of the file in the code panel — added lines green, removed red, context
+  // dimmed — so you can see exactly what the agent changed (and spot conflicts) instead of just
+  // the current contents. Falls back to the file view when there's nothing to diff.
+  async function renderDiffView(file) {
+    let res = null;
+    try { res = await window.nutaan.gitDiffFile(activePath, file.path); } catch {}
+    if (!res || !res.hasChanges || !res.diff) {
+      file.viewMode = "file";
+      renderCodeView();
+      return;
+    }
+    const gut = [];
+    const rows = [];
+    let newLn = 0;
+    let inHunk = false;
+    let added = 0;
+    let removed = 0;
+    for (const raw of res.diff.split("\n")) {
+      if (raw.startsWith("diff ") || raw.startsWith("index ") || raw.startsWith("--- ") || raw.startsWith("+++ ") ||
+          raw.startsWith("old mode") || raw.startsWith("new mode") || raw.startsWith("similarity") ||
+          raw.startsWith("rename ") || raw.startsWith("\\ No newline")) continue;
+      if (raw.startsWith("@@")) {
+        const m = raw.match(/\+(\d+)/);
+        newLn = m ? parseInt(m[1], 10) : newLn;
+        inHunk = true;
+        gut.push(`<div class="dl-meta">·</div>`);
+        rows.push(`<div class="diff-line hunk">${escapeHtml(raw)}</div>`);
+        continue;
+      }
+      if (!inHunk) continue;
+      const c = raw[0];
+      if (c === "+") {
+        added++;
+        gut.push(`<div>${newLn++}</div>`);
+        rows.push(`<div class="diff-line add">${highlightCode(raw.slice(1)) || "&nbsp;"}</div>`);
+      } else if (c === "-") {
+        removed++;
+        gut.push(`<div class="dl-del">−</div>`);
+        rows.push(`<div class="diff-line del">${highlightCode(raw.slice(1)) || "&nbsp;"}</div>`);
+      } else {
+        gut.push(`<div>${newLn++}</div>`);
+        rows.push(`<div class="diff-line ctx">${highlightCode(raw.slice(1)) || "&nbsp;"}</div>`);
+      }
+    }
+    codeGutter.innerHTML = gut.join("");
+    codeViewContent.innerHTML = rows.join("");
+    codeViewContent.classList.add("is-diff");
+    codeLineCount.textContent = `+${added} −${removed}` + (res.untracked ? " · new file" : "");
+  }
+
+  function setCodeViewMode(mode) {
+    const file = openFiles.find((f) => f.path === activeFilePath);
+    if (!file) return;
+    file.viewMode = mode;
+    renderCodeView();
+  }
+  cvtDiff.addEventListener("click", () => setCodeViewMode("diff"));
+  cvtFile.addEventListener("click", () => setCodeViewMode("file"));
 
   // Co-worker results live outside the project, so they can't go through the project-scoped
   // read. Text opens in the editor panel the same way a project file does; anything the editor
@@ -1076,7 +1163,7 @@
     renderCodeView();
   }
 
-  async function openFileInPanel(relPath, { focus = true } = {}) {
+  async function openFileInPanel(relPath, { focus = true, diff = false } = {}) {
     if (!activePath) return;
     let content;
     try {
@@ -1086,8 +1173,12 @@
       return;
     }
     const existing = openFiles.find((f) => f.path === relPath);
-    if (existing) existing.content = content;
-    else openFiles.push({ path: relPath, content });
+    if (existing) {
+      existing.content = content;
+      if (diff) existing.viewMode = "diff";
+    } else {
+      openFiles.push({ path: relPath, content, viewMode: diff ? "diff" : "file" });
+    }
     if (openFiles.length > 8) openFiles.shift();
     if (focus) activeFilePath = relPath;
     else if (!activeFilePath) activeFilePath = relPath;
@@ -1120,6 +1211,71 @@
 
   segCode.addEventListener("click", () => { openPanel(); setPanelMode("code"); });
   segBrowser.addEventListener("click", () => { openPanel(); setPanelMode("browser"); });
+  segTerminal.addEventListener("click", () => { openPanel(); setPanelMode("terminal"); });
+
+  // ---------- Terminal panel: live view of background tasks (anyone can open it) ----------
+  let termSelectedId = null;
+  let termPollTimer = null;
+
+  async function refreshTerminal() {
+    let tasks = [];
+    try { tasks = (await window.nutaan.bgTasks.list()) || []; } catch {}
+    // newest first
+    tasks = tasks.slice().reverse();
+    termTaskList.innerHTML = "";
+    if (tasks.length === 0) {
+      termTaskList.innerHTML = `<div class="term-empty">No tasks</div>`;
+    }
+    if (!termSelectedId && tasks.length) termSelectedId = tasks[0].id;
+    for (const t of tasks) {
+      const row = document.createElement("div");
+      row.className = "term-task" + (t.id === termSelectedId ? " active" : "");
+      const dot = t.status === "running" ? "run" : t.status === "exited" && t.exitCode === 0 ? "ok" : "err";
+      row.innerHTML = `<span class="term-dot ${dot}"></span><span class="term-task-id">${escapeHtml(t.id)}</span><span class="term-task-cmd">${escapeHtml(t.command)}</span>`;
+      row.addEventListener("click", () => { termSelectedId = t.id; refreshTerminal(); });
+      termTaskList.appendChild(row);
+    }
+    await renderTermOutput();
+    updateTerminalBadge(tasks);
+    // keep polling while the selected task is running
+    const sel = tasks.find((x) => x.id === termSelectedId);
+    if (termPollTimer) { clearInterval(termPollTimer); termPollTimer = null; }
+    if (sel && sel.status === "running" && panelMode === "terminal") {
+      termPollTimer = setInterval(renderTermOutput, 1000);
+    }
+  }
+
+  async function renderTermOutput() {
+    if (!termSelectedId) {
+      termOutput.innerHTML = `<div class="term-empty">No background tasks yet. When the agent (or you) start one with run_background, it shows here live.</div>`;
+      termTitle.textContent = "Background tasks";
+      termStatus.textContent = "";
+      termStopBtn.hidden = true;
+      return;
+    }
+    let v = null;
+    try { v = await window.nutaan.bgTasks.get(termSelectedId); } catch {}
+    if (!v) return;
+    termTitle.textContent = v.id + "  ·  " + v.command;
+    termStatus.textContent = v.status === "running" ? "running" : v.status === "exited" ? `exited ${v.exitCode}` : v.status;
+    termStatus.className = "term-status " + (v.status === "running" ? "run" : v.status === "exited" && v.exitCode === 0 ? "ok" : "err");
+    termStopBtn.hidden = v.status !== "running";
+    const atBottom = termOutput.scrollHeight - termOutput.scrollTop - termOutput.clientHeight < 40;
+    termOutput.textContent = v.output || (v.status === "running" ? "(running — waiting for output…)" : "(no output)");
+    if (atBottom) termOutput.scrollTop = termOutput.scrollHeight;
+  }
+
+  function updateTerminalBadge(tasks) {
+    const running = (tasks || []).filter((t) => t.status === "running").length;
+    if (running > 0) { segTerminalBadge.textContent = String(running); segTerminalBadge.hidden = false; }
+    else segTerminalBadge.hidden = true;
+  }
+
+  termStopBtn.addEventListener("click", async () => {
+    if (!termSelectedId) return;
+    try { await window.nutaan.bgTasks.stop(termSelectedId); } catch {}
+    refreshTerminal();
+  });
   panelCloseBtn.addEventListener("click", () => {
     panel.hidden = true;
     resizer.hidden = true;
@@ -2992,10 +3148,23 @@
     showThinking();
   }
 
-  // Background task finished (or crashed) — drop a subtle notice in the thread without touching
-  // the thinking indicator, since a task can complete while the agent is idle between turns.
+  const seenBgTasks = new Set();
   window.nutaan.onAgentEvent("bgtask:update", (u) => {
-    if (!u || (u.status !== "exited" && u.status !== "error")) return;
+    if (!u) return;
+    // A task id we haven't seen before means one just started — surface it: pop the Terminal
+    // panel open so the live output is visible, the way you'd want a dev server or build to show.
+    if (u.id && !seenBgTasks.has(u.id)) {
+      seenBgTasks.add(u.id);
+      termSelectedId = u.id;
+      openPanel();
+      setPanelMode("terminal");
+    }
+    // Keep the badge and the live view current on every update.
+    if (panelMode === "terminal") refreshTerminal();
+    else window.nutaan.bgTasks.list().then(updateTerminalBadge).catch(() => {});
+    // Finished (or crashed): drop a subtle notice in the thread too, without touching the thinking
+    // indicator, since a task can complete while the agent is idle between turns.
+    if (u.status !== "exited" && u.status !== "error") return;
     const wrap = document.createElement("div");
     wrap.className = "tool-card " + (u.status === "error" || (u.exitCode && u.exitCode !== 0) ? "err" : "ok");
     const label =
@@ -3030,7 +3199,9 @@
     if (!args?.path || !activeProject()) return;
     // Don't yank the user off a live browser preview they deliberately have up just because the
     // agent also touched a file — load it into a tab, but only steal focus if Code is showing.
-    await openFileInPanel(args.path, { focus: panelMode === "code" });
+    // A write/edit opens straight into the diff so you see what changed; a plain read shows the file.
+    const isEdit = name === "write_file" || name === "edit_file";
+    await openFileInPanel(args.path, { focus: panelMode === "code", diff: isEdit });
   }
 
   const FS_MUTATING_TOOLS = new Set(["write_file", "edit_file", "run_command"]);

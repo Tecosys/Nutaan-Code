@@ -203,6 +203,11 @@
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="9"/><path d="M3.4 9.5h17.2M3.4 14.5h17.2M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
             <span>Browser</span>
           </button>
+          <button class="seg" id="segTerminal" title="Terminal — background tasks & live output">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7l4 4-4 4M12 16h7"/></svg>
+            <span>Terminal</span>
+            <span class="seg-badge" id="segTerminalBadge" hidden></span>
+          </button>
         </div>
         <button class="icon-btn" id="panelCloseBtn" title="Close panel">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -213,6 +218,10 @@
         <div class="breadcrumb">
           <span id="codeBreadcrumb"></span>
           <span style="flex:1"></span>
+          <div class="code-viewtoggle" id="codeViewToggle" hidden>
+            <button class="cvt-btn" id="cvtDiff" type="button">Diff</button>
+            <button class="cvt-btn active" id="cvtFile" type="button">File</button>
+          </div>
           <button class="code-copy" id="codeCopyBtn" type="button" hidden>Copy file</button>
         </div>
         <div class="code-scroll" id="codeScroll">
@@ -255,6 +264,20 @@
         <div class="agent-activity" id="agentActivity" hidden>
           <span class="agent-activity-dot"></span>
           <span id="agentActivityText">Working…</span>
+        </div>
+      </div>
+      <div class="panel-body terminal-body" id="terminalBody" hidden>
+        <div class="term-layout">
+          <div class="term-tasklist" id="termTaskList"></div>
+          <div class="term-main">
+            <div class="term-head">
+              <span class="term-title" id="termTitle">Background tasks</span>
+              <span class="term-status" id="termStatus"></span>
+              <span class="term-spacer"></span>
+              <button class="icon-btn tiny" id="termStopBtn" title="Stop this task" hidden>Stop</button>
+            </div>
+            <pre class="term-output" id="termOutput"><div class="term-empty" id="termEmpty">No background tasks yet. When the agent (or you) start one with run_background, it shows here live.</div></pre>
+          </div>
         </div>
       </div>
     </section>
