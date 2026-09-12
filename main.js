@@ -2596,20 +2596,22 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
       // switches at once too. Genuine brief blips still get the full retry budget below.
       const stalled = /stopped responding mid-stream/i.test(streamResult.error || "");
       const capacityFailure = isCapacityFailure(streamResult.status, streamResult.error);
-      // Never retry the *same* model on a capacity failure: a rate-limited or overloaded model
-      // will limit again a second later, so a same-model retry is pure wasted traffic — the
-      // "retrying in 1s" spam that fed the cascade. Cool it down and switch straight to a fresh
-      // model instead. Only genuine brief blips (network wobble, a lone mid-stream stall) keep a
-      // real retry budget.
-      const retryBudget = stalled || capacityFailure ? 0 : MAX_TRANSIENT_RETRIES;
+      // Can we move to a different model at all? Azure's "model" is the deployment baked into the
+      // URL, not a choice, and once the switch budget is spent there's nowhere left to go.
+      const canSwitchModels = !isAzureEndpoint(baseUrl) && triedModels.size <= MAX_MODEL_SWITCHES;
+      // On a capacity failure, don't waste a same-model retry when a fresh model is available —
+      // a rate-limited model will just limit again, the "retrying in 1s" spam that fed the
+      // cascade. Cool it down and switch instead. But when there is NOWHERE to switch (Azure, or
+      // the switch budget is spent), the same model is all we have, so keep a small retry budget
+      // and lean on the provider's retry-after hint rather than dead-ending on the first 429.
+      const retryBudget = stalled ? 0 : capacityFailure ? (canSwitchModels ? 0 : 2) : MAX_TRANSIENT_RETRIES;
       coolDownModel(model, streamResult.status, streamResult.error);
       if (stalled) modelCooldown.set(model, Date.now() + COOLDOWN_MS);
 
       if (attempt >= retryBudget) {
         // This model's upstream provider is down, not just briefly hiccuping — move to another
-        // model in the same catalog rather than dead-ending the whole turn on it. Azure is
-        // excluded because its "model" is the deployment baked into the URL, not a choice.
-        const canSwitch = !isAzureEndpoint(baseUrl) && triedModels.size <= MAX_MODEL_SWITCHES;
+        // model in the same catalog rather than dead-ending the whole turn on it.
+        const canSwitch = canSwitchModels;
         const nextModel = canSwitch ? await pickFallbackModel(baseUrl, apiKey, triedModels) : null;
         if (!nextModel) {
           // Nothing left to try. If everything is rate-limited, say so plainly — the turn isn't
@@ -2646,7 +2648,13 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
         continue;
       }
 
-      const delay = RETRY_DELAYS_MS[attempt] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
+      // A same-model retry only happens now for a brief blip, or for a capacity failure with
+      // nowhere to switch. In the capacity case honour the provider's "retry in Ns" hint (capped
+      // so the user isn't left staring) instead of retrying in 1s and getting limited again.
+      const hintedWait = capacityFailure ? parseRetryAfterMs(streamResult.error) : null;
+      const delay = hintedWait
+        ? Math.min(hintedWait, 20000)
+        : RETRY_DELAYS_MS[attempt] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
       sender.send("agent:retrying", { message: streamResult.error, attempt: attempt + 1, max: retryBudget, delayMs: delay });
       await new Promise((r) => setTimeout(r, delay));
       if (aborted()) {
