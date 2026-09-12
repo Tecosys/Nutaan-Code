@@ -442,6 +442,17 @@
     { label: "Clean up old files", prompt: "Look through my Downloads folder and tell me which files are old or duplicated and safe to delete. Don't delete anything yet." },
   ];
 
+  // Grouped so a search can be narrowed to what you're actually after — "report" across a
+  // Downloads folder otherwise returns the same name as a doc, an image and an archive.
+  const CO_WORKER_FILTERS = [
+    { id: "all", label: "All", test: () => true },
+    { id: "docs", label: "Docs", ext: /\.(pdf|docx?|txt|md|rtf|odt|pptx?|xlsx?|csv)$/i },
+    { id: "images", label: "Images", ext: /\.(png|jpe?g|gif|webp|svg|heic|bmp)$/i },
+    { id: "code", label: "Code", ext: /\.(js|ts|jsx|tsx|py|rb|go|rs|java|c|h|cpp|cs|php|html|css|scss|json|ya?ml|sh|sql)$/i },
+    { id: "media", label: "Media", ext: /\.(mp4|mov|avi|mkv|mp3|wav|flac|m4a|webm)$/i },
+  ];
+  let coWorkerFilter = "all";
+
   function renderCoWorkerView() {
     chatsView.innerHTML = "";
 
@@ -451,8 +462,81 @@
     search.className = "coworker-search";
     chatsView.appendChild(search);
 
+    const filters = document.createElement("div");
+    filters.className = "coworker-filters";
+    filters.hidden = true;
+    chatsView.appendChild(filters);
+
+    // Walking a disk takes long enough that a static "Searching…" reads as a hang, and it hides
+    // the one thing worth knowing: how much ground it has actually covered.
+    const progress = document.createElement("div");
+    progress.className = "coworker-progress";
+    progress.hidden = true;
+    chatsView.appendChild(progress);
+
     const results = document.createElement("div");
     chatsView.appendChild(results);
+
+    let lastHits = [];
+    let searching = false;
+
+    window.nutaan.onOsSearchProgress((p) => {
+      if (!searching) return;
+      if (p.done) {
+        progress.textContent = `Scanned ${p.scanned.toLocaleString()} items · ${p.found} match${p.found === 1 ? "" : "es"}`;
+        return;
+      }
+      const where = p.current ? p.current.replace(/^.*[\\/]([^\\/]+[\\/][^\\/]+)$/, "$1") : "";
+      progress.innerHTML =
+        `<span class="coworker-progress-dot"></span>` +
+        `Scanning ${escapeHtml(where)} · ${p.scanned.toLocaleString()} items · ${p.found} found`;
+    });
+
+    function paintFilters() {
+      filters.innerHTML = "";
+      for (const f of CO_WORKER_FILTERS) {
+        const b = document.createElement("button");
+        b.className = "coworker-filter" + (coWorkerFilter === f.id ? " on" : "");
+        b.textContent = f.label;
+        b.addEventListener("click", () => {
+          coWorkerFilter = f.id;
+          paintFilters();
+          paintHits();
+        });
+        filters.appendChild(b);
+      }
+    }
+
+    function paintHits() {
+      const f = CO_WORKER_FILTERS.find((x) => x.id === coWorkerFilter);
+      const shown = lastHits.filter((h) => h.isDir || !f.ext || f.ext.test(h.name));
+      results.innerHTML = "";
+      if (!shown.length) {
+        results.innerHTML = `<div class="menu-empty">Nothing matches that filter.</div>`;
+        return;
+      }
+      for (const h of shown.slice(0, 40)) {
+        const row = document.createElement("div");
+        row.className = "coworker-hit";
+        row.title = h.path;
+        row.innerHTML =
+          `<span class="hit-icon">${h.isDir ? "📁" : fileIcon(h.name)}</span>` +
+          `<span class="hit-meta"><span class="hit-name">${escapeHtml(h.name)}</span>` +
+          `<span class="hit-path">${escapeHtml(h.path)}</span></span>` +
+          `<button class="hit-ext" title="Open in the system app">↗</button>`;
+        row.addEventListener("click", (e) => {
+          if (e.target.classList.contains("hit-ext")) return;
+          if (h.isDir) window.nutaan.osOpen(h.path);
+          else openDeviceFileInPanel(h.path);
+        });
+        row.querySelector(".hit-ext").addEventListener("click", (e) => {
+          e.stopPropagation();
+          window.nutaan.osOpen(h.path);
+        });
+        results.appendChild(row);
+      }
+    }
+    paintFilters();
 
     const actions = document.createElement("div");
     actions.className = "coworker-actions";
@@ -478,30 +562,29 @@
       if (q.length < 2) {
         results.innerHTML = "";
         actions.hidden = false;
+        filters.hidden = true;
+        progress.hidden = true;
+        searching = false;
         return;
       }
       // Debounced: this walks real directories, so firing on every keystroke would have it
       // re-scanning the disk while the user is still typing.
       timer = setTimeout(async () => {
         actions.hidden = true;
-        results.innerHTML = `<div class="menu-empty">Searching…</div>`;
-        const res = await window.nutaan.osSearch({ query: q });
+        filters.hidden = false;
+        progress.hidden = false;
+        progress.innerHTML = `<span class="coworker-progress-dot"></span>Starting…`;
         results.innerHTML = "";
+        searching = true;
+        const res = await window.nutaan.osSearch({ query: q });
+        searching = false;
         if (!res.ok || !res.hits.length) {
+          lastHits = [];
           results.innerHTML = `<div class="menu-empty">${res.ok ? "Nothing found." : escapeHtml(res.error)}</div>`;
           return;
         }
-        for (const h of res.hits.slice(0, 40)) {
-          const row = document.createElement("div");
-          row.className = "coworker-hit";
-          row.title = h.path;
-          row.innerHTML =
-            `<span class="hit-icon">${h.isDir ? "📁" : fileIcon(h.name)}</span>` +
-            `<span class="hit-meta"><span class="hit-name">${escapeHtml(h.name)}</span>` +
-            `<span class="hit-path">${escapeHtml(h.path)}</span></span>`;
-          row.addEventListener("click", () => window.nutaan.osOpen(h.path));
-          results.appendChild(row);
-        }
+        lastHits = res.hits;
+        paintHits();
       }, 280);
     });
     setTimeout(() => search.focus(), 20);
@@ -783,7 +866,18 @@
     html: ["<>", "#f97316", null], py: ["PY", "#4ade80", null],
     yml: ["Y", "#8b8da0", null], yaml: ["Y", "#8b8da0", null],
     sh: ["$", "#4ade80", null], gitignore: ["◆", "#f97316", null],
-    png: ["▣", "#60a5fa", null], jpg: ["▣", "#60a5fa", null], svg: ["▣", "#c084fc", null],
+    png: ["▣", "#60a5fa", null], jpg: ["▣", "#60a5fa", null], jpeg: ["▣", "#60a5fa", null],
+    gif: ["▣", "#60a5fa", null], webp: ["▣", "#60a5fa", null], svg: ["▣", "#c084fc", null],
+    // The co-worker searches the whole machine, so it meets far more than source files.
+    pdf: ["PDF", null, "#dc2626"], doc: ["W", null, "#2563eb"], docx: ["W", null, "#2563eb"],
+    xls: ["X", null, "#16a34a"], xlsx: ["X", null, "#16a34a"], csv: ["CSV", "#4ade80", null],
+    ppt: ["P", null, "#ea580c"], pptx: ["P", null, "#ea580c"],
+    zip: ["ZIP", "#e0a336", null], rar: ["ZIP", "#e0a336", null], "7z": ["ZIP", "#e0a336", null],
+    mp4: ["▶", "#f472b6", null], mov: ["▶", "#f472b6", null], mkv: ["▶", "#f472b6", null],
+    webm: ["▶", "#f472b6", null], avi: ["▶", "#f472b6", null],
+    mp3: ["♪", "#c084fc", null], wav: ["♪", "#c084fc", null], flac: ["♪", "#c084fc", null],
+    m4a: ["♪", "#c084fc", null], exe: ["EXE", "#8b92a0", null], dmg: ["DMG", "#8b92a0", null],
+    ttf: ["Aa", "#60a5fa", null], otf: ["Aa", "#60a5fa", null], woff2: ["Aa", "#60a5fa", null],
   };
 
   const REACT_ICON =
@@ -954,6 +1048,29 @@
     langBadge.textContent = badge;
     langBadge.style.background = color;
     langName.textContent = name;
+  }
+
+  // Co-worker results live outside the project, so they can't go through the project-scoped
+  // read. Text opens in the editor panel the same way a project file does; anything the editor
+  // can't render (a PDF, a video) is handed to the system app instead of showing binary noise.
+  async function openDeviceFileInPanel(absPath) {
+    const res = await window.nutaan.osRead({ path: absPath, limit: 4000 });
+    if (!res.ok) {
+      appendBubble("error", `Couldn't open ${absPath}: ${res.error}`);
+      return;
+    }
+    if (res.kind !== "text") {
+      await window.nutaan.osOpen(absPath);
+      return;
+    }
+    const existing = openFiles.find((f) => f.path === absPath);
+    if (existing) existing.content = res.content;
+    else openFiles.push({ path: absPath, content: res.content, external: true });
+    if (openFiles.length > 8) openFiles.shift();
+    activeFilePath = absPath;
+    openPanel("code");
+    renderFileTabs();
+    renderCodeView();
   }
 
   async function openFileInPanel(relPath, { focus = true } = {}) {

@@ -17,6 +17,12 @@ contextBridge.exposeInMainWorld("nutaan", {
   runCommand: (root, command) => ipcRenderer.invoke("proc:run-command", root, command),
   osSearch: (payload) => ipcRenderer.invoke("os:search", payload),
   osOpen: (target) => ipcRenderer.invoke("os:open", target),
+  osRead: (payload) => ipcRenderer.invoke("os:read", payload),
+  onOsSearchProgress: (callback) => {
+    const listener = (_e, data) => callback(data);
+    ipcRenderer.on("os:search-progress", listener);
+    return () => ipcRenderer.removeListener("os:search-progress", listener);
+  },
   kbList: () => ipcRenderer.invoke("kb:list"),
   kbAdd: (payload) => ipcRenderer.invoke("kb:add", payload),
   kbRemove: (id) => ipcRenderer.invoke("kb:remove", id),

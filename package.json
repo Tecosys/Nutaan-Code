@@ -6,7 +6,7 @@
   "private": true,
   "author": "Tecosys",
   "scripts": {
-    "start": "electron .",
+    "start": "node bin/nutaan-code.js",
     "build:icon": "node scripts/build-icon.js",
     "dist": "electron-builder --win",
     "dist:mac": "electron-builder --mac",
@@ -14,7 +14,8 @@
     "dist:all": "electron-builder --win --mac --linux",
     "release": "electron-builder --win --publish always",
     "release:mac": "electron-builder --mac --publish always",
-    "release:linux": "electron-builder --linux --publish always"
+    "release:linux": "electron-builder --linux --publish always",
+    "start:raw": "electron ."
   },
   "dependencies": {
     "electron-updater": "^6.3.9"
@@ -33,6 +34,7 @@
       "output": "dist"
     },
     "files": [
+      "bin/**/*",
       "main.js",
       "preload.js",
       "renderer/**/*",
@@ -136,5 +138,8 @@
       "repo": "Nutaan-Code",
       "releaseType": "draft"
     }
+  },
+  "bin": {
+    "nutaan-code": "bin/nutaan-code.js"
   }
 }

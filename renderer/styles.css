@@ -564,6 +564,49 @@ button, input, textarea, select { font-family: inherit; }
 .coworker-search:focus { border-color: rgba(168, 85, 247, 0.55); }
 .coworker-search::placeholder { color: var(--text-faded); }
 
+.coworker-filters {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.coworker-filters[hidden] { display: none; }
+.coworker-filter {
+  border: 1px solid var(--border-card);
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 20px;
+  padding: 3px 11px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s, border-color 0.14s;
+}
+.coworker-filter:hover { border-color: #343846; color: var(--text-3); }
+.coworker-filter.on { background: var(--grad); border-color: transparent; color: #fff; }
+
+.coworker-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 8px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text-faded);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.coworker-progress[hidden] { display: none; }
+.coworker-progress-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--purple-light);
+  flex-shrink: 0;
+  animation: pulsedot 1.1s ease-in-out infinite;
+}
+
 .coworker-hit {
   display: flex;
   align-items: center;
@@ -573,6 +616,19 @@ button, input, textarea, select { font-family: inherit; }
   cursor: pointer;
 }
 .coworker-hit:hover { background: var(--bg-hover-soft); }
+.hit-ext {
+  border: none;
+  background: transparent;
+  color: var(--text-faded);
+  cursor: pointer;
+  font-size: 13px;
+  flex-shrink: 0;
+  opacity: 0;
+  padding: 2px 4px;
+  border-radius: 5px;
+}
+.coworker-hit:hover .hit-ext { opacity: 1; }
+.hit-ext:hover { background: var(--border-strong); color: var(--text); }
 .hit-icon { display: flex; flex-shrink: 0; width: 16px; justify-content: center; }
 .hit-meta { flex: 1; min-width: 0; }
 .hit-name {
@@ -1390,11 +1446,14 @@ button, input, textarea, select { font-family: inherit; }
 }
 .composer-inner { container-type: inline-size; }
 
-@container (max-width: 560px) {
+/* Measured against what the row actually needs: attach + two pills + model + send come to
+   roughly 470px with every label showing. Collapsing at 560 threw the labels away while they
+   still fit comfortably, which is most of the time once the side panel is open. */
+@container (max-width: 470px) {
   .pill-btn .label-text { display: none; }
   .pill-btn { padding: 0 10px; }
 }
-@container (max-width: 430px) {
+@container (max-width: 340px) {
   #modelBadge .label-text { display: none; }
   #modelBadge { padding: 0 10px; }
 }
@@ -2308,8 +2367,11 @@ body.resizing webview { pointer-events: none; }
   color: #fff;
 }
 .kb-row.on .kb-check { background: var(--grad); border-color: transparent; }
-.kb-row .kb-meta { flex: 1; min-width: 0; }
+/* Both are spans inside .kb-meta, so without an explicit block they render inline and the
+   source runs straight into the title. */
+.kb-row .kb-meta { flex: 1; min-width: 0; display: block; }
 .kb-row .kb-title {
+  display: block;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--text);
@@ -2318,6 +2380,7 @@ body.resizing webview { pointer-events: none; }
   white-space: nowrap;
 }
 .kb-row .kb-sub {
+  display: block;
   font-size: 11px;
   color: var(--text-faded);
   overflow: hidden;
