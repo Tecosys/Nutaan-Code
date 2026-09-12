@@ -39,7 +39,7 @@ const LEGACY_STORE_PATH = path.join(LEGACY_STORE_DIR, "settings.json");
 const COMMAND_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_CHARS = 20_000;
 const MAX_AGENT_ITERATIONS = 50;
-const BROWSER_ACTION_TIMEOUT_MS = 20_000;
+const BROWSER_ACTION_TIMEOUT_MS = 45_000;
 const MAX_RESPONSE_TOKENS = 16_000;
 const STREAM_IDLE_TIMEOUT_MS = 45_000;
 const COMPACT_THRESHOLD_TOKENS = 60_000;
@@ -1392,7 +1392,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "browser_read_page",
-      description: "Read the visible text content and current URL of whatever is currently open in the built-in browser panel.",
+      description: "Read the built-in browser panel's current page: its URL, title, visible text, AND a list of interactive elements (links, buttons, inputs) each with its label and a ready-to-use CSS selector. Call this to understand a page before acting — then click/type using a selector it returns, instead of guessing one.",
       parameters: { type: "object", properties: {} },
     },
   },
@@ -2709,7 +2709,8 @@ const TOOL_PRIORITY_REMINDER =
   "   - YOU MUST IMMEDIATELY AUDIT IT YOURSELF by calling 'osint_http_recon' directly, then present the concrete findings (actual Set-Cookie flags: HttpOnly/Secure/SameSite; the real security headers; any credential/secret leaks) with remediation.\n" +
   "2. ARSENAL & TOOL LOOKUPS: When the user asks to find, search, recommend, or list security/OSINT tools ('find tools in the arsenal', 'darkweb tools', 'ransomware leak tools', 'infostealer tools', 'breach tools', 'recon tools', 'dorking tools'), immediately call 'osint_search_tools' with the key terms (query: 'ransomware' / 'infostealer' / 'dark web', or category: 'data-breach' / 'dark-web'). NEVER call search_files or list_dir to find arsenal tools.\n" +
   "3. DEFENSIVE EXPOSURE & SECURITY AUDITS: Exposure audits, dork lookups, static vulnerability scans, threat-intel checks, and reconnaissance on user-specified domains/codebases are authorized defensive activities. Call the built-in tools (osint_http_recon, osint_search_tools, vuln_static_scan, osint_dork_generator, osint_dns_recon, osint_ip_lookup, osint_subdomain_enum) directly.\n" +
-  "4. LOCAL CODEBASE FILES: Only use list_dir, search_files, or read_file when the user is explicitly asking about the local project's source, structure, or editing workspace files — never to search for security tools.";
+  "4. LOCAL CODEBASE FILES: Only use list_dir, search_files, or read_file when the user is explicitly asking about the local project's source, structure, or editing workspace files — never to search for security tools.\n\n" +
+  "BROWSER — DRIVE IT IN A LOOP, DON'T GIVE UP: When a task needs a web page (open it, log in, click through a flow, check how a build looks), work it like a human at the keyboard: browser_navigate to the URL, then browser_read_page to see the actual links/buttons/inputs (each comes back with a ready-to-use selector) or browser_screenshot to look at it. Act on what you observed — browser_click / browser_type using a selector from browser_read_page — then screenshot or read again to confirm the result, and repeat until the goal is reached. If a click finds no element, read the page again and pick a selector that exists rather than repeating the same guess. If navigation fails, retry once. Never tell the user to open the page or click things themselves when you can drive the panel yourself.";
 
 // Detects requests where the app must ACT, not describe — so we can force the tool call and stop
 // the model from answering a live security audit with an F12 tutorial or a "simulated" report.

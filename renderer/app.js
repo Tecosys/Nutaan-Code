@@ -1197,8 +1197,18 @@
     view.style.display = "none";
     browserViewport.appendChild(view);
 
-    const tab = { id, title: "New tab", url: url || "about:blank", view, hue: TAB_HUES[browserTabs.length % TAB_HUES.length], loading: false };
+    const tab = { id, title: "New tab", url: url || "about:blank", view, hue: TAB_HUES[browserTabs.length % TAB_HUES.length], loading: false, ready: false };
     browserTabs.push(tab);
+
+    // Track when the webview is actually attached & dom-ready. Driving it before this — the case
+    // when the agent opens the panel and immediately navigates/screenshots — is the main reason
+    // browser actions used to hang until the 20s timeout. Actions await tab.whenReady first.
+    tab.whenReady = new Promise((resolve) => {
+      view.addEventListener("dom-ready", () => {
+        tab.ready = true;
+        resolve();
+      });
+    });
 
     view.addEventListener("did-start-loading", () => {
       tab.loading = true;
@@ -3053,30 +3063,84 @@
       window.nutaan.respondToBrowserAction(req.id, { ok: false, error: "No browser tab available" });
       return;
     }
+    // Don't drive a webview that isn't attached/dom-ready yet — wait for it first (capped, so a
+    // genuinely stuck page still returns instead of hanging until the main-process timeout).
+    const actTab = activeBrowserTab();
+    if (req.action !== "navigate" && actTab && !actTab.ready && actTab.whenReady) {
+      await Promise.race([actTab.whenReady, new Promise((r) => setTimeout(r, 8000))]);
+    }
     if (req.action === "click" || req.action === "type") await flashElement(view, req.selector);
     try {
       if (req.action === "navigate") {
         const url = normalizeUrl(req.url) || req.url;
+        let failInfo = null;
         await new Promise((resolve) => {
           let settled = false;
+          let started = false;
+          const cleanup = () => {
+            view.removeEventListener("did-start-loading", onStart);
+            view.removeEventListener("dom-ready", onReady);
+            view.removeEventListener("did-stop-loading", onStop);
+            view.removeEventListener("did-fail-load", onFail);
+          };
           const finish = () => {
             if (settled) return;
             settled = true;
-            view.removeEventListener("did-finish-load", finish);
-            view.removeEventListener("did-fail-load", finish);
+            cleanup();
             resolve();
           };
-          view.addEventListener("did-finish-load", finish);
-          view.addEventListener("did-fail-load", finish);
-          view.src = url;
-          setTimeout(finish, 10000);
+          // Only accept completion events AFTER this navigation actually began — otherwise a
+          // stale did-stop-loading queued from the previous page resolves us in ~1ms, before the
+          // new page has loaded at all.
+          const onStart = () => { started = true; };
+          const onReady = () => { if (started) finish(); };
+          const onStop = () => { if (started) finish(); };
+          // -3 is ERR_ABORTED (a normal redirect/replace), not a real failure worth reporting.
+          const onFail = (e) => {
+            if (e && e.errorCode && e.errorCode !== -3) failInfo = e.errorDescription || `error ${e.errorCode}`;
+            if (started) finish();
+          };
+          view.addEventListener("did-start-loading", onStart);
+          view.addEventListener("dom-ready", onReady);
+          view.addEventListener("did-stop-loading", onStop);
+          view.addEventListener("did-fail-load", onFail);
+          try {
+            if (view.loadURL) view.loadURL(url);
+            else view.src = url;
+          } catch {
+            view.src = url;
+          }
+          setTimeout(finish, 15000);
         });
         const finalUrl = view.getURL ? view.getURL() : url;
         browserAddress.value = finalUrl;
-        window.nutaan.respondToBrowserAction(req.id, { ok: true, url: finalUrl, title: view.getTitle ? view.getTitle() : "" });
+        window.nutaan.respondToBrowserAction(req.id, { ok: true, url: finalUrl, title: view.getTitle ? view.getTitle() : "", failed: failInfo || undefined });
       } else if (req.action === "read") {
-        const text = await view.executeJavaScript("document.body ? document.body.innerText.slice(0, 5000) : ''");
-        window.nutaan.respondToBrowserAction(req.id, { ok: true, url: view.getURL ? view.getURL() : "", text });
+        // Return the visible text AND a list of interactive elements with usable selectors, so the
+        // agent can inspect the page and click/type accurately instead of guessing a CSS selector.
+        const data = await view.executeJavaScript(`
+          (function () {
+            var text = document.body ? document.body.innerText.slice(0, 5000) : '';
+            var els = [];
+            var nodes = document.querySelectorAll('a[href], button, input, textarea, select, [role=button], [role=link], [role=tab], [onclick]');
+            for (var i = 0; i < nodes.length && els.length < 50; i++) {
+              var n = nodes[i];
+              var r = n.getBoundingClientRect();
+              if (r.width === 0 || r.height === 0) continue;
+              var label = (n.innerText || n.value || n.getAttribute('aria-label') || n.getAttribute('placeholder') || n.getAttribute('title') || n.name || '').trim().replace(/\\s+/g, ' ').slice(0, 70);
+              var sel = '';
+              try {
+                if (n.id) sel = '#' + CSS.escape(n.id);
+                else if (n.getAttribute('name')) sel = n.tagName.toLowerCase() + '[name="' + n.getAttribute('name') + '"]';
+                else if (n.getAttribute('data-testid')) sel = '[data-testid="' + n.getAttribute('data-testid') + '"]';
+                else if (n.getAttribute('aria-label')) sel = n.tagName.toLowerCase() + '[aria-label="' + n.getAttribute('aria-label') + '"]';
+              } catch (e) {}
+              els.push({ tag: n.tagName.toLowerCase(), type: n.getAttribute('type') || '', label: label, selector: sel });
+            }
+            return { text: text, elements: els, url: location.href, title: document.title };
+          })()
+        `);
+        window.nutaan.respondToBrowserAction(req.id, { ok: true, url: data.url || (view.getURL ? view.getURL() : ""), title: data.title, text: data.text, elements: data.elements });
       } else if (req.action === "click") {
         const result = await view.executeJavaScript(`
           (function() {
@@ -3123,7 +3187,21 @@
             setTimeout(finish, 8000);
           });
         }
-        const image = await view.capturePage();
+        // Let the page paint before grabbing it — capturePage on a just-shown/just-loaded webview
+        // can otherwise return a blank frame. Retry once if the first frame comes back suspiciously
+        // small (a blank capture), which happens right after the panel is first shown.
+        await new Promise((r) => setTimeout(r, 250));
+        let image;
+        try {
+          image = await view.capturePage();
+          if (!image || image.toDataURL().length < 3000) {
+            await new Promise((r) => setTimeout(r, 350));
+            image = await view.capturePage();
+          }
+        } catch (e) {
+          window.nutaan.respondToBrowserAction(req.id, { ok: false, error: `Couldn't capture the page: ${e.message}` });
+          return;
+        }
         window.nutaan.respondToBrowserAction(req.id, {
           ok: true,
           url: view.getURL ? view.getURL() : "",
