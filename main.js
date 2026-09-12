@@ -1255,6 +1255,26 @@ ipcMain.handle("git:push", async (_e, root) => {
     if (/Repository not found|403|denied|authentication/i.test(detail)) {
       return { ok: false, error: `${detail}\n\nThe remote rejected this — usually the repo URL is wrong or the credentials on this machine don't have access to it.` };
     }
+    // Non-fast-forward: the branch is behind its remote (someone else pushed, or the same repo
+    // is open elsewhere). Rather than dumping git's "Updates were rejected… integrate the remote
+    // changes" hint on the user, do what they'd do by hand — rebase onto the remote and retry.
+    if (/rejected|non-fast-forward|fetch first|tip of your current branch is behind|behind its remote/i.test(detail)) {
+      const pull = await runCommand(root, "git pull --rebase");
+      if (pull.exitCode !== 0) {
+        // Conflicts (or a dirty tree). Don't leave the repo mid-rebase — abort and explain.
+        await runCommand(root, "git rebase --abort");
+        const why = (pull.stderr || pull.stdout || "").slice(0, 300);
+        return {
+          ok: false,
+          error: `Your branch is behind the remote and the changes can't be merged automatically:\n\n${why}\n\nPull and resolve the conflicts (or commit/stash local changes) manually, then push again.`,
+        };
+      }
+      const retry = await runCommand(root, cmd);
+      if (retry.exitCode !== 0) {
+        return { ok: false, error: (retry.stderr || retry.stdout || "git push failed after integrating remote changes").slice(0, 400) };
+      }
+      return { ok: true, output: `Remote had newer commits — pulled and rebased, then pushed.\n${(retry.stderr || retry.stdout || "").trim().slice(0, 240)}` };
+    }
     return { ok: false, error: detail };
   }
   return { ok: true, output: (res.stderr || res.stdout || "").trim().slice(0, 300) };
