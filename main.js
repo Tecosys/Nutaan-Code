@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
 const path = require("node:path");
 const os = require("node:os");
 const fs = require("node:fs/promises");
-const { exec } = require("node:child_process");
+const { exec, spawn } = require("node:child_process");
 const { autoUpdater } = require("electron-updater");
 const arsenal = require("./arsenal");
 
@@ -1163,6 +1163,93 @@ function runCommand(root, command, signal) {
 
 ipcMain.handle("proc:run-command", async (_e, root, command) => runCommand(root, command));
 
+// ---------- Background tasks (long-running commands that don't block the turn) ----------
+// A dev server, a build watcher, a long test run: things you start and then keep working while
+// they run, checking output when you want it — the way Claude Code's background tasks behave.
+const backgroundTasks = new Map();
+let bgTaskSeq = 0;
+const MAX_BG_OUTPUT_LINES = 3000;
+
+function startBackgroundTask(root, command) {
+  const id = "bg" + ++bgTaskSeq;
+  let child;
+  try {
+    child = spawn(command, { cwd: root, shell: true, windowsHide: true });
+  } catch (e) {
+    return { id, command, status: "error", error: e.message };
+  }
+  const task = { id, command, cwd: root, status: "running", exitCode: null, error: null, output: [], startedAt: Date.now(), endedAt: null, child };
+  backgroundTasks.set(id, task);
+  const push = (chunk, stream) => {
+    const text = chunk.toString();
+    for (const line of text.split(/\r?\n/)) task.output.push({ stream, line });
+    if (task.output.length > MAX_BG_OUTPUT_LINES) task.output.splice(0, task.output.length - MAX_BG_OUTPUT_LINES);
+    try { win?.webContents.send("bgtask:update", { id, status: task.status, command, lines: task.output.length }); } catch {}
+  };
+  child.stdout?.on("data", (c) => push(c, "stdout"));
+  child.stderr?.on("data", (c) => push(c, "stderr"));
+  child.on("exit", (code, sig) => {
+    task.status = "exited";
+    task.exitCode = code ?? (sig ? 1 : 0);
+    task.endedAt = Date.now();
+    task.child = null;
+    try { win?.webContents.send("bgtask:update", { id, status: "exited", exitCode: task.exitCode, command }); } catch {}
+  });
+  child.on("error", (err) => {
+    task.status = "error";
+    task.error = err.message;
+    task.endedAt = Date.now();
+    task.child = null;
+    try { win?.webContents.send("bgtask:update", { id, status: "error", error: err.message, command }); } catch {}
+  });
+  return { id, command, status: task.status, startedAt: task.startedAt };
+}
+
+function bgTaskView(id, tailLines = 80) {
+  const t = backgroundTasks.get(id);
+  if (!t) return null;
+  const output = t.output.slice(-tailLines).map((o) => o.line).join("\n").slice(-MAX_OUTPUT_CHARS);
+  return {
+    id: t.id,
+    command: t.command,
+    status: t.status,
+    exitCode: t.exitCode,
+    error: t.error,
+    runningMs: (t.endedAt || Date.now()) - t.startedAt,
+    totalLines: t.output.length,
+    output,
+  };
+}
+
+function listBgTasks() {
+  return [...backgroundTasks.values()].map((t) => ({
+    id: t.id,
+    command: t.command.length > 90 ? t.command.slice(0, 90) + "…" : t.command,
+    status: t.status,
+    exitCode: t.exitCode,
+    lines: t.output.length,
+    runningMs: (t.endedAt || Date.now()) - t.startedAt,
+  }));
+}
+
+function stopBgTask(id) {
+  const t = backgroundTasks.get(id);
+  if (!t) return { ok: false, error: "No task with id " + id };
+  if (!t.child) return { ok: false, error: "Task " + id + " already " + t.status };
+  try {
+    t.child.kill();
+    t.status = "stopped";
+    t.endedAt = Date.now();
+    return { ok: true, id, status: "stopped" };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+ipcMain.handle("bgtask:list", () => listBgTasks());
+ipcMain.handle("bgtask:get", (_e, id) => bgTaskView(id, 300));
+ipcMain.handle("bgtask:stop", (_e, id) => stopBgTask(id));
+
 // Drives the branch chip in the header. A project that isn't a git repo just reports
 // `repo: false` and the chip stays hidden — not an error worth surfacing.
 ipcMain.handle("git:status", async (_e, root) => {
@@ -1654,11 +1741,58 @@ const TOOLS = [
     type: "function",
     function: {
       name: "run_command",
-      description: "Run a shell command in the project root (60s timeout). Requires user approval.",
+      description: "Run a shell command in the project root (60s timeout). Requires user approval. For long-running or never-ending commands (dev servers, watchers, long builds/tests), use run_background instead — this one will time out at 60s.",
       parameters: {
         type: "object",
         properties: { command: { type: "string" } },
         required: ["command"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_background",
+      description: "Start a long-running or never-ending shell command in the BACKGROUND and return immediately with a task id, without blocking the turn. Use this for dev servers (npm run dev), build watchers, long test suites, installs, or any command that takes a while or runs indefinitely. Keep working while it runs, then read its output with check_background_task. Requires user approval.",
+      parameters: {
+        type: "object",
+        properties: { command: { type: "string", description: "The shell command to run in the background, from the project root." } },
+        required: ["command"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "check_background_task",
+      description: "Read the current status and recent output of a background task started with run_background. Returns whether it is still running or has exited (with its exit code) and the latest output lines. Call this to see a dev server's logs, a build's progress, or a finished task's result.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "The background task id returned by run_background (e.g. 'bg1')." },
+          lines: { type: "number", description: "How many recent output lines to return (default 80)." },
+        },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_background_tasks",
+      description: "List all background tasks started this session with their id, command, status (running/exited/stopped) and exit code.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "stop_background_task",
+      description: "Stop (kill) a running background task by id — e.g. to shut down a dev server you started. Requires user approval.",
+      parameters: {
+        type: "object",
+        properties: { id: { type: "string", description: "The background task id to stop (e.g. 'bg1')." } },
+        required: ["id"],
       },
     },
   },
@@ -1874,6 +2008,8 @@ const SAFE_TOOLS = new Set([
   "kb_search",
   "task_write",
   "view_image",
+  "check_background_task",
+  "list_background_tasks",
   "osint_search_tools",
   "osint_dns_recon",
   "osint_ip_lookup",
@@ -2135,6 +2271,14 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
     }
     case "run_command":
       return runCommand(root, args.command, signal);
+    case "run_background":
+      return startBackgroundTask(root, args.command);
+    case "check_background_task":
+      return bgTaskView(args.id, args.lines || 80) || { error: "No background task with id " + args.id };
+    case "list_background_tasks":
+      return { tasks: listBgTasks() };
+    case "stop_background_task":
+      return stopBgTask(args.id);
     case "memory_list":
       return { entries: await listMemoryEntries() };
     case "memory_read":
@@ -2169,6 +2313,8 @@ function permissionPreview(name, args) {
   if (name === "edit_file")
     return { title: `Edit ${args.path}`, diff: { oldString: args.old_string, newString: args.new_string } };
   if (name === "run_command") return { title: "Run command", detail: args.command };
+  if (name === "run_background") return { title: "Run in background", detail: args.command };
+  if (name === "stop_background_task") return { title: `Stop background task ${args.id}`, detail: "Kills the running process." };
   if (name === "browser_execute_script") return { title: "Run script in browser panel", detail: args.code };
   if (name === "memory_write") return { title: `Save memory: ${args.id}`, detail: args.content };
   if (name === "generate_image") return { title: `Generate image: ${args.path}`, detail: args.prompt };

@@ -21,6 +21,11 @@ contextBridge.exposeInMainWorld("nutaan", {
     getTool: (id) => ipcRenderer.invoke("arsenal:get-tool", id),
     quickRecon: (target, type) => ipcRenderer.invoke("arsenal:quick-recon", target, type),
   },
+  bgTasks: {
+    list: () => ipcRenderer.invoke("bgtask:list"),
+    get: (id) => ipcRenderer.invoke("bgtask:get", id),
+    stop: (id) => ipcRenderer.invoke("bgtask:stop", id),
+  },
   osSearch: (payload) => ipcRenderer.invoke("os:search", payload),
   osOpen: (target) => ipcRenderer.invoke("os:open", target),
   osRead: (payload) => ipcRenderer.invoke("os:read", payload),
@@ -72,6 +77,7 @@ contextBridge.exposeInMainWorld("nutaan", {
       "agent:tool-arg-stream",
       "agent:done",
       "agent:error",
+      "bgtask:update",
     ];
     if (!valid.includes(channel)) return () => {};
     const listener = (_e, data) => callback(data);

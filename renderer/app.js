@@ -1504,6 +1504,10 @@
     if (name === "browser_execute_script") return `Running a script in the browser panel`;
     if (name === "write_file") return `Writing <code>${escapeHtml(args.path || "")}</code>`;
     if (name === "edit_file") return `Editing <code>${escapeHtml(args.path || "")}</code>`;
+    if (name === "run_background") return `Starting background task <code>${escapeHtml((args.command || "").slice(0, 60))}</code>`;
+    if (name === "check_background_task") return `Checking background task <code>${escapeHtml(args.id || "")}</code>`;
+    if (name === "list_background_tasks") return `Listing background tasks`;
+    if (name === "stop_background_task") return `Stopping background task <code>${escapeHtml(args.id || "")}</code>`;
     if (name === "run_command") {
       const cmd = String(args.command || "").replace(/\s+/g, " ").trim();
       if (!cmd) return `Running command`;
@@ -1778,6 +1782,18 @@
     } else if (name === "list_skills" && result.skills) {
       setToolStat(cardEl, `${result.skills.length} skill${result.skills.length === 1 ? "" : "s"}`);
       detail.innerHTML = `<pre>${escapeHtml(result.skills.map((s) => `${s.id} — ${s.description}`).join("\n") || "No skills available")}</pre>`;
+    } else if ((name === "run_background" || name === "check_background_task") && (result.id || result.status)) {
+      const statusTxt = result.status === "running" ? "running" : result.status === "exited" ? `exited (${result.exitCode})` : result.status;
+      setToolStat(cardEl, `${result.id || ""} ${statusTxt}`.trim());
+      const head = `${result.id || ""} · ${statusTxt}${result.command ? "\n$ " + result.command : ""}`;
+      detail.innerHTML = `<pre>${escapeHtml(head + (result.output ? "\n\n" + result.output : (result.status === "running" ? "\n\n(running — check again for output)" : "")))}</pre>`;
+    } else if (name === "list_background_tasks" && result.tasks) {
+      setToolStat(cardEl, `${result.tasks.length} task${result.tasks.length === 1 ? "" : "s"}`);
+      const lines = result.tasks.map((t) => `${t.id}  [${t.status}${t.exitCode != null ? " " + t.exitCode : ""}]  ${t.command}`).join("\n");
+      detail.innerHTML = `<pre>${escapeHtml(lines || "No background tasks")}</pre>`;
+    } else if (name === "stop_background_task") {
+      setToolStat(cardEl, result.ok ? `stopped ${result.id || ""}` : "not stopped");
+      detail.innerHTML = `<pre>${escapeHtml(result.ok ? `Stopped ${result.id}` : result.error || "Could not stop")}</pre>`;
     } else if (name === "osint_search_tools" && result.tools) {
       setToolStat(cardEl, `${result.tools.length} tool${result.tools.length === 1 ? "" : "s"}`);
       const lines = result.tools.slice(0, 20).map((t) => {
@@ -2919,6 +2935,7 @@
       "browser_scroll", "browser_screenshot", "browser_resize",
       "osint_search_tools", "osint_dns_recon", "osint_ip_lookup", "osint_subdomain_enum",
       "osint_http_recon", "osint_dork_generator", "vuln_static_scan",
+      "run_background", "check_background_task", "list_background_tasks", "stop_background_task",
     ];
     if (visibleTools.includes(name)) appendToolCard(id, name, args);
     runActivity.textContent = toolLabel(name, args).replace(/<[^>]+>/g, "");
@@ -2974,6 +2991,22 @@
     scrollToBottom();
     showThinking();
   }
+
+  // Background task finished (or crashed) — drop a subtle notice in the thread without touching
+  // the thinking indicator, since a task can complete while the agent is idle between turns.
+  window.nutaan.onAgentEvent("bgtask:update", (u) => {
+    if (!u || (u.status !== "exited" && u.status !== "error")) return;
+    const wrap = document.createElement("div");
+    wrap.className = "tool-card " + (u.status === "error" || (u.exitCode && u.exitCode !== 0) ? "err" : "ok");
+    const label =
+      u.status === "error"
+        ? `Background task ${u.id} failed: ${escapeHtml(u.error || "")}`
+        : `Background task ${u.id} finished — exit ${u.exitCode}${u.command ? ` · <code>${escapeHtml(u.command.slice(0, 60))}</code>` : ""}`;
+    wrap.innerHTML = `<div class="tool-header"><div class="tool-title">${label}</div></div>`;
+    thread.appendChild(wrap);
+    renderEmptyVisibility();
+    scrollToBottom();
+  });
 
   window.nutaan.onAgentEvent("agent:compacting", () => {
     appendNoticeCard("Compacting conversation to make room for more context…");
