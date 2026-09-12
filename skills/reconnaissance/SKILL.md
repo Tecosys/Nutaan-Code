@@ -13,7 +13,7 @@ Reconnaissance builds the map the rest of the test works from. Only enumerate ta
 
 ## 2. Active (within scope + rules of engagement)
 
-Run from the built-in terminal when the tooling is installed; otherwise fall back to `curl`/browser and note what a fuller scan would add.
+Run from the built-in terminal when the tooling is installed; otherwise fall back to `curl`/browser and note what a fuller scan would add. Passive recon needs no heavy tooling — crt.sh, DNS, HTTP headers, Wayback, and GitHub search are all a `curl` away. If you choose a Dockerized recon tool (e.g. SpiderFoot) and the Docker daemon is down, **start it yourself and poll until it's ready** rather than telling the user to — see the `penetration-testing` skill's "Bring up your own tooling". Don't stall the whole recon because one optional tool needs Docker.
 
 - **Subdomain enumeration** — e.g. `subfinder -d target.com`, amass, or CT logs.
 - **Port/service scan** — e.g. `nmap -sV -Pn host` for open ports and service versions. Respect rate limits.

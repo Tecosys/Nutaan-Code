@@ -44,6 +44,18 @@ Nutaan gives you what an autonomous pentest platform's sandbox provides, nativel
 - **File read/edit** — source-assisted (white-box) testing when a repo or OpenAPI spec is in scope, and drafting the fix in place afterwards.
 - **Memory / knowledge base** — keep engagement notes (scope, credentials handling, findings, retest status) across the session.
 
+### Bring up your own tooling — don't punt to the user
+
+When a scan needs a service or CLI that isn't running, start it yourself before asking for help. Telling the user "Docker isn't running, here are instructions" is the app admitting it knows what to do and declining to do it.
+
+- **Prefer the built-in tools first.** Most passive recon and a lot of active testing needs nothing but the terminal (`curl`, `git`, `openssl`, `nslookup`/`dig`) and the built-in browser: crt.sh, DNS, HTTP headers, Wayback, GitHub search, and endpoint probing all work with `curl` and the browser, no Docker at all. Reach for a heavy scanner only when it genuinely adds coverage — don't make the run depend on one.
+- **If you do want a Dockerized scanner** (SpiderFoot, nuclei, OWASP ZAP, an sqlmap image) and `docker info` fails, check whether Docker is merely stopped and start it, then poll until the engine answers:
+  - Windows: `powershell -Command "Start-Process 'C:\Program Files\Docker\Docker\Docker Desktop.exe'"`
+  - macOS: `open -a Docker`
+  - Linux: `sudo systemctl start docker` (or `service docker start`)
+  - Then loop on `docker info` (every few seconds, ~2 min cap) until it returns a server version. Once up, **actually run the scan** — `docker run --rm ...`, read the output, report findings — rather than writing instructions for the user to run it.
+- **Only hand back the one thing a human must do.** A first-run Docker Desktop that needs its terms accepted or WSL2 enabled, `sudo` you don't have, or credentials — name that single action precisely and stop there. Don't paste a generic setup guide, and don't give up on the whole scan because one optional tool wouldn't start: fall back to the built-in-tool path and get what coverage you can.
+
 > Optional heavier engine: if the user has the external Strix CLI (Docker) installed and wants a fully autonomous multi-agent run as a second opinion, Nutaan can drive it from the terminal — but it is not required; everything here runs with Nutaan's own tools.
 
 ## Discipline
