@@ -1467,7 +1467,12 @@ button, input, textarea, select { font-family: inherit; }
 /* Measured against what the row actually needs: attach + two pills + model + send come to
    roughly 470px with every label showing. Below that the labels collapse; the truncation
    safety net on .pill-btn guarantees the row can never overflow even mid-collapse. */
-@container (max-width: 470px) {
+/* Collapse the pill labels (incl. the model name) to icons before the row runs out of room. A
+   long model name like "gemini-3.5-flash-lite" makes the labelled row ~548px wide, so the old
+   470px threshold left a 470–548px band — hit while dragging the side panel wider — where the
+   send button overlapped the model badge. Collapse at 520 and let labels truncate (min-width:0
+   below) to cover the sliver above it. */
+@container (max-width: 520px) {
   .pill-btn .label-text { display: none; }
   .pill-btn { padding: 0 10px; }
 }
@@ -1500,6 +1505,7 @@ button, input, textarea, select { font-family: inherit; }
 .pill-btn .label-text {
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 .pill-btn:hover { background: var(--bg-hover); border-color: #2e3240; }
 .pill-btn .slash { font-family: var(--mono); color: var(--text-dim); }

@@ -1312,27 +1312,31 @@
   });
   browserReload.addEventListener("click", () => activeWebview()?.reload());
 
+  // Each preset emulates a real device width; applyDeviceScale renders the webview at that width
+  // (so the page picks the matching responsive layout) and scales it to fit the panel. "Desktop"
+  // must emulate a true desktop width — using the narrow panel width made desktop mode show the
+  // site's MOBILE layout, and tablet's 820px showed the desktop layout, which is backwards.
   const DEVICES = [
-    { id: "desktop", label: "Desktop" },
-    { id: "tablet", label: "Tablet" },
-    { id: "mobile", label: "Mobile" },
+    { id: "desktop", label: "Desktop", width: 1280 },
+    { id: "tablet", label: "Tablet", width: 768 },
+    { id: "mobile", label: "Mobile", width: 390 },
   ];
 
   function setBrowserSize(mode) {
-    browserViewport.classList.remove("device", "device-mobile", "device-tablet");
-    if (mode === "mobile") browserViewport.classList.add("device", "device-mobile");
-    else if (mode === "tablet") browserViewport.classList.add("device", "device-tablet");
+    browserViewport.classList.remove("device", "device-mobile", "device-tablet", "device-desktop");
+    browserViewport.classList.add("device", "device-" + (DEVICES.find((d) => d.id === mode) ? mode : "desktop"));
     deviceBtn.textContent = (DEVICES.find((d) => d.id === mode)?.label || "Desktop") + " ▾";
     applyDeviceScale();
   }
 
   // Renders the device-preview webview at the true device width but visually scaled to fit the
-  // panel, so the whole frame is always visible (never clipped) however narrow the panel is.
+  // panel, so the whole frame is always visible (never clipped) however narrow the panel is, and
+  // the page picks the responsive layout for that real width (desktop/tablet/mobile).
   function applyDeviceScale() {
     const wv = activeWebview();
     if (!wv) return;
-    const isDevice = browserViewport.classList.contains("device");
-    if (!isDevice) {
+    const dev = DEVICES.find((d) => browserViewport.classList.contains("device-" + d.id));
+    if (!dev) {
       wv.style.position = "";
       wv.style.transform = "";
       wv.style.transformOrigin = "";
@@ -1342,7 +1346,7 @@
       wv.style.top = "";
       return;
     }
-    const deviceWidth = browserViewport.classList.contains("device-tablet") ? 820 : 390;
+    const deviceWidth = dev.width;
     const pad = 18;
     const availW = Math.max(120, browserViewport.clientWidth - pad * 2);
     const availH = Math.max(200, browserViewport.clientHeight - pad * 2);
