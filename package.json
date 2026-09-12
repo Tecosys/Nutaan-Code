@@ -9,7 +9,12 @@
     "start": "electron .",
     "build:icon": "node scripts/build-icon.js",
     "dist": "electron-builder --win",
-    "release": "electron-builder --win --publish always"
+    "dist:mac": "electron-builder --mac",
+    "dist:linux": "electron-builder --linux",
+    "dist:all": "electron-builder --win --mac --linux",
+    "release": "electron-builder --win --publish always",
+    "release:mac": "electron-builder --mac --publish always",
+    "release:linux": "electron-builder --linux --publish always"
   },
   "dependencies": {
     "electron-updater": "^6.3.9"
@@ -37,7 +42,9 @@
       "node_modules/**/*"
     ],
     "win": {
-      "target": "nsis",
+      "target": [
+        { "target": "nsis", "arch": ["x64", "arm64"] }
+      ],
       "icon": "assets/icon.ico"
     },
     "nsis": {
@@ -45,6 +52,40 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
+    },
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["x64", "arm64"] },
+        { "target": "zip", "arch": ["x64", "arm64"] }
+      ],
+      "icon": "assets/logo.png",
+      "category": "public.app-category.developer-tools",
+      "darkModeSupport": true,
+      "extendInfo": {
+        "NSDesktopFolderUsageDescription": "Nutaan Code opens and organises files you point it at.",
+        "NSDocumentsFolderUsageDescription": "Nutaan Code opens and organises files you point it at.",
+        "NSDownloadsFolderUsageDescription": "Nutaan Code opens and organises files you point it at."
+      }
+    },
+    "dmg": {
+      "contents": [
+        { "x": 130, "y": 220 },
+        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+      ]
+    },
+    "linux": {
+      "target": [
+        { "target": "AppImage", "arch": ["x64", "arm64"] },
+        { "target": "deb", "arch": ["x64", "arm64"] },
+        { "target": "rpm", "arch": ["x64"] }
+      ],
+      "icon": "assets/logo.png",
+      "category": "Development",
+      "maintainer": "Tecosys",
+      "synopsis": "AI coding agent desktop app",
+      "desktop": {
+        "StartupWMClass": "Nutaan Code"
+      }
     },
     "publish": {
       "provider": "github",

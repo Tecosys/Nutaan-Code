@@ -4,22 +4,71 @@ on:
   push:
     tags:
       - "v*.*.*"
+  # Lets you produce installers from a branch without cutting a tag, to check a build works
+  # before it becomes a published release.
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to a GitHub release (otherwise build only)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
-  build-and-release:
-    runs-on: windows-latest
+  build:
+    # Each installer has to be produced on its own OS: electron-builder needs macOS tooling to
+    # make a .dmg and Linux tooling for .deb/.rpm, so a single Windows runner cannot ship all
+    # three. Running them in parallel keeps a full release at the speed of the slowest one.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+            artifact: windows-installers
+          - os: macos-latest
+            platform: mac
+            artifact: macos-installers
+          - os: ubuntu-latest
+            platform: linux
+            artifact: linux-installers
+
+    runs-on: ${{ matrix.os }}
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
 
-      - run: npm install
+      - run: npm ci
 
-      - run: npx electron-builder --win --publish always
+      # rpm packaging needs the rpm tool, which the Ubuntu runner does not ship with.
+      - name: Install Linux packaging tools
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y rpm
+
+      - name: Build ${{ matrix.platform }}
+        run: npx electron-builder --${{ matrix.platform }} ${{ (github.event_name == 'push' || inputs.publish) && '--publish always' || '--publish never' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Unsigned builds otherwise fail the notarization step on macOS runners.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload ${{ matrix.platform }} installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.rpm

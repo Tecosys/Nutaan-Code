@@ -9,138 +9,389 @@
 <body>
 
 <div id="app">
-  <aside class="sidebar">
+
+  <header class="topbar">
     <div class="brand">
-      <img src="../assets/logo.png" alt="" class="brand-logo" />
+      <img class="brand-mark" src="../assets/logo.png" alt="Nutaan" />
       <span class="brand-text">Nutaan Code</span>
-    </div>
-
-    <button class="open-folder-btn" id="openFolderBtn">+ Open Project</button>
-
-    <div class="project-list" id="projectList"></div>
-
-    <div class="sidebar-divider" id="fileTreeDivider" hidden></div>
-    <div class="project-path" id="projectPath"></div>
-    <div class="file-tree" id="fileTree"></div>
-
-    <div class="sidebar-footer">
-      <span class="dot" id="statusDot"></span>
-      <span class="status-text" id="statusText">Not connected</span>
-      <button class="icon-btn" id="settingsBtn" title="Settings">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="3"></circle>
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-        </svg>
+      <button class="icon-btn" id="sidebarToggleBtn" title="Toggle sidebar">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M10 4v16"/></svg>
       </button>
     </div>
-  </aside>
 
-  <main class="workspace">
-    <header class="workspace-header">
-      <button class="icon-btn" id="sidebarToggleBtn" title="Toggle sidebar">☰</button>
-      <button class="auto-approve-btn" id="autoApproveBtn" title="When on, file edits and commands run immediately without asking">⚡ Auto-approve: Off</button>
-      <button class="icon-btn" id="browserToggleBtn" title="Toggle browser">🌐</button>
-      <button class="icon-btn" id="newChatBtn" title="New chat">＋</button>
-    </header>
-
-    <div class="workspace-body">
-      <div class="chat-pane">
-        <div class="thread-wrap">
-          <div class="thread" id="thread">
-            <div class="empty-state" id="emptyState">
-              <img src="../assets/logo.png" alt="" class="empty-logo" />
-              <h2>Nutaan Code</h2>
-              <div id="emptyHint">Open a project folder to get started.</div>
-            </div>
-          </div>
-        </div>
-
-        <footer class="composer-wrap">
-          <div class="composer">
-            <textarea id="input" placeholder="Ask Nutaan Code to build, fix, or explain something…" rows="1"></textarea>
-            <div class="composer-toolbar">
-              <div class="model-picker">
-                <button class="model-badge" id="modelBadge" title="Change model"></button>
-                <div class="model-menu" id="modelMenu" hidden></div>
-              </div>
-              <div class="composer-spacer"></div>
-              <button class="send-btn" id="sendBtn" title="Send">↑</button>
-            </div>
-          </div>
-          <div class="hint">Runs entirely on your machine. Files only change with your approval.</div>
-        </footer>
+    <div class="topbar-mid">
+      <div class="project-menu-wrap">
+        <button class="project-btn" id="projectBtn" title="Switch project">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8b92a0" stroke-width="2" stroke-linecap="round"><path d="M3 7a2 2 0 0 1 2-2h3.6l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          <span class="label" id="projectBtnLabel">No project</span>
+          <svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2.4" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="project-menu" id="projectMenu" hidden></div>
       </div>
 
-      <div class="browser-pane" id="browserPane" hidden>
-        <div class="panel-tabs">
-          <button class="panel-tab active" id="tabBrowser">🌐 Browser</button>
-          <button class="panel-tab" id="tabCode">{ } Code</button>
-          <div class="panel-tabs-spacer"></div>
-          <button class="icon-btn small" id="browserClose" title="Close">✕</button>
-        </div>
-        <div id="browserView-wrap">
-          <div class="browser-bar">
-            <div class="nav-group">
-              <button class="nav-btn" id="browserBack" title="Back">‹</button>
-              <button class="nav-btn" id="browserForward" title="Forward">›</button>
-              <button class="nav-btn" id="browserReload" title="Reload">↻</button>
-            </div>
-            <div class="address-wrap">
-              <span class="address-dot" id="addressDot"></span>
-              <input type="text" id="browserAddress" placeholder="Enter a URL or localhost:3000…" />
-            </div>
-            <div class="device-group">
-              <button class="device-btn" id="sizeMobile" title="Mobile view">📱</button>
-              <button class="device-btn" id="sizeTablet" title="Tablet view">📟</button>
-              <button class="device-btn active" id="sizeDesktop" title="Desktop view">🖥️</button>
-            </div>
-          </div>
-          <div class="browser-viewport" id="browserViewport">
-            <webview id="browserView" src="about:blank" allowpopups></webview>
-          </div>
-        </div>
-        <div id="codeView-wrap" hidden>
-          <div class="code-view-header" id="codeFileLabel">No file open yet</div>
-          <pre class="code-view"><code id="codeViewContent"></code></pre>
-        </div>
+      <div class="branch-chip" id="branchChip" hidden>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#8b92a0" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="8" r="2.4"/><path d="M6 8.4v7.2M8.4 6H14a4 4 0 0 1 4 4v0"/></svg>
+        <span class="branch-name" id="branchName">main</span>
+        <span class="branch-sep"></span>
+        <span class="sync-dot" id="syncDot"></span>
+        <span class="sync-label" id="syncLabel">Clean</span>
+        <button class="push-btn" id="pushBtn" title="Push commits" hidden>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V5M6 11l6-6 6 6"/></svg>
+          <span id="pushLabel">Push</span>
+        </button>
       </div>
     </div>
-  </main>
+
+    <button class="auto-approve" id="autoApproveBtn" title="When on, file edits and commands run immediately without asking">
+      <span class="switch-track"><span class="switch-knob"></span></span>
+      <span class="label">Auto-approve</span>
+    </button>
+
+    <div class="topbar-actions">
+      <button class="icon-btn" id="panelToggleBtn" title="Toggle side panel">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M14 4v16"/></svg>
+      </button>
+      <button class="icon-btn" id="settingsBtn" title="Settings">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="workspace" id="workspace">
+
+    <aside class="sidebar">
+      <div class="sidebar-top">
+        <button class="new-chat-btn" id="newChatMain">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          <span>New chat</span>
+        </button>
+      </div>
+      <div class="nav" id="navList"></div>
+
+      <div class="explorer-head">
+        <span class="title" id="explorerLabel">Explorer</span>
+        <button class="icon-btn tiny" id="refreshTreeBtn" title="Refresh">
+          <svg id="refreshIcon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4.5V10h-5.4"/></svg>
+        </button>
+      </div>
+
+      <div class="explorer-body" id="explorerBody">
+        <div id="filesView">
+          <div class="tree-project" id="treeProjectRow" hidden>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8b92a0" stroke-width="2" stroke-linecap="round"><path d="M3 7a2 2 0 0 1 2-2h3.6l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            <span class="name" id="treeProjectName"></span>
+            <button class="icon-btn tiny" id="newChatBtn" title="New chat">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+          </div>
+          <div class="file-tree" id="fileTree"></div>
+        </div>
+        <div id="chatsView" hidden></div>
+      </div>
+
+      <div class="recent">
+        <div class="recent-head">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5d616b" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>
+          <span>Recent</span>
+        </div>
+        <div id="recentList"></div>
+      </div>
+
+      <div class="sidebar-status">
+        <span class="status-dot" id="statusDot"></span>
+        <span class="status-text" id="statusText">Not connected</span>
+        <div style="flex:1"></div>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="1.9" stroke-linecap="round"><path d="M7 18h10a3.6 3.6 0 0 0 .3-7.2A5.4 5.4 0 0 0 6.6 11 3.5 3.5 0 0 0 7 18z"/></svg>
+        <span class="cloud-label">Nutaan Cloud</span>
+      </div>
+    </aside>
+
+    <main class="chat">
+      <div class="thread-scroll" id="threadScroll">
+        <div class="thread" id="thread">
+          <div class="empty-state" id="emptyState">
+            <img class="empty-mark" src="../assets/logo.png" alt="" />
+            <h1>Build anything with <span class="grad-text">Nutaan Code</span></h1>
+            <p class="empty-sub">Your AI coding agent that understands your entire project.</p>
+            <div class="quick-grid" id="quickGrid"></div>
+            <button class="open-project-link" id="openProjectLink">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M3 7a2 2 0 0 1 2-2h3.6l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            <span id="openProjectLinkLabel">Open a project to get started</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer-wrap">
+        <div class="composer-inner">
+          <div class="task-panel" id="taskPanel" hidden>
+            <div class="task-head" id="taskHead">
+              <span class="task-ring" id="taskRing"></span>
+              <span class="task-title">Tasks</span>
+              <span class="task-count" id="taskCount"></span>
+              <span class="tool-chev" id="taskChev">▾</span>
+            </div>
+            <div class="task-list" id="taskList"></div>
+          </div>
+          <div class="run-status" id="runStatus" hidden>
+            <span class="run-spark"></span>
+            <span id="runElapsed">0s</span>
+            <span class="run-sep">·</span>
+            <span id="runTokens">0 tokens</span>
+            <span class="run-sep" id="runTasksSep" hidden>·</span>
+            <span id="runTasks" hidden></span>
+            <span class="run-sep">·</span>
+            <span class="run-activity" id="runActivity">Working…</span>
+          </div>
+          <div class="composer">
+            <textarea id="input" placeholder="Build a feature, fix a bug, or refactor code..." rows="1"></textarea>
+            <div id="attachRow"></div>
+            <div class="composer-toolbar">
+              <button class="icon-btn" id="attachBtn" title="Attach a file from the project">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M19 11.5l-7.1 7.1a4.2 4.2 0 0 1-6-6l7.4-7.4a2.8 2.8 0 0 1 4 4l-7.4 7.4a1.4 1.4 0 0 1-2-2l6.7-6.7"/></svg>
+              </button>
+
+              <div class="menu-wrap">
+                <button class="pill-btn" id="contextBtn">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M12 5.5v13M5.5 12h13"/></svg>
+                  <span class="label-text">Add Context</span>
+                </button>
+                <div class="pop-menu left" id="contextMenu" hidden></div>
+              </div>
+
+              <div class="menu-wrap">
+                <button class="pill-btn" id="slashBtn">
+                  <span class="slash">/</span>
+                  <span class="label-text">Commands</span>
+                </button>
+                <div class="pop-menu left" id="slashMenu" hidden></div>
+              </div>
+
+              <div class="composer-spacer"></div>
+
+              <div class="menu-wrap">
+                <button class="pill-btn" id="modelBadge" title="Change model">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a855f7" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="9" ry="4"/><ellipse cx="12" cy="12" rx="4" ry="9"/></svg>
+                  <span class="label-text" id="modelBadgeLabel">No model</span>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2.6" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+                </button>
+                <div class="pop-menu right" id="modelMenu" hidden></div>
+              </div>
+
+              <button class="send-btn idle" id="sendBtn" title="Send">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="composer-hint">Enter to send · Shift + Enter for a new line</div>
+        </div>
+      </div>
+    </main>
+
+    <div class="resizer" id="resizer"></div>
+
+    <section class="panel" id="panel">
+      <div class="panel-head">
+        <div class="panel-tabs" id="fileTabs"></div>
+        <div class="browser-tabstrip" id="browserTabs" hidden></div>
+        <div class="seg-group">
+          <button class="seg active" id="segCode" title="Code">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M9 7l-5 5 5 5M15 7l5 5-5 5"/></svg>
+            <span>Code</span>
+          </button>
+          <button class="seg" id="segBrowser" title="Browser">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="9"/><path d="M3.4 9.5h17.2M3.4 14.5h17.2M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
+            <span>Browser</span>
+          </button>
+        </div>
+        <button class="icon-btn" id="panelCloseBtn" title="Close panel">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+
+      <div class="panel-body" id="codeBody">
+        <div class="breadcrumb">
+          <span id="codeBreadcrumb"></span>
+          <span style="flex:1"></span>
+          <button class="code-copy" id="codeCopyBtn" type="button" hidden>Copy file</button>
+        </div>
+        <div class="code-scroll" id="codeScroll">
+          <div class="code-empty" id="codeEmpty">No file open yet. Pick one from the Explorer, or let the agent open one.</div>
+          <div class="code-grid" id="codeGrid" hidden>
+            <div class="code-gutter" id="codeGutter"></div>
+            <pre class="code-body"><code id="codeViewContent"></code></pre>
+          </div>
+        </div>
+        <div class="code-status">
+          <span style="display:flex;align-items:center;gap:7px;white-space:nowrap;flex-shrink:0;">
+            <span class="lang-badge" id="langBadge">TXT</span>
+            <span id="langName">Plain text</span>
+          </span>
+          <span id="codeLineCount" style="white-space:nowrap;flex-shrink:0;"></span>
+          <span class="spacer"></span>
+          <span class="branch" id="panelBranch"></span>
+        </div>
+      </div>
+
+      <div class="panel-body" id="browserBody" hidden>
+        <div class="loadbar-track"><div class="loadbar" id="loadbar"></div></div>
+        <div class="browser-bar">
+          <div class="nav-group">
+            <button class="nav-btn" id="browserBack" title="Back"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M14 6l-6 6 6 6"/></svg></button>
+            <button class="nav-btn" id="browserForward" title="Forward"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M10 6l6 6-6 6"/></svg></button>
+            <button class="nav-btn" id="browserReload" title="Reload"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4.5V10h-5.4"/></svg></button>
+          </div>
+          <div class="address-wrap">
+            <svg id="addressLock" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2" stroke-linecap="round" style="flex-shrink:0;"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8.5 11V8a3.5 3.5 0 0 1 7 0v3"/></svg>
+            <input type="text" id="browserAddress" placeholder="Search or enter a URL" />
+          </div>
+          <div class="menu-wrap">
+            <button class="device-btn" id="deviceBtn">Desktop ▾</button>
+            <div class="device-menu" id="deviceMenu" hidden></div>
+          </div>
+        </div>
+        <div class="bookmarks" id="bookmarks"></div>
+        <div class="browser-viewport" id="browserViewport"></div>
+        <div class="agent-activity" id="agentActivity" hidden>
+          <span class="agent-activity-dot"></span>
+          <span id="agentActivityText">Working…</span>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<div class="overlay" id="activationOverlay" hidden>
+  <div class="modal activation-modal">
+    <img class="activation-mark" src="../assets/logo.png" alt="" />
+    <h2>Activate Nutaan Code</h2>
+    <p class="lead">Nutaan Code runs on your nutaan.com account. Paste your API key to activate this install — the models are already configured for you.</p>
+    <div class="activation-error" id="activationError" hidden></div>
+    <div class="field">
+      <label for="nutaanKeyInput">nutaan.com API key</label>
+      <input type="password" id="nutaanKeyInput" placeholder="nut-…" autocomplete="off" spellcheck="false" />
+      <div class="note">Find it in your nutaan.com settings under API keys. It's stored only on this device.</div>
+    </div>
+    <div class="activation-actions">
+      <button class="btn-primary" id="activateBtn">Activate</button>
+      <button class="link-btn" id="getKeyLink">Get an API key on nutaan.com</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="gitOverlay" hidden>
+  <div class="modal">
+    <h3>Commit &amp; push</h3>
+    <div class="git-branch-line">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="8" r="2.4"/><path d="M6 8.4v7.2M8.4 6H14a4 4 0 0 1 4 4"/></svg>
+      <span id="gitBranchLabel">—</span>
+      <span id="gitAheadLabel" class="git-ahead"></span>
+    </div>
+
+    <div class="field">
+      <label>Changed files <span class="git-select-all" id="gitSelectAll">select all</span></label>
+      <div class="git-files" id="gitFiles"></div>
+    </div>
+
+    <div class="field">
+      <label for="gitMessage">Commit message</label>
+      <textarea id="gitMessage" rows="3" placeholder="What changed, and why"></textarea>
+    </div>
+
+    <div class="git-result" id="gitResult" hidden></div>
+
+    <div class="modal-actions">
+      <button class="btn-secondary" id="gitCancel">Close</button>
+      <button class="btn-secondary" id="gitCommitBtn">Commit</button>
+      <button class="btn-primary" id="gitCommitPushBtn">Commit &amp; push</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="kbOverlay" hidden>
+  <div class="modal">
+    <h3>Add to knowledge base</h3>
+    <p class="note" style="margin:-12px 0 18px;">Index a docs page or your own notes once, and the agent can recall it by meaning in every future chat. Text is embedded through nutaan.com; the vectors stay on this machine.</p>
+
+    <div class="kb-tabs">
+      <button class="kb-tab active" id="kbTabUrl" type="button">From a URL</button>
+      <button class="kb-tab" id="kbTabText" type="button">Paste text</button>
+    </div>
+
+    <div class="field" id="kbUrlField">
+      <label for="kbUrlInput">Page URL</label>
+      <input type="text" id="kbUrlInput" placeholder="https://docs.example.com/guide" spellcheck="false" />
+    </div>
+
+    <div class="field" id="kbTextField" hidden>
+      <label for="kbTextInput">Text</label>
+      <textarea id="kbTextInput" rows="7" placeholder="Paste reference material here…"></textarea>
+    </div>
+
+    <div class="field">
+      <label for="kbTitleInput">Title (optional)</label>
+      <input type="text" id="kbTitleInput" placeholder="Taken from the page title if left empty" />
+    </div>
+
+    <div class="kb-progress" id="kbProgress" hidden>
+      <div class="kb-progress-row">
+        <span class="kb-progress-dot"></span>
+        <span id="kbProgressText">Working…</span>
+      </div>
+      <div class="kb-progress-track"><div class="kb-progress-fill" id="kbProgressFill"></div></div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn-secondary" id="kbCancel">Cancel</button>
+      <button class="btn-primary" id="kbSubmit">Index it</button>
+    </div>
+  </div>
 </div>
 
 <div class="overlay" id="settingsOverlay" hidden>
   <div class="modal">
-    <div class="modal-brand">
-      <img src="../assets/logo.png" alt="" />
-      <h3>Settings</h3>
-    </div>
+    <h3>Settings</h3>
+
     <div class="field">
-      <label for="apiKeyInput">API key</label>
-      <input type="password" id="apiKeyInput" placeholder="Paste your API key" autocomplete="off" />
-      <div class="note">Stored only on this device.</div>
+      <label>nutaan.com account</label>
+      <div class="account-row">
+        <span class="status-dot online"></span>
+        <span class="email" id="accountEmail">Not activated</span>
+        <button class="btn-secondary" id="changeKeyBtn" style="padding:5px 11px;font-size:11.5px;">Change key</button>
+      </div>
     </div>
+
     <div class="field">
       <label for="modelSelectSettings">Model</label>
       <select id="modelSelectSettings"></select>
-      <div class="note">Loaded from your server's model list once connected.</div>
+      <div class="note">Every model your Nutaan backend exposes is listed here.</div>
     </div>
+
     <details class="advanced" id="advancedDetails">
       <summary>Advanced</summary>
       <div class="field">
         <label for="baseUrlInput">Server URL</label>
-        <input type="text" id="baseUrlInput" placeholder="https://api.example.com/v1" />
-        <div class="note">Any OpenAI-compatible endpoint works — point this at your server.</div>
+        <input type="text" id="baseUrlInput" placeholder="Built-in Nutaan backend" />
+        <div class="note">Leave empty to use the built-in Nutaan backend. Set it to any OpenAI-compatible endpoint to use your own instead.</div>
+        <button class="btn-secondary" id="useBuiltInBtn" type="button" style="margin-top:9px;padding:6px 12px;font-size:12px;">Use the built-in backend</button>
+      </div>
+      <div class="field">
+        <label for="apiKeyInput">Server API key</label>
+        <input type="password" id="apiKeyInput" placeholder="Only needed with a custom Server URL" autocomplete="off" />
+        <div class="note">Ignored while the built-in backend is in use.</div>
       </div>
       <div class="field">
         <label for="imageModelInput">Image model override (optional)</label>
         <input type="text" id="imageModelInput" placeholder="auto-detected — only set this to override" />
-        <div class="note">When the agent generates an image, it automatically picks an image-capable model from your server. Only set this if your server has several and you want a specific one used.</div>
+        <div class="note">When the agent generates an image, it picks an image-capable model automatically. Only set this to force a specific one.</div>
       </div>
     </details>
+
     <div class="field update-row">
       <span id="appVersionText" class="note"></span>
       <button class="btn-secondary" id="checkUpdatesBtn" type="button">Check for updates</button>
     </div>
+
     <div class="modal-actions">
       <button class="btn-secondary" id="settingsCancel">Cancel</button>
       <button class="btn-primary" id="settingsSave">Save</button>
