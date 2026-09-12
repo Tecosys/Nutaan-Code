@@ -36,6 +36,7 @@
       "preload.js",
       "renderer/**/*",
       "skills/**/*",
+      "arsenal/**/*",
       "assets/**/*",
       "package.json",
       "node_modules/**/*"

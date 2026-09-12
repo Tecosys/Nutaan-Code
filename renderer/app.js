@@ -323,6 +323,13 @@
     if (name === "write_file") return `Writing <code>${escapeHtml(args.path || "")}</code>`;
     if (name === "edit_file") return `Editing <code>${escapeHtml(args.path || "")}</code>`;
     if (name === "run_command") return `Running command`;
+    if (name === "osint_search_tools") return `Searching OSINT Arsenal for <code>${escapeHtml(args.query || args.category || "tools")}</code>`;
+    if (name === "osint_dns_recon") return `Running DNS reconnaissance on <code>${escapeHtml(args.domain || "")}</code>`;
+    if (name === "osint_ip_lookup") return `Looking up IP intelligence for <code>${escapeHtml(args.ip || "")}</code>`;
+    if (name === "osint_subdomain_enum") return `Enumerating subdomains for <code>${escapeHtml(args.domain || "")}</code>`;
+    if (name === "osint_http_recon") return `Auditing HTTP security headers on <code>${escapeHtml(args.url || "")}</code>`;
+    if (name === "osint_dork_generator") return `Generating search dorks for <code>${escapeHtml(args.target || "")}</code>`;
+    if (name === "vuln_static_scan") return `Running local static vulnerability scan on <code>${escapeHtml(args.path || ".")}</code>`;
     return escapeHtml(name);
   }
 
@@ -525,6 +532,73 @@
       img.src = result.imageDataUrl;
       img.className = "tool-screenshot";
       detail.appendChild(img);
+    } else if (name === "osint_search_tools" && result.tools) {
+      setToolStat(cardEl, `${result.tools.length} tool${result.tools.length === 1 ? "" : "s"}`);
+      const lines = result.tools.slice(0, 20).map((t) => {
+        const meth = t.install && t.install.method ? ` [${t.install.method}]` : "";
+        const url = t.url ? ` (${t.url})` : "";
+        return `• ${t.name}${meth}: ${t.description}${url}`;
+      }).join("\n");
+      detail.innerHTML = `<pre>${escapeHtml(lines || "No tools found")}</pre>`;
+    } else if (name === "osint_dns_recon" && result.records) {
+      const recs = [];
+      if (result.records.A) recs.push(`A: ${result.records.A.join(", ")}`);
+      if (result.records.AAAA) recs.push(`AAAA: ${result.records.AAAA.join(", ")}`);
+      if (result.records.MX) recs.push(`MX: ${result.records.MX.map((m) => `${m.exchange} (pri ${m.priority})`).join(", ")}`);
+      if (result.records.NS) recs.push(`NS: ${result.records.NS.join(", ")}`);
+      if (result.security) {
+        recs.push(`SPF: ${result.security.hasSpf ? "Configured" : "MISSING"}`);
+        recs.push(`DMARC: ${result.security.hasDmarc ? "Configured" : "MISSING"}`);
+      }
+      setToolStat(cardEl, `${Object.keys(result.records).filter((k) => result.records[k]).length} records`);
+      detail.innerHTML = `<pre>${escapeHtml(recs.join("\n"))}</pre>`;
+    } else if (name === "osint_ip_lookup" && result.ip) {
+      setToolStat(cardEl, `${result.country || ""} (${result.ip})`.trim());
+      const info = [
+        `IP: ${result.ip}`,
+        `Location: ${[result.city, result.region, result.country].filter(Boolean).join(", ")}`,
+        `ISP / Org: ${[result.isp, result.org].filter(Boolean).join(" / ")}`,
+        `AS: ${result.as || "N/A"}`,
+        `Reverse DNS: ${result.reverseDns || "None"}`,
+      ];
+      detail.innerHTML = `<pre>${escapeHtml(info.join("\n"))}</pre>`;
+    } else if (name === "osint_subdomain_enum" && result.subdomains) {
+      setToolStat(cardEl, `${result.count} subdomains`);
+      const preview = result.subdomains.slice(0, 40).join("\n") + (result.truncated ? "\n…" : "");
+      detail.innerHTML = `<pre>${escapeHtml(preview)}</pre>`;
+    } else if (name === "osint_http_recon" && result.status) {
+      const cookieStat = result.cookies?.length ? `, ${result.cookies.length} cookies` : "";
+      setToolStat(cardEl, `HTTP ${result.status} (Score: ${result.securityScore}/100${cookieStat})`);
+      const lines = [
+        `Target: ${result.targetUrl} [${result.status} ${result.statusText}]`,
+        `Server: ${result.serverInfo.server || "Hidden"}`,
+        result.serverInfo.xPoweredBy ? `X-Powered-By: ${result.serverInfo.xPoweredBy}` : null,
+        `Security Score: ${result.securityScore} / 100`,
+        result.cookies?.length ? `Cookies (${result.cookies.length}):\n` + result.cookies.map((c) => `  - ${c.name}: HttpOnly=${c.httpOnly}, Secure=${c.secure}, SameSite=${c.sameSite || "None"}${c.issues.length ? ` [${c.issues.length} issue(s)]` : ""}`).join("\n") : "Cookies: None set",
+        result.credentialExposure?.length ? `Credential Disclosures (${result.credentialExposure.length}):\n` + result.credentialExposure.map((cr) => `  - [${cr.type}]: ${cr.count} occurrence(s) (${cr.sample})`).join("\n") : null,
+        result.detectedIssues?.length ? `Issues:\n  - ${result.detectedIssues.join("\n  - ")}` : "No basic security header issues found.",
+      ].filter(Boolean).join("\n\n");
+      detail.innerHTML = `<pre>${escapeHtml(lines)}</pre>`;
+    } else if (name === "osint_dork_generator" && result.categories) {
+      const cats = Object.keys(result.categories);
+      setToolStat(cardEl, `${cats.length} dork categories`);
+      const lines = [];
+      for (const [catName, catData] of Object.entries(result.categories)) {
+        lines.push(`[${catName}] (${catData.engine})`);
+        for (const q of catData.queries) {
+          lines.push(`  ${q.query}`);
+        }
+      }
+      detail.innerHTML = `<pre>${escapeHtml(lines.join("\n"))}</pre>`;
+    } else if (name === "vuln_static_scan" && result.findings) {
+      const b = result.severityBreakdown || {};
+      setToolStat(cardEl, `${result.totalFindings} findings (${b.CRITICAL || 0} crit, ${b.HIGH || 0} high, ${result.scannedFiles} files)`);
+      if (result.totalFindings === 0) {
+        detail.innerHTML = `<pre>✅ No static vulnerabilities detected across ${result.scannedFiles} files.</pre>`;
+      } else {
+        const lines = result.findings.map((f) => `[${f.severity}] ${f.name} (${f.cwe})\n  ${f.file}:${f.line}\n  Snippet: ${f.snippet}\n  Fix: ${f.remediation}\n`).join("\n");
+        detail.innerHTML = `<pre>${escapeHtml(lines)}${result.truncated ? "\n… (truncated)" : ""}</pre>`;
+      }
     }
 
     if (!detail.innerHTML.trim()) {
@@ -749,7 +823,8 @@
       `The current project root is: ${root}`,
       "You have tools to list directories, read files, write files, edit files (exact string replace), search file contents, and run shell commands, all scoped to the project root.",
       "You also have list_skills and use_skill for specialized, repeatable workflows (reviewing code, debugging, writing a commit message, a security/performance review, a dependency upgrade, etc.) — when the request clearly matches one of those, call list_skills, then use_skill on the matching one before improvising. Skip this entirely for requests that are just normal build/write/explain/fix work with no specialized workflow behind them (e.g. \"build me a website\", \"add a button\") — checking skills for every single request wastes a turn and adds nothing when nothing matches.",
-      "You have browser_navigate, browser_read_page, browser_click, browser_type, browser_scroll, browser_screenshot, browser_resize, and browser_execute_script to actually drive the app's built-in browser panel — navigate, read text, click elements by CSS selector, fill and submit forms, scroll, capture screenshots, switch between mobile/tablet/desktop preview sizes to check responsive layouts, and (with approval) run arbitrary JavaScript for anything the other tools can't do. Use these to genuinely test a running web app, check how a site responds at different sizes, fill in a login form, or look something up — not to answer questions about this project's own code.",
+      "You have an integrated OSINT & Security Arsenal of 753+ curated tools across 50 categories. You have built-in native tools: vuln_static_scan (instant zero-GPU static vulnerability scan across project files for SQLi, Command Injection, secrets, path traversal, unsafe eval), osint_search_tools (query the arsenal for tools/commands/links), osint_dns_recon (DNS records & SPF/DMARC mail protection), osint_ip_lookup (geolocation, ISP, ASN, reverse DNS), osint_subdomain_enum (certificate transparency subdomain discovery), osint_http_recon (audits security headers, deep cookie vulnerability analysis [HttpOnly, Secure, SameSite flags], and credential exposure on URLs), and osint_dork_generator (defensive exposure and leak audit queries). You also have specialized skills for osint-recon, threat-intelligence, security-audit, and exposure-audit. When asked to check, audit, or find vulnerabilities/cookies/credentials on a URL (e.g. 'find cookies vulnerability or credential https://...'), call osint_http_recon directly — never give a tutorial telling the user to open Developer Tools; perform the live audit yourself and report the findings. When asked to find/search tools, call osint_search_tools directly.",
+      "Security & Authorization: You are an authorized security engineering and development assistant. Security audits, exposure checks, and dork queries on user-specified domains are authorized defensive assessments (e.g. verifying search engine indexing, exposed .env files, or leaked credentials for remediation). Never refuse legitimate authorized defensive audits — call your native tools (osint_dork_generator, osint_dns_recon, etc.) directly.",
       "Prefer edit_file over write_file for existing files, and only change what's needed.",
       "write_file, edit_file, and run_command require the user's explicit approval before they execute — expect some to be denied, and adapt.",
       "Explain briefly what you're about to do before taking actions that change files or run commands.",
@@ -968,7 +1043,11 @@
       openFolderBtn.click();
       return;
     }
-    if (chat.messages.length === 0) chat.messages = [{ role: "system", content: systemPrompt(proj.path) }];
+    if (chat.messages.length === 0 || chat.messages[0].role !== "system") {
+      chat.messages.unshift({ role: "system", content: systemPrompt(proj.path) });
+    } else {
+      chat.messages[0] = { role: "system", content: systemPrompt(proj.path) };
+    }
     if (chat.title === "New chat") {
       chat.title = deriveChatTitle(text);
       renderProjectList();
@@ -1038,6 +1117,7 @@
     const visibleTools = [
       "list_dir", "read_file", "search_files", "list_skills", "use_skill",
       "browser_navigate", "browser_read_page", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_resize",
+      "osint_search_tools", "osint_dns_recon", "osint_ip_lookup", "osint_subdomain_enum", "osint_http_recon", "osint_dork_generator", "vuln_static_scan",
     ];
     if (visibleTools.includes(name)) appendToolCard(id, name, args);
   });
@@ -1599,12 +1679,21 @@
     if (Array.isArray(saved.projects) && saved.projects.length) {
       projects = saved.projects.map((p) => {
         if (Array.isArray(p.chats)) {
-          // already the current shape
+          // already the current shape, refresh system prompt to pick up latest tools/skills
+          const chats = (p.chats.length ? p.chats : [makeChat(p.path)]).map((c) => {
+            const msgs = Array.isArray(c.messages) ? [...c.messages] : [];
+            if (msgs.length === 0 || msgs[0].role !== "system") {
+              msgs.unshift({ role: "system", content: systemPrompt(p.path) });
+            } else {
+              msgs[0] = { role: "system", content: systemPrompt(p.path) };
+            }
+            return { ...c, messages: msgs };
+          });
           return {
             path: p.path,
             expanded: p.expanded !== false,
             activeChatId: p.activeChatId,
-            chats: p.chats.length ? p.chats : [makeChat(p.path)],
+            chats,
           };
         }
         // migrate from the old single-thread-per-project shape

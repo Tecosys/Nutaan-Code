@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+
+<html class="h-full" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Nutaan Code</title>
+<!-- Tailwind CSS v3 -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            ide: {
+              bg: '#0d0e13',
+              sidebar: '#111319',
+              activeTab: '#171922',
+              card: '#151720',
+              border: '#1f2330',
+              accent: '#8b5cf6',
+              primaryPink: '#d946ef',
+              codeBg: '#0b0c10',
+            }
+          },
+          fontFamily: {
+            mono: ['JetBrains Mono', 'Fira Code', 'Menlo', 'Monaco', 'Courier New', 'monospace'],
+            sans: ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif']
+          }
+        }
+      }
+    }
+  </script>
+<style data-purpose="custom-scrollbars">
+    /* Custom sleek dark scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #242936;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #363d50;
+    }
+  </style>
+<style data-purpose="syntax-highlighting">
+    .hl-keyword { color: #f43f5e; } /* import, export, return, const, if */
+    .hl-func { color: #60a5fa; }    /* function name, hook */
+    .hl-string { color: #34d399; }  /* string values */
+    .hl-tag { color: #38bdf8; }     /* JSX tags */
+    .hl-attr { color: #fbbf24; }    /* attributes */
+    .hl-prop { color: #c084fc; }    /* object properties */
+    .hl-bracket { color: #94a3b8; }
+    .hl-num { color: #f97316; }
+  </style>
+</head>
+<body class="h-full bg-[#0d0e13] text-[#cfd3dc] font-sans antialiased select-none flex flex-col overflow-hidden text-[13px]">
+<!-- BEGIN: TopHeader -->
+<header class="h-10 bg-[#0b0c10] border-b border-[#1c1f2b] flex items-center justify-between px-3 shrink-0 z-20" data-purpose="app-header">
+<!-- Left branding & project context -->
+<div class="flex items-center space-x-3">
+<!-- App Brand Logo -->
+<div class="flex items-center space-x-2 mr-2">
+<div class="w-6 h-6 rounded-md bg-gradient-to-tr from-purple-600 via-pink-500 to-rose-500 flex items-center justify-center shadow-lg shadow-purple-500/20 text-white font-bold text-xs tracking-tighter">
+          N<span class="text-[9px] -ml-0.5 text-pink-200">⮞</span>
+</div>
+<span class="font-semibold text-white tracking-wide text-[13px]">Nutaan Code</span>
+</div>
+<!-- Branch & Target Selector Buttons -->
+<div class="flex items-center space-x-1.5">
+<div class="flex items-center space-x-1.5 px-2.5 py-1 rounded bg-[#171922] border border-[#262b3a] hover:border-gray-600 cursor-pointer text-xs transition">
+<svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+<span class="text-gray-200 font-medium text-[11px]">nutaan-frontend</span>
+<svg class="w-3 h-3 text-gray-400 ml-0.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M19 9l-7 7-7-7" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+</div>
+<div class="flex items-center space-x-1.5 px-2 py-1 rounded bg-[#171922] border border-[#262b3a] hover:border-gray-600 cursor-pointer text-xs transition">
+<svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><circle cx="18" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><path d="M6 9v12m12-9c0 3-3 6-6 6" stroke-linecap="round"></path></svg>
+<span class="text-gray-200 text-[11px]">main</span>
+<svg class="w-3 h-3 text-gray-400 ml-0.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M19 9l-7 7-7-7" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+</div>
+<div class="flex items-center space-x-1.5 px-2 py-1 text-emerald-400 text-[11px]">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+<span>Up to date</span>
+</div>
+</div>
+</div>
+<!-- Center Model Selector Pill -->
+<div class="flex items-center">
+<div class="flex items-center space-x-1.5 px-3 py-1 rounded-md bg-[#171922] border border-[#262b3a] text-xs text-gray-200 cursor-pointer hover:border-purple-500/50 transition shadow-sm">
+<svg class="w-3.5 h-3.5 text-purple-400" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M12 2a4 4 0 0 0-4 4v1a4 4 0 0 0-4 4v2a4 4 0 0 0 4 4v1a4 4 0 0 0 4 4 4 4 0 0 0 4-4v-1a4 4 0 0 0 4-4v-2a4 4 0 0 0-4-4V6a4 4 0 0 0-4-4z"></path></svg>
+<span class="font-medium text-[11px]">GPT-4o</span>
+</div>
+</div>
+<!-- Right Controls: Auto-approve switch & Window Buttons -->
+<div class="flex items-center space-x-4">
+<!-- Auto Approve Toggle -->
+<div class="flex items-center space-x-2">
+<button class="w-7 h-4 bg-purple-600 rounded-full relative p-0.5 cursor-pointer focus:outline-none flex items-center justify-end pr-0.5" type="button">
+<span class="w-3 h-3 bg-white rounded-full block shadow-sm"></span>
+</button>
+<span class="text-xs text-gray-300">Auto-approve</span>
+<span class="text-gray-500 cursor-pointer hover:text-gray-400">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><line x1="12" x2="12" y1="16" y2="12"></line><line x1="12" x2="12.01" y1="8" y2="8"></line></svg>
+</span>
+</div>
+<div class="h-3 w-px bg-gray-800"></div>
+<!-- Quick Action Icons -->
+<div class="flex items-center space-x-2 text-gray-400">
+<button class="hover:text-white transition p-1"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><path d="M21 21l-4.35-4.35"></path></svg></button>
+<button class="hover:text-white transition p-1"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><rect height="18" rx="2" width="18" x="3" y="3"></rect><path d="M9 3v18"></path></svg></button>
+<button class="hover:text-white transition p-1"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg></button>
+</div>
+<!-- Window System Controls -->
+<div class="flex items-center space-x-2.5 text-gray-400 pl-1">
+<button class="hover:text-white text-xs leading-none">─</button>
+<button class="hover:text-white text-xs leading-none">□</button>
+<button class="hover:text-red-400 text-xs leading-none">✕</button>
+</div>
+</div>
+</header>
+<!-- END: TopHeader -->
+<!-- Workspace Container: Left Sidebar + Center Agent Hub + Right Code Editor -->
+<div class="flex-1 flex overflow-hidden">
+<!-- BEGIN: LeftSidebar -->
+<aside class="w-64 bg-[#10121a] border-r border-[#1a1d27] flex flex-col justify-between shrink-0" data-purpose="project-sidebar">
+<!-- Top Navigation Tabs & File Tree -->
+<div class="flex-1 overflow-y-auto">
+<!-- Top App Navigation Elements -->
+<div class="p-2 space-y-0.5">
+<div class="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-[#271d3b] text-purple-300 font-medium cursor-pointer">
+<div class="flex items-center space-x-2">
+<svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+<span>Chats</span>
+</div>
+<span class="w-4 h-4 rounded-full bg-purple-500 text-white text-[10px] flex items-center justify-center font-bold">2</span>
+</div>
+<div class="flex items-center space-x-2 px-2.5 py-1.5 rounded-md text-gray-400 hover:text-gray-200 hover:bg-[#161822] cursor-pointer">
+<svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+<span>Projects</span>
+</div>
+<div class="flex items-center space-x-2 px-2.5 py-1.5 rounded-md text-gray-400 hover:text-gray-200 hover:bg-[#161822] cursor-pointer">
+<svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+<span>Recent</span>
+</div>
+<div class="flex items-center space-x-2 px-2.5 py-1.5 rounded-md text-gray-400 hover:text-gray-200 hover:bg-[#161822] cursor-pointer">
+<svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"></path></svg>
+<span>Settings</span>
+</div>
+</div>
+<div class="h-px bg-[#1c1f2b] my-2 mx-3"></div>
+<!-- Project Explorer Tree -->
+<div class="px-2 font-mono text-[12px]">
+<div class="flex items-center justify-between text-[10px] text-gray-500 font-semibold tracking-wider px-2 py-1 uppercase">
+<span>Project Explorer</span>
+<div class="flex items-center space-x-1.5 text-gray-400">
+<button class="hover:text-white">+</button>
+<button class="hover:text-white">⋮</button>
+</div>
+</div>
+<!-- Root Folder: nutaan-frontend -->
+<div class="mt-1">
+<div class="flex items-center space-x-1 px-1.5 py-1 text-gray-300 font-sans cursor-pointer hover:bg-[#161822] rounded">
+<svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M19 9l-7 7-7-7"></path></svg>
+<svg class="w-3.5 h-3.5 text-sky-400" fill="currentColor" viewbox="0 0 24 24"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"></path></svg>
+<span class="font-medium text-white">nutaan-frontend</span>
+</div>
+<!-- Nested Folder items -->
+<div class="pl-4 space-y-0.5 mt-0.5">
+<div class="flex items-center space-x-1.5 px-2 py-0.5 text-gray-400 hover:text-gray-200 cursor-pointer">
+<svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M9 5l7 7-7 7"></path></svg>
+<span class="text-gray-400">.github</span>
+</div>
+<div class="flex items-center space-x-1.5 px-2 py-0.5 text-gray-400 hover:text-gray-200 cursor-pointer">
+<svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M9 5l7 7-7 7"></path></svg>
+<span class="text-gray-400">node_modules</span>
+</div>
+<div class="flex items-center space-x-1.5 px-2 py-0.5 text-gray-400 hover:text-gray-200 cursor-pointer">
+<svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M9 5l7 7-7 7"></path></svg>
+<span class="text-cyan-400 font-sans">public</span>
+</div>
+<!-- src expanded folder -->
+<div>
+<div class="flex items-center space-x-1.5 px-2 py-0.5 text-purple-300 font-sans cursor-pointer">
+<svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M19 9l-7 7-7-7"></path></svg>
+<span class="text-pink-400">src</span>
+</div>
+<!-- Inside src -->
+<div class="pl-4 space-y-0.5">
+<div class="flex items-center space-x-1.5 px-2 py-0.5 text-gray-400 hover:text-gray-200 cursor-pointer">
+<svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M9 5l7 7-7 7"></path></svg>
+<span class="text-amber-400">📁 components</span>
+</div>
+<div class="flex items-center space-x-1.5 px-2 py-0.5 text-gray-400 hover:text-gray-200 cursor-pointer">
+<svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M9 5l7 7-7 7"></path></svg>
+<span class="text-amber-400">📁 pages</span>
+</div>
+<div class="flex items-center space-x-1.5 px-2 py-0.5 text-gray-400 hover:text-gray-200 cursor-pointer">
+<svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M9 5l7 7-7 7"></path></svg>
+<span class="text-amber-400">📁 services</span>
+</div>
+<div class="flex items-center space-x-1.5 px-2 py-0.5 text-gray-400 hover:text-gray-200 cursor-pointer">
+<svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M9 5l7 7-7 7"></path></svg>
+<span class="text-amber-400">📁 utils</span>
+</div>
+<!-- Active File App.tsx -->
+<div class="flex items-center justify-between px-2 py-1 rounded bg-[#201d36] text-purple-200 border-l-2 border-purple-500 font-sans cursor-pointer">
+<div class="flex items-center space-x-1.5">
+<span class="text-sky-400 text-xs">⚛</span>
+<span>App.tsx</span>
+</div>
+<span class="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
+</div>
+<div class="flex items-center space-x-1.5 px-2 py-0.5 text-gray-400 hover:text-gray-200 cursor-pointer font-sans">
+<span class="text-sky-400 text-xs">⚛</span>
+<span>main.tsx</span>
+</div>
+<div class="flex items-center space-x-1.5 px-2 py-0.5 text-gray-400 hover:text-gray-200 cursor-pointer font-sans">
+<span class="text-sky-400 text-xs font-bold">#</span>
+<span>index.css</span>
+</div>
+<div class="flex items-center space-x-1.5 px-2 py-0.5 text-gray-400 hover:text-gray-200 cursor-pointer font-sans">
+<span class="text-blue-400 text-[10px] font-bold px-0.5 rounded bg-blue-950">TS</span>
+<span>vite-env.d.ts</span>
+</div>
+</div>
+</div>
+<!-- Root config files with Git status 'M' -->
+<div class="flex items-center justify-between px-2 py-0.5 text-gray-400 hover:text-gray-200 cursor-pointer font-sans">
+<div class="flex items-center space-x-1.5">
+<span class="text-gray-500">.</span>
+<span>.gitignore</span>
+</div>
+<span class="text-amber-500 text-[10px] font-bold">M</span>
+</div>
+<div class="flex items-center justify-between px-2 py-0.5 text-gray-400 hover:text-gray-200 cursor-pointer font-sans">
+<div class="flex items-center space-x-1.5">
+<span class="text-yellow-500 text-[10px] font-bold">JS</span>
+<span>eslint.config.js</span>
+</div>
+<span class="text-amber-500 text-[10px] font-bold">M</span>
+</div>
+<div class="flex items-center space-x-1.5 px-2 py-0.5 text-gray-400 hover:text-gray-200 cursor-pointer font-sans">
+<span class="text-orange-500 font-bold">&lt;&gt;</span>
+<span>index.html</span>
+</div>
+<div class="flex items-center justify-between px-2 py-0.5 text-gray-400 hover:text-gray-200 cursor-pointer font-sans">
+<div class="flex items-center space-x-1.5">
+<span class="text-emerald-500">{ }</span>
+<span>package.json</span>
+</div>
+<span class="text-amber-500 text-[10px] font-bold">M</span>
+</div>
+<div class="flex items-center space-x-1.5 px-2 py-0.5 text-gray-400 hover:text-gray-200 cursor-pointer font-sans">
+<span class="text-blue-400 text-[10px] font-bold">TS</span>
+<span>tsconfig.json</span>
+</div>
+<div class="flex items-center space-x-1.5 px-2 py-0.5 text-gray-400 hover:text-gray-200 cursor-pointer font-sans">
+<span class="text-blue-400 text-[10px] font-bold">TS</span>
+<span>vite.config.ts</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Recent Projects Section -->
+<div class="px-2 mt-4">
+<div class="flex items-center space-x-1 px-2 py-1 text-gray-500 text-[11px] font-medium">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+<span>Recent</span>
+</div>
+<div class="space-y-1 mt-1 font-sans text-xs">
+<div class="flex items-center justify-between px-2 py-1 text-gray-300 hover:bg-[#161822] rounded cursor-pointer">
+<div class="flex items-center space-x-2 truncate">
+<svg class="w-3.5 h-3.5 text-gray-500 shrink-0" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+<span class="truncate">nutaan-frontend</span>
+</div>
+<span class="text-[10px] text-gray-500 ml-1">2m</span>
+</div>
+<div class="flex items-center justify-between px-2 py-1 text-gray-400 hover:bg-[#161822] rounded cursor-pointer">
+<div class="flex items-center space-x-2 truncate">
+<svg class="w-3.5 h-3.5 text-gray-500 shrink-0" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+<span class="truncate">tecosys-platform</span>
+</div>
+<span class="text-[10px] text-gray-500 ml-1">1h</span>
+</div>
+<div class="flex items-center justify-between px-2 py-1 text-gray-400 hover:bg-[#161822] rounded cursor-pointer">
+<div class="flex items-center space-x-2 truncate">
+<svg class="w-3.5 h-3.5 text-gray-500 shrink-0" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+<span class="truncate">ai-agent</span>
+</div>
+<span class="text-[10px] text-gray-500 ml-1">3h</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Bottom Connection Status Bar in Sidebar -->
+<div class="p-2 border-t border-[#1c1f2b] flex items-center justify-between text-xs text-gray-400">
+<div class="flex items-center space-x-1.5">
+<span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+<span class="text-[11px] text-gray-300">Connected</span>
+</div>
+<div class="flex items-center space-x-1 text-[11px]">
+<svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 00-9.78 2.096A4.001 4.001 0 003 15z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+<span>Nutaan Cloud</span>
+</div>
+<button class="hover:text-white"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"></path></svg></button>
+</div>
+</aside>
+<!-- END: LeftSidebar -->
+<!-- BEGIN: MainAgentSection -->
+<main class="flex-1 flex flex-col justify-between bg-[#0e1017] border-r border-[#1a1d27] p-6 overflow-y-auto relative" data-purpose="ai-agent-panel">
+<!-- Top Content: Hero Banner + Action Cards -->
+<div class="max-w-3xl w-full mx-auto space-y-6 pt-2">
+<!-- Hero Header -->
+<div class="text-center space-y-2.5">
+<!-- Logo Glow Center -->
+<div class="w-12 h-12 rounded-xl bg-gradient-to-tr from-purple-600 via-fuchsia-500 to-pink-500 mx-auto flex items-center justify-center shadow-lg shadow-purple-600/30 text-white font-black text-xl">
+            N<span class="text-sm font-semibold -ml-1 text-purple-200">⮞</span>
+</div>
+<h1 class="text-2xl font-bold text-white tracking-tight">
+            Build anything with <span class="bg-gradient-to-r from-purple-400 via-pink-400 to-rose-400 bg-clip-text text-transparent">Nutaan Code</span>
+</h1>
+<p class="text-gray-400 text-xs max-w-md mx-auto">
+            Your AI coding agent that understands your entire project.
+          </p>
+</div>
+<!-- 4 Action Quick Cards -->
+<div class="grid grid-cols-4 gap-3 pt-2">
+<!-- Card 1: Build a feature -->
+<div class="bg-[#141622]/80 hover:bg-[#1a1c2b] border border-[#232738] hover:border-purple-500/50 rounded-xl p-3.5 transition group cursor-pointer flex flex-col justify-between h-36">
+<div>
+<div class="w-7 h-7 rounded-lg bg-purple-500/10 text-purple-400 flex items-center justify-center mb-2.5">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"></path></svg>
+</div>
+<h3 class="text-xs font-semibold text-gray-200 group-hover:text-white">Build a feature</h3>
+<p class="text-[11px] text-gray-400 mt-1 leading-snug">Create new features from your ideas.</p>
+</div>
+<div class="flex justify-end text-gray-500 group-hover:text-purple-400 transition">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"></path></svg>
+</div>
+</div>
+<!-- Card 2: Fix a bug -->
+<div class="bg-[#141622]/80 hover:bg-[#1a1c2b] border border-[#232738] hover:border-purple-500/50 rounded-xl p-3.5 transition group cursor-pointer flex flex-col justify-between h-36">
+<div>
+<div class="w-7 h-7 rounded-lg bg-pink-500/10 text-pink-400 flex items-center justify-center mb-2.5">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M12 2a4 4 0 0 0-4 4v1a4 4 0 0 0-4 4v2a4 4 0 0 0 4 4v1a4 4 0 0 0 4 4 4 4 0 0 0 4-4v-1a4 4 0 0 0 4-4v-2a4 4 0 0 0-4-4V6a4 4 0 0 0-4-4z"></path></svg>
+</div>
+<h3 class="text-xs font-semibold text-gray-200 group-hover:text-white">Fix a bug</h3>
+<p class="text-[11px] text-gray-400 mt-1 leading-snug">Find and fix issues in your codebase.</p>
+</div>
+<div class="flex justify-end text-gray-500 group-hover:text-pink-400 transition">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"></path></svg>
+</div>
+</div>
+<!-- Card 3: Refactor code -->
+<div class="bg-[#141622]/80 hover:bg-[#1a1c2b] border border-[#232738] hover:border-purple-500/50 rounded-xl p-3.5 transition group cursor-pointer flex flex-col justify-between h-36">
+<div>
+<div class="w-7 h-7 rounded-lg bg-indigo-500/10 text-indigo-400 flex items-center justify-center mb-2.5">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+</div>
+<h3 class="text-xs font-semibold text-gray-200 group-hover:text-white">Refactor code</h3>
+<p class="text-[11px] text-gray-400 mt-1 leading-snug">Improve code quality and performance.</p>
+</div>
+<div class="flex justify-end text-gray-500 group-hover:text-indigo-400 transition">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"></path></svg>
+</div>
+</div>
+<!-- Card 4: Explain my project -->
+<div class="bg-[#141622]/80 hover:bg-[#1a1c2b] border border-[#232738] hover:border-purple-500/50 rounded-xl p-3.5 transition group cursor-pointer flex flex-col justify-between h-36">
+<div>
+<div class="w-7 h-7 rounded-lg bg-violet-500/10 text-violet-400 flex items-center justify-center mb-2.5">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+</div>
+<h3 class="text-xs font-semibold text-gray-200 group-hover:text-white">Explain my project</h3>
+<p class="text-[11px] text-gray-400 mt-1 leading-snug">Understand code, setup and architecture.</p>
+</div>
+<div class="flex justify-end text-gray-500 group-hover:text-violet-400 transition">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"></path></svg>
+</div>
+</div>
+</div>
+<!-- Open project helper link -->
+<div class="text-center">
+<button class="inline-flex items-center space-x-1.5 text-xs text-gray-400 hover:text-gray-200 cursor-pointer transition">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+<span>Open a project to get started</span>
+</button>
+</div>
+<!-- AI Agent Working Activity Box -->
+<div class="bg-[#12141d]/90 border border-[#222637] rounded-xl p-4 space-y-3.5 shadow-xl" data-purpose="agent-status-panel">
+<div class="flex items-center justify-between pb-2 border-b border-[#1c1f2e]">
+<div class="flex items-center space-x-2">
+<div class="w-4 h-4 text-purple-400">
+<svg fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M12 2l2.4 5 5.6.8-4 4 1 5.6-5-2.8-5 2.8 1-5.6-4-4 5.6-.8z"></path></svg>
+</div>
+<span class="font-medium text-white text-xs">AI Agent is working on your project</span>
+</div>
+<div class="flex items-center space-x-1.5">
+<span class="text-[11px] text-gray-400 font-mono">nutaan-frontend</span>
+<span class="w-2 h-2 rounded-full bg-pink-500 animate-ping"></span>
+</div>
+</div>
+<!-- Step Progress Checklist -->
+<div class="space-y-3 pt-1">
+<!-- Step 1 Complete -->
+<div class="flex items-start justify-between text-xs">
+<div class="flex items-start space-x-2.5">
+<div class="w-4 h-4 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center mt-0.5 shrink-0">
+<svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" stroke-width="3" viewbox="0 0 24 24"><path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+</div>
+<div>
+<p class="text-gray-200 font-medium leading-none">Analyzing project</p>
+<p class="text-[11px] text-gray-400 mt-1">Understanding your codebase structure and dependencies...</p>
+</div>
+</div>
+<span class="text-[11px] font-mono text-gray-500">12s</span>
+</div>
+<!-- Step 2 Complete -->
+<div class="flex items-start justify-between text-xs">
+<div class="flex items-start space-x-2.5">
+<div class="w-4 h-4 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center mt-0.5 shrink-0">
+<svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" stroke-width="3" viewbox="0 0 24 24"><path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+</div>
+<div>
+<p class="text-gray-200 font-medium leading-none">Reading files</p>
+<p class="text-[11px] text-gray-400 mt-1">Scanning relevant files and context...</p>
+</div>
+</div>
+<span class="text-[11px] font-mono text-gray-500">8s</span>
+</div>
+<!-- Step 3 Active/Finished -->
+<div class="flex items-start justify-between text-xs">
+<div class="flex items-start space-x-2.5">
+<div class="w-4 h-4 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center mt-0.5 shrink-0">
+<svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" stroke-width="3" viewbox="0 0 24 24"><path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+</div>
+<div>
+<p class="text-gray-200 font-medium leading-none">Editing <span class="text-sky-400 font-mono">src/App.tsx</span></p>
+<p class="text-[11px] text-gray-400 mt-1">Applying changes to your code...</p>
+</div>
+</div>
+<span class="text-[11px] font-mono text-gray-500">14s</span>
+</div>
+<!-- Step 4 Pending -->
+<div class="flex items-start justify-between text-xs opacity-60">
+<div class="flex items-start space-x-2.5">
+<div class="w-4 h-4 rounded-full border border-gray-600 flex items-center justify-center mt-0.5 shrink-0">
+</div>
+<div>
+<p class="text-gray-300 font-medium leading-none">Running tests</p>
+<p class="text-[11px] text-gray-400 mt-1">Validating the changes...</p>
+</div>
+</div>
+<span class="text-[11px] font-mono text-gray-600">—</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Bottom Prompt Input Area -->
+<div class="max-w-3xl w-full mx-auto mt-6" data-purpose="prompt-container">
+<div class="relative rounded-2xl bg-[#12141d] border border-purple-500/50 shadow-2xl shadow-purple-950/20 p-3">
+<input class="w-full bg-transparent border-none focus:outline-none focus:ring-0 text-gray-200 placeholder-gray-500 text-xs px-1 py-1" placeholder="Ask Nutaan Code to build, fix, refactor, or explain..." type="text"/>
+<!-- Action buttons inside prompt bar -->
+<div class="flex items-center justify-between mt-3 pt-2 border-t border-[#1e2230]">
+<div class="flex items-center space-x-2">
+<!-- Attachment Button -->
+<button class="p-1.5 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-[#1a1d2c] transition">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+</button>
+<!-- + Add Context -->
+<button class="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-[#181a26] hover:bg-[#202334] text-gray-300 text-xs transition border border-[#232738]">
+<span>+</span>
+<span>Add Context</span>
+</button>
+<!-- / Commands -->
+<button class="flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-[#181a26] hover:bg-[#202334] text-gray-300 text-xs transition border border-[#232738]">
+<span class="text-gray-400 font-mono">/</span>
+<span>Commands</span>
+</button>
+</div>
+<!-- Model pill + Send button -->
+<div class="flex items-center space-x-3">
+<div class="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-[#181a26] border border-[#232738] text-xs text-gray-300 cursor-pointer">
+<svg class="w-3.5 h-3.5 text-purple-400" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle></svg>
+<span class="text-[11px] font-medium">GPT-4o</span>
+<svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M19 9l-7 7-7-7"></path></svg>
+</div>
+<!-- Pink Circular Send Button with Ctrl + Enter tooltip label -->
+<div class="relative group flex items-center">
+<button class="w-8 h-8 rounded-full bg-gradient-to-tr from-purple-600 via-pink-500 to-rose-500 hover:brightness-110 flex items-center justify-center text-white shadow-lg shadow-pink-500/25 transition">
+<svg class="w-3.5 h-3.5 transform -rotate-45 -translate-y-0.5 translate-x-0.5" fill="currentColor" viewbox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg>
+</button>
+<span class="absolute -bottom-5 right-0 text-[10px] text-gray-500 whitespace-nowrap">Ctrl + Enter</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+<!-- END: MainAgentSection -->
+<!-- BEGIN: RightCodeEditor -->
+<section class="w-[520px] bg-[#0c0d12] flex flex-col shrink-0 font-mono text-[12px]" data-purpose="code-editor-panel">
+<!-- Editor Tabs Bar -->
+<div class="h-9 bg-[#111319] border-b border-[#1b1e2a] flex items-center justify-between px-2">
+<div class="flex items-center space-x-1">
+<!-- Active Tab: App.tsx -->
+<div class="flex items-center space-x-2 px-3 py-1.5 bg-[#0c0d12] border-t-2 border-purple-500 text-gray-200 text-xs rounded-t cursor-pointer">
+<span class="text-sky-400 text-xs">⚛</span>
+<span class="font-sans font-medium">App.tsx</span>
+<span class="w-1.5 h-1.5 rounded-full bg-purple-400 ml-1"></span>
+<button class="text-gray-500 hover:text-gray-300 ml-1">✕</button>
+</div>
+<!-- Inactive Tab: index.tsx -->
+<div class="flex items-center space-x-1.5 px-3 py-1.5 text-gray-400 hover:text-gray-200 text-xs cursor-pointer">
+<span class="text-blue-400 text-xs">⚛</span>
+<span class="font-sans">index.tsx</span>
+</div>
+<!-- Inactive Tab: package.json -->
+<div class="flex items-center space-x-1.5 px-3 py-1.5 text-gray-400 hover:text-gray-200 text-xs cursor-pointer">
+<span class="text-yellow-400 text-xs font-mono">{ }</span>
+<span class="font-sans">package.json</span>
+</div>
+</div>
+<!-- Editor action buttons -->
+<div class="flex items-center space-x-2 text-gray-400 pr-1">
+<button class="hover:text-white"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewbox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><path d="M21 21l-4.35-4.35"></path></svg></button>
+<button class="hover:text-white"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewbox="0 0 24 24"><rect height="18" rx="2" width="18" x="3" y="3"></rect><line x1="12" x2="12" y1="3" y2="21"></line></svg></button>
+<button class="hover:text-white"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewbox="0 0 24 24"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg></button>
+</div>
+</div>
+<!-- Editor Breadcrumbs -->
+<div class="px-3 py-1 bg-[#0c0d12] border-b border-[#161822] flex items-center space-x-1.5 text-[11px] text-gray-400 font-sans">
+<span>src</span>
+<span>&gt;</span>
+<span class="text-sky-400">⚛ App.tsx</span>
+<span>&gt;</span>
+<span class="text-purple-300">App</span>
+</div>
+<!-- Editor Content with Line Numbers & Real Highlighted Code -->
+<div class="flex-1 overflow-y-auto p-2 flex leading-5 text-[11.5px] select-text">
+<!-- Line Numbers (1 to 36) -->
+<div class="pr-3 text-right text-gray-600 select-none font-mono text-[11px] space-y-0 w-8 shrink-0">
+<div>1</div><div>2</div><div>3</div><div>4</div><div>5</div><div>6</div><div>7</div><div>8</div><div>9</div><div>10</div>
+<div>11</div><div>12</div><div>13</div><div>14</div><div>15</div><div>16</div><div>17</div><div>18</div><div>19</div><div>20</div>
+<div>21</div><div>22</div><div>23</div><div>24</div><div>25</div><div>26</div><div>27</div><div>28</div><div>29</div><div>30</div>
+<div>31</div><div>32</div><div>33</div><div>34</div><div>35</div><div>36</div>
+</div>
+<!-- Syntax Highlighted Code Lines -->
+<div class="flex-1 overflow-x-auto whitespace-pre font-mono">
+<div><span class="hl-keyword">import</span> <span class="hl-bracket">{</span> <span class="hl-prop">useState</span>, <span class="hl-prop">useEffect</span> <span class="hl-bracket">}</span> <span class="hl-keyword">from</span> <span class="hl-string">'react'</span>;</div>
+<div><span class="hl-keyword">import</span> <span class="hl-bracket">{</span> <span class="hl-prop">Routes</span>, <span class="hl-prop">Route</span>, <span class="hl-prop">Navigate</span> <span class="hl-bracket">}</span> <span class="hl-keyword">from</span> <span class="hl-string">'react-router-dom'</span>;</div>
+<div><span class="hl-keyword">import</span> <span class="hl-prop">Navbar</span> <span class="hl-keyword">from</span> <span class="hl-string">'./components/Navbar'</span>;</div>
+<div><span class="hl-keyword">import</span> <span class="hl-prop">Home</span> <span class="hl-keyword">from</span> <span class="hl-string">'./pages/Home'</span>;</div>
+<div><span class="hl-keyword">import</span> <span class="hl-prop">Chat</span> <span class="hl-keyword">from</span> <span class="hl-string">'./pages/Chat'</span>;</div>
+<div><span class="hl-keyword">import</span> <span class="hl-prop">Settings</span> <span class="hl-keyword">from</span> <span class="hl-string">'./pages/Settings'</span>;</div>
+<div> </div>
+<div><span class="hl-keyword">function</span> <span class="hl-func">App</span>() <span class="hl-bracket">{</span></div>
+<div> <span class="hl-keyword">const</span> [<span class="hl-prop">isLoading</span>, <span class="hl-prop">setIsLoading</span>] = <span class="hl-func">useState</span>(<span class="hl-keyword">true</span>);</div>
+<div> </div>
+<div> <span class="hl-func">useEffect</span>(() =&gt; <span class="hl-bracket">{</span></div>
+<div> <span class="hl-keyword">const</span> <span class="hl-prop">timer</span> = <span class="hl-func">setTimeout</span>(() =&gt; <span class="hl-bracket">{</span></div>
+<div> <span class="hl-func">setIsLoading</span>(<span class="hl-keyword">false</span>);</div>
+<div> <span class="hl-bracket">}</span>, <span class="hl-num">800</span>);</div>
+<div> </div>
+<div> <span class="hl-keyword">return</span> () =&gt; <span class="hl-func">clearTimeout</span>(<span class="hl-prop">timer</span>);</div>
+<div> <span class="hl-bracket">}</span>, []);</div>
+<div> </div>
+<div> <span class="hl-keyword">if</span> (<span class="hl-prop">isLoading</span>) <span class="hl-bracket">{</span></div>
+<div> <span class="hl-keyword">return</span> (</div>
+<div>      &lt;<span class="hl-tag">div</span> <span class="hl-attr">className</span>=<span class="hl-string">"flex items-center justify-center</span></div>
+<div> <span class="hl-string">min-h-screen bg-[#0D0E12]"</span>&gt;</div>
+<div>        &lt;<span class="hl-tag">div</span> <span class="hl-attr">className</span>=<span class="hl-string">"animate-pulse text-purple-400"</span>&gt;</div>
+<div>          &lt;<span class="hl-tag">span</span> <span class="hl-attr">className</span>=<span class="hl-string">"text-lg"</span>&gt;Loading Nutaan Code...&lt;/<span class="hl-tag">span</span>&gt;</div>
+<div>        &lt;/<span class="hl-tag">div</span>&gt;</div>
+<div>      &lt;/<span class="hl-tag">div</span>&gt;</div>
+<div>    );</div>
+<div> <span class="hl-bracket">}</span></div>
+<div> </div>
+<div> <span class="hl-keyword">return</span> (</div>
+<div>    &lt;<span class="hl-tag">div</span> <span class="hl-attr">className</span>=<span class="hl-string">"min-h-screen bg-[#0D0E12] text-[#F5F5F7]"</span>&gt;</div>
+<div>      &lt;<span class="hl-tag">Navbar</span> /&gt;</div>
+<div>      &lt;<span class="hl-tag">Routes</span>&gt;</div>
+<div>        &lt;<span class="hl-tag">Route</span> <span class="hl-attr">path</span>=<span class="hl-string">"/"</span> <span class="hl-attr">element</span>=<span class="hl-bracket">{</span>&lt;<span class="hl-tag">Home</span> /&gt;<span class="hl-bracket">}</span> /&gt;</div>
+<div>        &lt;<span class="hl-tag">Route</span> <span class="hl-attr">path</span>=<span class="hl-string">"/chat"</span> <span class="hl-attr">element</span>=<span class="hl-bracket">{</span>&lt;<span class="hl-tag">Chat</span> /&gt;<span class="hl-bracket">}</span> /&gt;</div>
+<div>        &lt;<span class="hl-tag">Route</span> <span class="hl-attr">path</span>=<span class="hl-string">"/settings"</span> <span class="hl-attr">element</span>=<span class="hl-bracket">{</span>&lt;<span class="hl-tag">Settings</span> /&gt;<span class="hl-bracket">}</span> /&gt;</div>
+<div>        &lt;<span class="hl-tag">Route</span> <span class="hl-attr">path</span>=<span class="hl-string">"*"</span> <span class="hl-attr">element</span>=<span class="hl-bracket">{</span>&lt;<span class="hl-tag">Navigate</span> <span class="hl-attr">to</span>=<span class="hl-string">"/"</span> <span class="hl-attr">replace</span> /&gt;<span class="hl-bracket">}</span> /&gt;</div>
+<div>      &lt;/<span class="hl-tag">Routes</span>&gt;</div>
+<div>    &lt;/<span class="hl-tag">div</span>&gt;</div>
+<div>  );</div>
+<div><span class="hl-bracket">}</span></div>
+<div> </div>
+<div><span class="hl-keyword">export default</span> <span class="hl-func">App</span>;</div>
+</div>
+</div>
+</section>
+<!-- END: RightCodeEditor -->
+</div>
+<!-- BEGIN: BottomStatusBar -->
+<footer class="h-6 bg-[#090a0e] border-t border-[#1a1d27] flex items-center justify-between px-3 text-[11px] text-gray-500 font-sans z-20" data-purpose="ide-status-bar">
+<div class="flex items-center space-x-3">
+<div class="flex items-center space-x-1 text-emerald-400">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+<span>Connected</span>
+</div>
+<div class="flex items-center space-x-1">
+<svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 00-9.78 2.096A4.001 4.001 0 003 15z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+<span>Nutaan Cloud</span>
+</div>
+</div>
+<div class="flex items-center space-x-4">
+<div class="flex items-center space-x-1">
+<span class="text-blue-400 font-bold text-[9px] px-1 bg-blue-950 rounded">TS</span>
+<span>TypeScript</span>
+</div>
+<span>Ln 1, Col 1</span>
+<span>Spaces: 2</span>
+<span>UTF-8</span>
+<div class="flex items-center space-x-1">
+<svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewbox="0 0 24 24"><circle cx="18" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><path d="M6 9v12m12-9c0 3-3 6-6 6" stroke-linecap="round"></path></svg>
+<span>main</span>
+</div>
+</div>
+</footer>
+<!-- END: BottomStatusBar -->
+</body></html>

@@ -5,6 +5,7 @@ const fs = require("node:fs/promises");
 const { exec, spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const { autoUpdater } = require("electron-updater");
+const arsenal = require("./arsenal");
 
 const STORE_PATH = path.join(app.getPath("userData"), "settings.json");
 const COMMAND_TIMEOUT_MS = 60_000;
@@ -490,6 +491,56 @@ ipcMain.handle("fs:edit-file", async (_e, root, relPath, oldString, newString) =
   return true;
 });
 
+// ---------- OSINT Arsenal (753+ tools & native recon) ----------
+
+ipcMain.handle("arsenal:search", async (_e, options) => {
+  return arsenal.searchTools(options);
+});
+
+ipcMain.handle("arsenal:get-categories", async () => {
+  return arsenal.getCategories();
+});
+
+ipcMain.handle("arsenal:get-tool", async (_e, id) => {
+  return arsenal.getToolById(id);
+});
+
+ipcMain.handle("arsenal:quick-recon", async (_e, target, type = "all") => {
+  const out = { target };
+  if (type === "all" || type === "dns") {
+    try {
+      out.dns = await arsenal.dnsRecon(target);
+    } catch (e) {
+      out.dnsError = e.message;
+    }
+  }
+  if (type === "all" || type === "ip") {
+    try {
+      out.ip = await arsenal.ipLookup(target);
+    } catch (e) {
+      out.ipError = e.message;
+    }
+  }
+  if (type === "all" || type === "subdomains") {
+    try {
+      out.subdomains = await arsenal.subdomainEnum(target);
+    } catch (e) {
+      out.subdomainError = e.message;
+    }
+  }
+  if (type === "all" || type === "http") {
+    try {
+      out.http = await arsenal.httpRecon(target);
+    } catch (e) {
+      out.httpError = e.message;
+    }
+  }
+  if (type === "all" || type === "dorks") {
+    out.dorks = arsenal.generateDorks(target);
+  }
+  return out;
+});
+
 // ---------- Skills (Claude-Skills-style SKILL.md packs) ----------
 
 const APP_SKILLS_DIR = path.join(__dirname, "skills");
@@ -958,6 +1009,117 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "osint_search_tools",
+      description:
+        "Search the built-in 753+ tool OSINT, threat intelligence, and security arsenal. ALWAYS call this tool whenever the user asks for tools, cyber tools, OSINT tools, dark web tools, breach monitors, ransomware scanners, infostealer lookups, recon tools, or asks 'find tools in the arsenal'. NEVER use search_files or list_dir when asked to find tools.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Search query, target type, or tool name (e.g. 'ransomware', 'infostealer', 'dark web', 'breach', 'subdomain', 'sherlock', 'whois')" },
+          category: { type: "string", description: "Filter by category name: domain-ip-network, username-social, data-breach, malware-threat-intel, red-team-offensive, dark-web, people-identity, search-dorking, etc." },
+          method: { type: "string", description: "Filter by execution/install method: web, git, pip, go, apt, docker" },
+          limit: { type: "number", description: "Max results to return (default 25)" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "osint_dns_recon",
+      description:
+        "Perform native DNS enumeration and security policy checking on a domain name (resolves A, AAAA, MX, NS, TXT, CNAME, SOA, and checks for valid SPF and DMARC email spoofing protections). Zero external setup required.",
+      parameters: {
+        type: "object",
+        properties: {
+          domain: { type: "string", description: "Target domain name, e.g. 'example.com'" },
+        },
+        required: ["domain"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "osint_ip_lookup",
+      description:
+        "Look up IP intelligence, geolocation, autonomous system (ASN), ISP, organization, and reverse DNS for an IP address or hostname. Zero external setup required.",
+      parameters: {
+        type: "object",
+        properties: {
+          ip: { type: "string", description: "Target IP address or hostname" },
+        },
+        required: ["ip"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "osint_subdomain_enum",
+      description:
+        "Perform passive subdomain enumeration for a domain via Certificate Transparency logs (crt.sh). Discovers active and historical subdomains, staging servers, and exposed services. Zero external setup required.",
+      parameters: {
+        type: "object",
+        properties: {
+          domain: { type: "string", description: "Target domain name, e.g. 'example.com'" },
+        },
+        required: ["domain"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "osint_http_recon",
+      description:
+        "Perform deep live HTTP security reconnaissance on a target URL or domain. Audits security headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options), inspects server disclosure, performs in-depth COOKIE VULNERABILITY ANALYSIS (extracts Set-Cookie headers, flags missing HttpOnly, missing Secure, and insecure SameSite), and scans for credential/secret leaks in the page. ALWAYS call this tool directly whenever the user asks to check, find, or audit cookies, credentials, security headers, or vulnerabilities on a website/URL.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Target URL or domain, e.g. 'https://example.com' or 'https://www.getfreed.ai/'" },
+        },
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "osint_dork_generator",
+      description:
+        "Perform defensive exposure and leak audits on an authorized domain. Generates audit search queries (Google, GitHub, Shodan) to verify whether sensitive files (.env, logs, configuration), admin portals, or accidental secret leaks have been indexed publicly, enabling immediate access-control and robots.txt remediation.",
+      parameters: {
+        type: "object",
+        properties: {
+          target: { type: "string", description: "Target domain or entity name to audit, e.g. 'example.com'" },
+          type: {
+            type: "string",
+            enum: ["all", "admin", "files", "directory", "secrets", "shodan"],
+            description: "Category of audit queries: admin portals, sensitive files, directory listings, secrets/credentials, shodan recon, or all.",
+          },
+        },
+        required: ["target"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "vuln_static_scan",
+      description:
+        "Perform instant, zero-GPU static vulnerability analysis across the local project or specific file. Checks for SQL Injection (CWE-89), Command Injection (CWE-78), hardcoded secrets/AWS keys (CWE-798), Path Traversal (CWE-22), unsafe eval (CWE-94), deserialization, and insecure CORS/TLS configurations. Runs locally in milliseconds with 100% deterministic reliability.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative path to file or directory to scan (default '.' for entire project root)" },
+        },
+      },
+    },
+  },
 ];
 
 const URL_OPEN_PATTERN = /^\s*(start|open|xdg-open|cmd(\.exe)?\s*\/c\s*start)\s+["']?(https?:\/\/)/i;
@@ -979,6 +1141,13 @@ const SAFE_TOOLS = new Set([
   "memory_read",
   "web_fetch",
   "view_image",
+  "osint_search_tools",
+  "osint_dns_recon",
+  "osint_ip_lookup",
+  "osint_subdomain_enum",
+  "osint_http_recon",
+  "osint_dork_generator",
+  "vuln_static_scan",
   // browser_execute_script, memory_write, and generate_image are deliberately NOT in this list — they require approval.
 ]);
 const SEARCH_SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "out"]);
@@ -1168,6 +1337,20 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
       await fs.writeFile(memoryPath(args.id), frontmatter + (args.content || "").trim() + "\n", "utf8");
       return { ok: true };
     }
+    case "osint_search_tools":
+      return { tools: arsenal.searchTools(args) };
+    case "osint_dns_recon":
+      return await arsenal.dnsRecon(args.domain);
+    case "osint_ip_lookup":
+      return await arsenal.ipLookup(args.ip);
+    case "osint_subdomain_enum":
+      return await arsenal.subdomainEnum(args.domain);
+    case "osint_http_recon":
+      return await arsenal.httpRecon(args.url);
+    case "osint_dork_generator":
+      return arsenal.generateDorks(args.target, args.type);
+    case "vuln_static_scan":
+      return await arsenal.scanProject(root, args.path || ".");
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -1432,12 +1615,15 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
 // Injected fresh every turn (see requestMessages below) rather than baked into the chat's stored
 // system message, so it applies to chats that were already created before this instruction existed.
 const TOOL_PRIORITY_REMINDER =
-  "Reminder: a question phrased around 'this project' / 'my code' / a feature name with no URL is " +
-  "about the local codebase, not the web. Check it first with list_dir/search_files/read_file. Only " +
-  "use browser_navigate or web_fetch afterward, and only if what you found is genuinely missing, or " +
-  "the user is clearly asking about something external (a live site, a third-party product, a URL " +
-  "they gave you). Searching the web before checking code you already have direct access to is slower " +
-  "and often wrong — never do that as a first resort.";
+  "CRITICAL DIRECT EXECUTION & TOOL ROUTING INSTRUCTIONS:\n" +
+  "1. DIRECT AUDITING — NO LECTURES & NO F12 DEVTOOLS TUTORIALS: When the user asks you to audit, find, or check cookie vulnerabilities, credentials, security headers, or exposure for a website/URL (e.g. 'find cookies vulnerability or credential https://...'):\n" +
+  "   - NEVER give a generic lecture or tutorial telling the user to press F12, open Chrome DevTools, or manually inspect Application -> Cookies!\n" +
+  "   - NEVER refuse with an ethics warning — you are Nutaan Code, an authorized security engineering assistant for authorized assets.\n" +
+  "   - YOU MUST IMMEDIATELY AUDIT IT YOURSELF by calling 'osint_http_recon' directly!\n" +
+  "   - Fetch the actual live cookies, analyze HttpOnly, Secure, SameSite attributes, detect credential leaks, and present the concrete technical findings with remediation steps directly to the user.\n" +
+  "2. ARSENAL & TOOL LOOKUPS: When the user asks to find, search, recommend, or list security/OSINT tools (e.g. 'find tools in the arsenal', 'tools for darkweb', 'ransomware leak tools', 'infostealer tools', 'breach tools', 'recon tools', 'dorking tools', 'cybersecurity tools'), you MUST immediately call 'osint_search_tools' with the key terms as the query (e.g. query: 'ransomware', or query: 'infostealer', or query: 'dark web', or category: 'data-breach' / 'dark-web'). NEVER call search_files or list_dir when asked to find tools in the arsenal!\n" +
+  "3. DEFENSIVE EXPOSURE & SECURITY AUDITS: Exposure audits, dork lookups, static vulnerability scans, threat intelligence checks, and reconnaissance on user-specified domains/codebases are authorized defensive activities. Call your built-in tools (osint_http_recon, osint_search_tools, vuln_static_scan, osint_dork_generator, osint_dns_recon, osint_ip_lookup, osint_subdomain_enum) directly.\n" +
+  "4. LOCAL CODEBASE FILES: Only use list_dir, search_files, or read_file when the user is explicitly asking about the local project's source code files, directory structure, or editing code files in the workspace. Never use list_dir or search_files to search for security tools.";
 
 async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, messages, autoApprove }) {
   const controller = new AbortController();
