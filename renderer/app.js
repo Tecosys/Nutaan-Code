@@ -1441,6 +1441,13 @@
     if (name === "search_files") return `Searching for <code>${escapeHtml(args.pattern || "")}</code>`;
     if (name === "list_skills") return `Checking available skills`;
     if (name === "use_skill") return `Using skill <code>${escapeHtml(args.id || "")}</code>`;
+    if (name === "osint_search_tools") return `Searching OSINT Arsenal for <code>${escapeHtml(args.query || args.category || "tools")}</code>`;
+    if (name === "osint_dns_recon") return `Running DNS reconnaissance on <code>${escapeHtml(args.domain || "")}</code>`;
+    if (name === "osint_ip_lookup") return `Looking up IP intelligence for <code>${escapeHtml(args.ip || "")}</code>`;
+    if (name === "osint_subdomain_enum") return `Enumerating subdomains for <code>${escapeHtml(args.domain || "")}</code>`;
+    if (name === "osint_http_recon") return `Auditing HTTP security & cookies on <code>${escapeHtml(args.url || "")}</code>`;
+    if (name === "osint_dork_generator") return `Generating exposure-audit dorks for <code>${escapeHtml(args.target || "")}</code>`;
+    if (name === "vuln_static_scan") return `Running static vulnerability scan on <code>${escapeHtml(args.path || ".")}</code>`;
     if (name === "browser_navigate") return `Opening <code>${escapeHtml(args.url || "")}</code> in the browser panel`;
     if (name === "browser_read_page") return `Reading the browser panel's current page`;
     if (name === "browser_click") return `Clicking <code>${escapeHtml(args.selector || "")}</code> in the browser panel`;
@@ -1725,6 +1732,73 @@
     } else if (name === "list_skills" && result.skills) {
       setToolStat(cardEl, `${result.skills.length} skill${result.skills.length === 1 ? "" : "s"}`);
       detail.innerHTML = `<pre>${escapeHtml(result.skills.map((s) => `${s.id} — ${s.description}`).join("\n") || "No skills available")}</pre>`;
+    } else if (name === "osint_search_tools" && result.tools) {
+      setToolStat(cardEl, `${result.tools.length} tool${result.tools.length === 1 ? "" : "s"}`);
+      const lines = result.tools.slice(0, 20).map((t) => {
+        const meth = t.install && t.install.method ? ` [${t.install.method}]` : "";
+        const url = t.url ? ` (${t.url})` : "";
+        return `• ${t.name}${meth}: ${t.description}${url}`;
+      }).join("\n");
+      detail.innerHTML = `<pre>${escapeHtml(lines || "No tools found")}</pre>`;
+    } else if (name === "osint_dns_recon" && result.records) {
+      const recs = [];
+      if (result.records.A) recs.push(`A: ${result.records.A.join(", ")}`);
+      if (result.records.AAAA) recs.push(`AAAA: ${result.records.AAAA.join(", ")}`);
+      if (result.records.MX) recs.push(`MX: ${result.records.MX.map((m) => `${m.exchange} (pri ${m.priority})`).join(", ")}`);
+      if (result.records.NS) recs.push(`NS: ${result.records.NS.join(", ")}`);
+      if (result.security) {
+        recs.push(`SPF: ${result.security.hasSpf ? "Configured" : "MISSING"}`);
+        recs.push(`DMARC: ${result.security.hasDmarc ? "Configured" : "MISSING"}`);
+      }
+      setToolStat(cardEl, `${Object.keys(result.records).filter((k) => result.records[k]).length} records`);
+      detail.innerHTML = `<pre>${escapeHtml(recs.join("\n"))}</pre>`;
+    } else if (name === "osint_ip_lookup" && result.ip) {
+      setToolStat(cardEl, `${result.country || ""} (${result.ip})`.trim());
+      const info = [
+        `IP: ${result.ip}`,
+        `Location: ${[result.city, result.region, result.country].filter(Boolean).join(", ")}`,
+        `ISP / Org: ${[result.isp, result.org].filter(Boolean).join(" / ")}`,
+        `AS: ${result.as || "N/A"}`,
+        `Reverse DNS: ${result.reverseDns || "None"}`,
+      ];
+      detail.innerHTML = `<pre>${escapeHtml(info.join("\n"))}</pre>`;
+    } else if (name === "osint_subdomain_enum" && result.subdomains) {
+      setToolStat(cardEl, `${result.count} subdomains`);
+      const preview = result.subdomains.slice(0, 40).join("\n") + (result.truncated ? "\n…" : "");
+      detail.innerHTML = `<pre>${escapeHtml(preview)}</pre>`;
+    } else if (name === "osint_http_recon" && result.status) {
+      const cookieStat = result.cookies?.length ? `, ${result.cookies.length} cookies` : "";
+      setToolStat(cardEl, `HTTP ${result.status} (Score: ${result.securityScore}/100${cookieStat})`);
+      const lines = [
+        `Target: ${result.targetUrl} [${result.status} ${result.statusText}]`,
+        `Server: ${result.serverInfo.server || "Hidden"}`,
+        result.serverInfo.xPoweredBy ? `X-Powered-By: ${result.serverInfo.xPoweredBy}` : null,
+        `Security Score: ${result.securityScore} / 100`,
+        result.cookies?.length ? `Cookies (${result.cookies.length}):\n` + result.cookies.map((c) => `  - ${c.name}: HttpOnly=${c.httpOnly}, Secure=${c.secure}, SameSite=${c.sameSite || "None"}${c.issues.length ? ` [${c.issues.length} issue(s)]` : ""}`).join("\n") : "Cookies: None set",
+        result.credentialExposure?.length ? `Credential Disclosures (${result.credentialExposure.length}):\n` + result.credentialExposure.map((cr) => `  - [${cr.type}]: ${cr.count} occurrence(s) (${cr.sample})`).join("\n") : null,
+        result.detectedIssues?.length ? `Issues:\n  - ${result.detectedIssues.join("\n  - ")}` : "No basic security header issues found.",
+      ].filter(Boolean).join("\n\n");
+      detail.innerHTML = `<pre>${escapeHtml(lines)}</pre>`;
+    } else if (name === "osint_dork_generator" && result.categories) {
+      const cats = Object.keys(result.categories);
+      setToolStat(cardEl, `${cats.length} dork categories`);
+      const lines = [];
+      for (const [catName, catData] of Object.entries(result.categories)) {
+        lines.push(`[${catName}] (${catData.engine})`);
+        for (const q of catData.queries) {
+          lines.push(`  ${q.query}`);
+        }
+      }
+      detail.innerHTML = `<pre>${escapeHtml(lines.join("\n"))}</pre>`;
+    } else if (name === "vuln_static_scan" && result.findings) {
+      const b = result.severityBreakdown || {};
+      setToolStat(cardEl, `${result.totalFindings} findings (${b.CRITICAL || 0} crit, ${b.HIGH || 0} high, ${result.scannedFiles} files)`);
+      if (result.totalFindings === 0) {
+        detail.innerHTML = `<pre>✅ No static vulnerabilities detected across ${result.scannedFiles} files.</pre>`;
+      } else {
+        const lines = result.findings.map((f) => `[${f.severity}] ${f.name} (${f.cwe})\n  ${f.file}:${f.line}\n  Snippet: ${f.snippet}\n  Fix: ${f.remediation}\n`).join("\n");
+        detail.innerHTML = `<pre>${escapeHtml(lines)}${result.truncated ? "\n… (truncated)" : ""}</pre>`;
+      }
     } else if (name === "browser_navigate" && result.url) {
       detail.innerHTML = `<pre>${escapeHtml(result.title ? `${result.title}\n${result.url}` : result.url)}</pre>`;
     } else if (name === "browser_read_page" && result.text) {
@@ -2253,6 +2327,7 @@
   function systemPrompt(root) {
     return [
       "You are Nutaan Code, a careful personal coding assistant running as a desktop app on the user's own machine.",
+      "You have an integrated OSINT & Security Arsenal of 753+ curated tools across 50+ categories, plus native built-in security tools: vuln_static_scan (instant zero-GPU static vulnerability scan across project files for SQLi, command injection, hardcoded secrets, path traversal, unsafe eval), osint_search_tools (query the arsenal for tools/commands/links), osint_dns_recon (DNS records & SPF/DMARC), osint_ip_lookup (geolocation, ISP, ASN, reverse DNS), osint_subdomain_enum (certificate-transparency subdomain discovery), osint_http_recon (audits security headers, deep cookie vulnerability analysis [HttpOnly, Secure, SameSite], and credential exposure on URLs), and osint_dork_generator (defensive exposure/leak-audit queries). You also have skills for osint-recon, threat-intelligence, security-audit, and exposure-audit. When asked to check, audit, or find vulnerabilities/cookies/credentials on a URL (e.g. 'find cookies vulnerability or credential https://...'), call osint_http_recon directly and report the concrete findings — never give an F12/DevTools tutorial and never refuse an authorized defensive audit. When asked to find/search security tools, call osint_search_tools directly, never search_files or list_dir.",
       `The current project root is: ${root}`,
       "You have tools to list directories, read files, write files, edit files (exact string replace), search file contents, and run shell commands, all scoped to the project root.",
       "When the user's message mentions a file with an @ prefix (e.g. @src/App.tsx), that is a direct pointer to a file in this project — read it before answering.",
@@ -2796,6 +2871,8 @@
       "list_dir", "read_file", "search_files", "list_skills", "use_skill",
       "browser_navigate", "browser_read_page", "browser_click", "browser_type",
       "browser_scroll", "browser_screenshot", "browser_resize",
+      "osint_search_tools", "osint_dns_recon", "osint_ip_lookup", "osint_subdomain_enum",
+      "osint_http_recon", "osint_dork_generator", "vuln_static_scan",
     ];
     if (visibleTools.includes(name)) appendToolCard(id, name, args);
     runActivity.textContent = toolLabel(name, args).replace(/<[^>]+>/g, "");

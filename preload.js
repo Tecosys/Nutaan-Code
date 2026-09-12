@@ -15,6 +15,12 @@ contextBridge.exposeInMainWorld("nutaan", {
   editFile: (root, relPath, oldString, newString) =>
     ipcRenderer.invoke("fs:edit-file", root, relPath, oldString, newString),
   runCommand: (root, command) => ipcRenderer.invoke("proc:run-command", root, command),
+  arsenal: {
+    search: (options) => ipcRenderer.invoke("arsenal:search", options),
+    getCategories: () => ipcRenderer.invoke("arsenal:get-categories"),
+    getTool: (id) => ipcRenderer.invoke("arsenal:get-tool", id),
+    quickRecon: (target, type) => ipcRenderer.invoke("arsenal:quick-recon", target, type),
+  },
   osSearch: (payload) => ipcRenderer.invoke("os:search", payload),
   osOpen: (target) => ipcRenderer.invoke("os:open", target),
   osRead: (payload) => ipcRenderer.invoke("os:read", payload),
