@@ -4,8 +4,13 @@ on:
   push:
     tags:
       - "v*.*.*"
-  # Lets you produce installers from a branch without cutting a tag, to check a build works
-  # before it becomes a published release.
+    # Feature branches build installers too, so a branch can be tested on all three platforms
+    # without cutting a tag first. These never publish — see the --publish flag below.
+    branches:
+      - "feat/**"
+      - "release/**"
+  pull_request:
+    branches: ["main", "master"]
   workflow_dispatch:
     inputs:
       publish:
@@ -52,17 +57,21 @@ jobs:
         if: matrix.platform == 'linux'
         run: sudo apt-get update && sudo apt-get install -y rpm
 
+      # Publishing is gated on an actual version tag (or an explicit manual request), not on
+      # "was this a push" — otherwise every branch commit would create a GitHub release.
       - name: Build ${{ matrix.platform }}
-        run: npx electron-builder --${{ matrix.platform }} ${{ (github.event_name == 'push' || inputs.publish) && '--publish always' || '--publish never' }}
+        run: npx electron-builder --${{ matrix.platform }} ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.publish) && '--publish always' || '--publish never' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Unsigned builds otherwise fail the notarization step on macOS runners.
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
+      # Named per run so branch builds don't collide, and downloadable straight from the run
+      # summary — that is how you get installers without publishing a release.
       - name: Upload ${{ matrix.platform }} installers
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
+          name: ${{ matrix.artifact }}-${{ github.run_number }}
           retention-days: 14
           if-no-files-found: error
           path: |
