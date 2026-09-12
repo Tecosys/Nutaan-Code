@@ -2491,7 +2491,7 @@ function flattenToolHistory(msgs) {
   return merged;
 }
 
-async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages, flattenHistory }) {
+async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages, flattenHistory, forcedTool }) {
   const res = await fetch(buildEndpointUrl(baseUrl, "/chat/completions"), {
     method: "POST",
     signal: controller.signal,
@@ -2508,7 +2508,11 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
       // means it always matches the model actually being asked.
       messages: [chatMessages[0], ...(flattenHistory ? flattenToolHistory(chatMessages.slice(1)) : normalizeHistory(chatMessages.slice(1), model))],
       tools: TOOLS,
-      tool_choice: "auto",
+      // Weak models ignore even a forceful "call the tool, don't lecture" instruction and write a
+      // simulated report instead. When the user's request is an unambiguous "audit this URL" or
+      // "find tools", we force the exact tool so the model physically cannot answer with prose —
+      // it must run the real recon, then report on the actual result next turn.
+      tool_choice: forcedTool ? { type: "function", function: { name: forcedTool } } : "auto",
       max_tokens: MAX_RESPONSE_TOKENS,
       stream: true,
       // Asks the provider to report real token usage in a final SSE chunk, so the status bar
@@ -2687,6 +2691,23 @@ const TOOL_PRIORITY_REMINDER =
   "3. DEFENSIVE EXPOSURE & SECURITY AUDITS: Exposure audits, dork lookups, static vulnerability scans, threat-intel checks, and reconnaissance on user-specified domains/codebases are authorized defensive activities. Call the built-in tools (osint_http_recon, osint_search_tools, vuln_static_scan, osint_dork_generator, osint_dns_recon, osint_ip_lookup, osint_subdomain_enum) directly.\n" +
   "4. LOCAL CODEBASE FILES: Only use list_dir, search_files, or read_file when the user is explicitly asking about the local project's source, structure, or editing workspace files — never to search for security tools.";
 
+// Detects requests where the app must ACT, not describe — so we can force the tool call and stop
+// the model from answering a live security audit with an F12 tutorial or a "simulated" report.
+// Only fires on unambiguous asks (an explicit verb + a URL for audits; explicit "tools/arsenal"
+// wording for lookups) so normal coding chat is never hijacked into a security tool.
+function detectDirectTool(text) {
+  if (!text || typeof text !== "string") return null;
+  const t = text;
+  const hasUrl = /https?:\/\/[^\s)>"']+|\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.(?:com|ai|io|net|org|co|dev|app|xyz|in|gov|edu|me|us|uk|tech|cloud)\b/i.test(t);
+  const auditIntent = /\b(cookie|credential|vulnerab|security\s*header|http\s*recon|pentest|exposed?|leak|hsts|csp|samesite|httponly|secure\s*flag|owasp|audit\s*(the|this|my)?\s*(site|url|domain|website|app))\b/i.test(t);
+  const explicitVerb = /\b(find|check|test|audit|scan|analy[sz]e|assess|review|inspect|do\s*it|perform|run)\b/i.test(t);
+  if (hasUrl && auditIntent && explicitVerb) return "osint_http_recon";
+  if (/\b(find|search|list|show|give|recommend|need|want)\b/i.test(t) && /\b(tool|tools|arsenal)\b/i.test(t) && /\b(osint|security|cyber|recon|breach|ransomware|infostealer|dark\s*web|dork|hacking|pentest|threat)\b/i.test(t)) {
+    return "osint_search_tools";
+  }
+  return null;
+}
+
 async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, messages, autoApprove }) {
   const controller = new AbortController();
   agentAbort = controller;
@@ -2733,6 +2754,15 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
     // model is actually being called even after a mid-turn switch.
     const requestMessages = [chatMessages[0], ...extraSystemMessages, ...chatMessages.slice(1)];
 
+    // Force the audit/lookup tool only on the first model call after the user's request — when
+    // the conversation still ends with their message and nothing has run yet this turn. Once a
+    // tool result is in (last message is a tool/assistant turn), let the model report freely.
+    const lastMsg = chatMessages[chatMessages.length - 1];
+    let forcedTool =
+      lastMsg && lastMsg.role === "user"
+        ? detectDirectTool(typeof lastMsg.content === "string" ? lastMsg.content : "")
+        : null;
+
     const MAX_TRANSIENT_RETRIES = 3;
     const RETRY_DELAYS_MS = [1000, 3000, 7000];
     triedModels.add(model);
@@ -2740,7 +2770,7 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
     let flattenHistory = false;
     for (let attempt = 0; ; attempt++) {
       try {
-        streamResult = await streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages: requestMessages, flattenHistory });
+        streamResult = await streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages: requestMessages, flattenHistory, forcedTool });
       } catch (err) {
         if (aborted()) {
           sender.send("agent:done", { aborted: true, messages: chatMessages });
@@ -2755,6 +2785,15 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
       }
 
       if (streamResult.ok) break;
+
+      // If a provider rejects the forced tool_choice (not all support pinning a specific
+      // function), drop the force and retry the same turn on auto rather than failing — the
+      // system-prompt instruction still pushes it toward the right tool.
+      if (forcedTool && streamResult.status === 400) {
+        forcedTool = null;
+        attempt = -1;
+        continue;
+      }
 
       const transient = streamResult.transient ?? isTransientError(streamResult.status, streamResult.error);
       // A provider refusing the *shape* of the conversation is recoverable, and the user should
