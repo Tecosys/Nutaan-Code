@@ -2019,21 +2019,25 @@ body.resizing webview { pointer-events: none; }
   background: #fff;
   display: flex;
 }
+/* Device preview: the webview is rendered at the real device width (so the page sees a true
+   tablet/phone viewport) and then scaled down by JS (applyDeviceScale) to fit whatever width the
+   panel currently has — otherwise an 820px tablet frame just overflowed a 430px panel and got
+   clipped. overflow:hidden + position:relative anchor the absolutely-positioned, scaled webview. */
 .browser-viewport.device {
   padding: 18px;
-  justify-content: center;
-  align-items: flex-start;
+  position: relative;
+  overflow: hidden;
 }
 .browser-viewport.device webview {
   flex: none;
-  height: 100%;
+  position: absolute;
+  top: 18px;
+  transform-origin: top left;
   border-radius: 12px;
   border: 1px solid var(--border-strong);
   overflow: hidden;
   box-shadow: 0 20px 50px -20px rgba(0, 0, 0, 0.9);
 }
-.browser-viewport.device-mobile webview { width: 390px; }
-.browser-viewport.device-tablet webview { width: 820px; }
 
 /* Tells the user the agent is driving the browser, so an unattended page moving on its own
    reads as work happening rather than a glitch. */

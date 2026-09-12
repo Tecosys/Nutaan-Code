@@ -1158,7 +1158,9 @@
     const rect = workspace.getBoundingClientRect();
     const pct = ((rect.right - e.clientX) / rect.width) * 100;
     panel.style.width = Math.max(24, Math.min(62, pct)) + "%";
+    applyDeviceScale();
   });
+  window.addEventListener("resize", () => applyDeviceScale());
   resizeShield.addEventListener("mouseup", endResize);
   resizeShield.addEventListener("mouseleave", endResize);
   window.addEventListener("mouseup", endResize);
@@ -1237,6 +1239,7 @@
     const t = activeBrowserTab();
     if (t) browserAddress.value = t.url === "about:blank" ? "" : t.url;
     renderBrowserTabs();
+    applyDeviceScale();
   }
 
   function closeBrowserTab(id) {
@@ -1320,6 +1323,35 @@
     if (mode === "mobile") browserViewport.classList.add("device", "device-mobile");
     else if (mode === "tablet") browserViewport.classList.add("device", "device-tablet");
     deviceBtn.textContent = (DEVICES.find((d) => d.id === mode)?.label || "Desktop") + " ▾";
+    applyDeviceScale();
+  }
+
+  // Renders the device-preview webview at the true device width but visually scaled to fit the
+  // panel, so the whole frame is always visible (never clipped) however narrow the panel is.
+  function applyDeviceScale() {
+    const wv = activeWebview();
+    if (!wv) return;
+    const isDevice = browserViewport.classList.contains("device");
+    if (!isDevice) {
+      wv.style.position = "";
+      wv.style.transform = "";
+      wv.style.transformOrigin = "";
+      wv.style.width = "";
+      wv.style.height = "";
+      wv.style.left = "";
+      wv.style.top = "";
+      return;
+    }
+    const deviceWidth = browserViewport.classList.contains("device-tablet") ? 820 : 390;
+    const pad = 18;
+    const availW = Math.max(120, browserViewport.clientWidth - pad * 2);
+    const availH = Math.max(200, browserViewport.clientHeight - pad * 2);
+    const scale = Math.min(1, availW / deviceWidth);
+    const scaledW = deviceWidth * scale;
+    wv.style.width = deviceWidth + "px";
+    wv.style.height = availH / scale + "px";
+    wv.style.transform = `scale(${scale})`;
+    wv.style.left = Math.round((browserViewport.clientWidth - scaledW) / 2) + "px";
   }
 
   deviceBtn.addEventListener("click", (e) => {
