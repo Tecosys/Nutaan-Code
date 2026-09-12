@@ -1449,7 +1449,11 @@ button, input, textarea, select { font-family: inherit; }
 .composer textarea::placeholder { color: var(--text-faded); }
 
 /* Never wrap. Wrapping dropped the send button onto its own line and pinned it hard against
-   the edge; collapsing the labels keeps every control on one row instead. */
+   the edge; collapsing the labels keeps every control on one row instead.
+   The containment context lives on the toolbar itself, not on .composer-inner, so the query
+   measures the exact box the buttons sit in. Measuring the wider outer box let the row overflow
+   its padding while the labels were still shown, which pushed the send button outside the
+   composer's rounded border. */
 .composer-toolbar {
   display: flex;
   align-items: center;
@@ -1457,12 +1461,12 @@ button, input, textarea, select { font-family: inherit; }
   gap: 9px;
   padding: 2px 8px 0;
   min-width: 0;
+  container-type: inline-size;
 }
-.composer-inner { container-type: inline-size; }
 
 /* Measured against what the row actually needs: attach + two pills + model + send come to
-   roughly 470px with every label showing. Collapsing at 560 threw the labels away while they
-   still fit comfortably, which is most of the time once the side panel is open. */
+   roughly 470px with every label showing. Below that the labels collapse; the truncation
+   safety net on .pill-btn guarantees the row can never overflow even mid-collapse. */
 @container (max-width: 470px) {
   .pill-btn .label-text { display: none; }
   .pill-btn { padding: 0 10px; }
@@ -1488,11 +1492,22 @@ button, input, textarea, select { font-family: inherit; }
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
   white-space: nowrap;
+  min-width: 0;
+}
+/* Let the label truncate rather than force the row wider than the composer. This is the last
+   line of defence keeping the send button inside the box; the icon buttons and send button stay
+   flex-shrink:0 so only the labels give way. */
+.pill-btn .label-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .pill-btn:hover { background: var(--bg-hover); border-color: #2e3240; }
 .pill-btn .slash { font-family: var(--mono); color: var(--text-dim); }
 
-.menu-wrap { position: relative; flex-shrink: 0; }
+/* Allowed to shrink so the pill labels inside can truncate under pressure instead of shoving
+   the send button out of the composer. The container query collapses the labels entirely at
+   470px; this just covers the sliver of width above that. */
+.menu-wrap { position: relative; min-width: 0; }
 
 .pop-menu {
   position: absolute;

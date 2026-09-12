@@ -2051,8 +2051,39 @@ async function compactIfNeeded(sender, chatMessages, { baseUrl, apiKey, model })
 const modelCooldown = new Map();
 const COOLDOWN_MS = 5 * 60_000;
 
-function coolDownModel(model, status) {
-  if (status !== 429) return;
+// A capacity failure is any signal that the model is out of headroom right now — not just a
+// clean 429. Providers phrase it a dozen ways (Azure "exceeded rate limit", Gemini
+// "RESOURCE_EXHAUSTED"/"high demand"/503) and some arrive without a 429 status, so match the
+// text too. Missing these let an exhausted model get reselected and hammered again — the exact
+// cascade that turned one busy provider into a burst of failing requests across every model.
+function isCapacityMessage(message) {
+  return /rate.?limit|quota|exceeded|resource_exhausted|overloaded|too many requests|high demand|temporarily unavailable|unavailable|try again later|capacity/i.test(
+    message || ""
+  );
+}
+
+// Providers often say exactly how long to wait ("Please retry in 34.4s", "try again in 35s").
+// Honouring that beats retrying in 1s and getting limited again. Returns ms, or null.
+function parseRetryAfterMs(message) {
+  if (!message) return null;
+  const m =
+    String(message).match(/retry(?:\s+again)?\s+(?:in|after)\s+([\d.]+)\s*(ms|s|sec(?:onds?)?|m|min(?:utes?)?)?/i) ||
+    String(message).match(/try again in\s+([\d.]+)\s*(ms|s|sec(?:onds?)?|m|min(?:utes?)?)?/i);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (!isFinite(n)) return null;
+  const unit = (m[2] || "s").toLowerCase();
+  if (unit === "ms") return Math.round(n);
+  if (unit.startsWith("m")) return Math.round(n * 60_000); // minutes
+  return Math.round(n * 1000); // seconds
+}
+
+function isCapacityFailure(status, message) {
+  return status === 429 || status === 503 || isCapacityMessage(message);
+}
+
+function coolDownModel(model, status, message) {
+  if (!isCapacityFailure(status, message)) return;
   modelCooldown.set(model, Date.now() + COOLDOWN_MS);
 }
 
@@ -2194,7 +2225,7 @@ async function describeImage(baseUrl, apiKey, dataUrl, context) {
 function isTransientError(status, message) {
   if (status === 429 || status === 502 || status === 503 || status === 504) return true;
   if (status === 401 || status === 402 || status === 403 || status === 404) return false;
-  return /provider returned error|overloaded|temporarily unavailable|rate.?limit|stopped responding mid-stream|timed?\s*out|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(
+  return /provider returned error|overloaded|temporarily unavailable|unavailable|rate.?limit|quota|resource_exhausted|too many requests|high demand|try again later|stopped responding mid-stream|timed?\s*out|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(
     message || ""
   );
 }
@@ -2560,14 +2591,18 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
       }
 
       // "Overloaded" and "rate limited" don't clear in a few seconds, and there is a working
-      // model one step down the list — spending 11s retrying the same busy provider before
-      // switching is the wrong trade. Genuine blips still get the full retry budget.
-      // A stall has already cost 45 seconds of silence proving the model won't answer; retrying
-      // it twice more just spends another 90 before doing the obvious thing. Switch at once.
+      // model one step down the list, so switching beats retrying the same busy provider. A
+      // mid-stream stall has already cost ~45s of silence proving the model won't answer, so it
+      // switches at once too. Genuine brief blips still get the full retry budget below.
       const stalled = /stopped responding mid-stream/i.test(streamResult.error || "");
-      const capacityFailure = streamResult.status === 429 || streamResult.status === 503;
-      const retryBudget = stalled ? 0 : capacityFailure ? 1 : MAX_TRANSIENT_RETRIES;
-      coolDownModel(model, streamResult.status);
+      const capacityFailure = isCapacityFailure(streamResult.status, streamResult.error);
+      // Never retry the *same* model on a capacity failure: a rate-limited or overloaded model
+      // will limit again a second later, so a same-model retry is pure wasted traffic — the
+      // "retrying in 1s" spam that fed the cascade. Cool it down and switch straight to a fresh
+      // model instead. Only genuine brief blips (network wobble, a lone mid-stream stall) keep a
+      // real retry budget.
+      const retryBudget = stalled || capacityFailure ? 0 : MAX_TRANSIENT_RETRIES;
+      coolDownModel(model, streamResult.status, streamResult.error);
       if (stalled) modelCooldown.set(model, Date.now() + COOLDOWN_MS);
 
       if (attempt >= retryBudget) {
@@ -2577,8 +2612,32 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
         const canSwitch = !isAzureEndpoint(baseUrl) && triedModels.size <= MAX_MODEL_SWITCHES;
         const nextModel = canSwitch ? await pickFallbackModel(baseUrl, apiKey, triedModels) : null;
         if (!nextModel) {
-          sender.send("agent:error", { message: streamResult.error });
+          // Nothing left to try. If everything is rate-limited, say so plainly — the turn isn't
+          // broken, the whole catalog is just busy — rather than surfacing a raw provider string
+          // that reads like a crash. This is the signal the UI needs to stop the "thinking"
+          // spinner and tell the user the model actually stopped.
+          const message = capacityFailure
+            ? `Every available model is rate-limited or overloaded right now. Wait a minute and send again.\n\n(last error: ${streamResult.error})`
+            : streamResult.error;
+          sender.send("agent:error", { message });
           return;
+        }
+        // Space out provider hits so the fallback chain doesn't itself become a burst of
+        // requests. Honour the provider's own "retry in Ns" hint when it gave one (capped so the
+        // user isn't left staring), otherwise a short fixed beat.
+        if (capacityFailure) {
+          const pause = Math.min(parseRetryAfterMs(streamResult.error) ?? 1500, 8000);
+          sender.send("agent:retrying", {
+            message: `${model} is rate-limited — switching models`,
+            attempt: 1,
+            max: 1,
+            delayMs: pause,
+          });
+          await new Promise((r) => setTimeout(r, pause));
+          if (aborted()) {
+            sender.send("agent:done", { aborted: true, messages: chatMessages });
+            return;
+          }
         }
         sender.send("agent:model-switched", { from: model, to: nextModel, reason: streamResult.error });
         model = nextModel;
