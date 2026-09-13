@@ -37,6 +37,7 @@
       "bin/**/*",
       "main.js",
       "preload.js",
+      "arsenal/**/*",
       "renderer/**/*",
       "skills/**/*",
       "assets/**/*",
