@@ -2073,22 +2073,59 @@
     }
   }
 
+  const RESTORE_VISIBLE_TOOLS = new Set([
+    "list_dir", "read_file", "search_files", "list_skills", "use_skill",
+    "browser_navigate", "browser_read_page", "browser_click", "browser_type",
+    "browser_scroll", "browser_screenshot", "browser_resize",
+    "osint_search_tools", "osint_dns_recon", "osint_ip_lookup", "osint_subdomain_enum",
+    "osint_http_recon", "osint_dork_generator", "vuln_static_scan",
+    "check_background_task", "list_background_tasks",
+  ]);
+
+  function messageText(content) {
+    return Array.isArray(content)
+      ? content.filter((p) => p.type === "text").map((p) => p.text).join("\n")
+      : content || "";
+  }
+
+  // Rebuild the whole conversation — text AND the tool calls it made — from the saved messages, so
+  // reopening a chat shows what the agent actually did (which files it read, searches it ran, pages
+  // it opened), not a column of blank avatars. Without this the tool history was lost on reload.
   function renderThreadFromMessages(messages) {
     thread.innerHTML = "";
     thread.appendChild(emptyState);
     toolCards.clear();
     liveWriteCards.clear();
+    toolArgsById.clear();
     resetFileGroup();
-    for (const m of messages) {
-      if (m.role !== "user" && m.role !== "assistant") continue;
-      // A message carrying an attached image is a content array, not a string.
-      const text = Array.isArray(m.content)
-        ? m.content.filter((p) => p.type === "text").map((p) => p.text).join("\n")
-        : m.content;
-      if (text) appendBubble(m.role, text);
+    const toolNameById = new Map();
+    for (const m of messages || []) {
+      if (m.role === "user") {
+        const text = messageText(m.content);
+        if (text && text.trim()) appendBubble("user", text);
+      } else if (m.role === "assistant") {
+        const text = messageText(m.content);
+        if (text && text.trim()) appendBubble("assistant", text);
+        for (const call of m.tool_calls || []) {
+          const name = String(call.function?.name || "").split(/[<|]/)[0].trim();
+          let args = {};
+          try { args = JSON.parse(call.function?.arguments || "{}"); } catch {}
+          toolNameById.set(call.id, name);
+          toolArgsById.set(call.id, args);
+          if (RESTORE_VISIBLE_TOOLS.has(name)) appendToolCard(call.id, name, args);
+        }
+      } else if (m.role === "tool") {
+        const name = toolNameById.get(m.tool_call_id) || "";
+        if (!toolCards.has(m.tool_call_id)) continue;
+        let result = {};
+        try { result = typeof m.content === "string" ? JSON.parse(m.content) : m.content; }
+        catch { result = { text: String(m.content || "").slice(0, 4000) }; }
+        try { resolveToolCard(m.tool_call_id, name, result); } catch {}
+      }
     }
     renderEmptyVisibility();
     renderTasks(activeChat()?.tasks);
+    scrollToBottom();
   }
 
   // ---------- Status ----------
