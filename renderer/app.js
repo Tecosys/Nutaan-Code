@@ -3556,6 +3556,14 @@
     return "custom";
   }
 
+  const PROVIDER_HINTS = {
+    openai: "https://api.openai.com/v1",
+    anthropic: "https://api.anthropic.com/v1",
+    azure: "https://<resource>.openai.azure.com/openai/deployments/<deployment>",
+    bedrock: "https://bedrock-runtime.<region>.amazonaws.com",
+    google: "https://generativelanguage.googleapis.com/v1beta/openai",
+  };
+
   function renderProviders() {
     const list = el("providerList");
     if (!list) return;
@@ -3567,11 +3575,47 @@
       const active = p.managed ? !usingCustom : usingCustom && p.id === activeCustom;
       const row = document.createElement("div");
       row.className = "provider-row" + (active ? " active" : "");
-      row.innerHTML =
-        `<span class="provider-logo" style="background:${p.color}">${escapeHtml(p.mark)}</span>` +
-        `<span class="provider-name">${escapeHtml(p.name)}</span>` +
-        `<span class="provider-badge ${p.managed ? "managed" : "byo"}">${p.managed ? "Nutaan-managed" : "Bring your own key"}</span>` +
-        (active ? `<span class="provider-active">active</span>` : "");
+
+      // Real favicon; if it fails to load, fall back to a coloured monogram chip.
+      const logo = document.createElement("span");
+      logo.className = "provider-logo";
+      const img = document.createElement("img");
+      img.src = "providers/" + p.id + ".png";
+      img.alt = "";
+      img.onerror = () => { logo.textContent = p.mark; logo.style.background = p.color; logo.style.color = "#fff"; };
+      logo.appendChild(img);
+
+      const name = document.createElement("span");
+      name.className = "provider-name";
+      name.textContent = p.name;
+
+      const spacer = document.createElement("span");
+      spacer.className = "settings-spacer";
+
+      row.appendChild(logo);
+      row.appendChild(name);
+      row.appendChild(spacer);
+
+      if (p.managed) {
+        const badge = document.createElement("span");
+        badge.className = "provider-badge managed";
+        badge.textContent = "Nutaan-managed";
+        row.appendChild(badge);
+        if (active) {
+          const a = document.createElement("span");
+          a.className = "provider-active";
+          a.textContent = "active";
+          row.appendChild(a);
+        }
+      } else {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn-secondary provider-connect" + (active ? " connected" : "");
+        btn.textContent = active ? "Connected" : "Connect";
+        btn.disabled = !hasNutaan;
+        btn.addEventListener("click", () => onConnectProvider(p.id));
+        row.appendChild(btn);
+      }
       list.appendChild(row);
     }
     const byo = el("byoBlock");
@@ -3580,6 +3624,20 @@
     baseUrlInput.disabled = !hasNutaan;
     apiKeyInput.disabled = !hasNutaan;
     if (gate) gate.textContent = hasNutaan ? "(optional — routes to your own provider)" : "— add your nutaan.com key first";
+  }
+
+  function onConnectProvider(pid) {
+    const hasNutaan = !!(settings.nutaanKey && settings.nutaanKey.trim());
+    const gate = el("byoGateNote");
+    if (!hasNutaan) {
+      if (gate) gate.textContent = "— add your nutaan.com key first (required)";
+      el("changeKeyBtn")?.focus();
+      return;
+    }
+    const byo = el("byoBlock");
+    if (byo) byo.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (PROVIDER_HINTS[pid]) baseUrlInput.placeholder = PROVIDER_HINTS[pid];
+    baseUrlInput.focus();
   }
 
   el("useBuiltInBtn").addEventListener("click", async () => {

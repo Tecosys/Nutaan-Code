@@ -2288,8 +2288,8 @@ body.resizing webview { pointer-events: none; }
 }
 .provider-row.active { border-color: rgba(168, 85, 247, 0.55); box-shadow: 0 0 0 1px rgba(168, 85, 247, 0.25); }
 .provider-logo {
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   border-radius: 8px;
   display: flex;
   align-items: center;
@@ -2299,7 +2299,13 @@ body.resizing webview { pointer-events: none; }
   font-weight: 800;
   flex-shrink: 0;
   font-family: var(--mono);
+  background: #f4f4f7;
+  overflow: hidden;
 }
+.provider-logo img { width: 100%; height: 100%; object-fit: contain; padding: 4px; }
+.provider-connect { padding: 6px 16px; font-size: 12px; font-weight: 600; }
+.provider-connect.connected { color: #4ade80; border-color: rgba(74, 222, 128, 0.4); }
+.provider-connect:disabled { opacity: 0.45; cursor: not-allowed; }
 .provider-name { font-size: 13px; font-weight: 600; color: var(--text); }
 .provider-badge { margin-left: auto; font-size: 10.5px; font-weight: 600; padding: 3px 9px; border-radius: 7px; }
 .provider-badge.managed { background: rgba(74, 222, 128, 0.14); color: #4ade80; }
