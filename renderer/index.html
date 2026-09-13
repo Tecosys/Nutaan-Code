@@ -379,47 +379,73 @@
 </div>
 
 <div class="overlay" id="settingsOverlay" hidden>
-  <div class="modal">
-    <h3>Settings</h3>
-
-    <div class="field">
-      <label>nutaan.com account</label>
-      <div class="account-row">
-        <span class="status-dot online"></span>
-        <span class="email" id="accountEmail">Not activated</span>
-        <button class="btn-secondary" id="changeKeyBtn" style="padding:5px 11px;font-size:11.5px;">Change key</button>
-      </div>
+  <div class="modal modal-lg settings-modal">
+    <div class="settings-head">
+      <h3>Settings</h3>
+      <button class="icon-btn" id="settingsCloseX" title="Close">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
     </div>
+    <div class="settings-scroll">
 
-    <div class="field">
-      <label for="modelSelectSettings">Model</label>
-      <select id="modelSelectSettings"></select>
-      <div class="note">Every model your Nutaan backend exposes is listed here.</div>
-    </div>
+      <section class="settings-section">
+        <div class="settings-section-title">nutaan.com account <span class="req-chip">required</span></div>
+        <div class="account-row">
+          <span class="status-dot" id="accountDot"></span>
+          <span class="email" id="accountEmail">Not activated</span>
+          <span class="settings-spacer"></span>
+          <button class="btn-secondary" id="changeKeyBtn">Change key</button>
+        </div>
+        <div class="note">Your nutaan.com API key is the one required credential — models are configured server-side. It also unlocks the bring-your-own-key providers below.</div>
+      </section>
 
-    <details class="advanced" id="advancedDetails">
-      <summary>Advanced</summary>
-      <div class="field">
-        <label for="baseUrlInput">Server URL</label>
-        <input type="text" id="baseUrlInput" placeholder="Built-in Nutaan backend" />
-        <div class="note">Leave empty to use the built-in Nutaan backend. Set it to any OpenAI-compatible endpoint to use your own instead.</div>
-        <button class="btn-secondary" id="useBuiltInBtn" type="button" style="margin-top:9px;padding:6px 12px;font-size:12px;">Use the built-in backend</button>
-      </div>
-      <div class="field">
-        <label for="apiKeyInput">Server API key</label>
-        <input type="password" id="apiKeyInput" placeholder="Only needed with a custom Server URL" autocomplete="off" />
-        <div class="note">Ignored while the built-in backend is in use.</div>
-      </div>
-      <div class="field">
-        <label for="imageModelInput">Image model override (optional)</label>
-        <input type="text" id="imageModelInput" placeholder="auto-detected — only set this to override" />
-        <div class="note">When the agent generates an image, it picks an image-capable model automatically. Only set this to force a specific one.</div>
-      </div>
-    </details>
+      <section class="settings-section">
+        <div class="settings-section-title">Token usage</div>
+        <div class="usage-grid">
+          <div class="usage-tile"><div class="usage-num" id="usageTotal">0</div><div class="usage-lbl">Total tokens</div></div>
+          <div class="usage-tile"><div class="usage-num" id="usageIn">0</div><div class="usage-lbl">Input</div></div>
+          <div class="usage-tile"><div class="usage-num" id="usageOut">0</div><div class="usage-lbl">Output</div></div>
+          <div class="usage-tile"><div class="usage-num" id="usageReq">0</div><div class="usage-lbl">Requests</div></div>
+        </div>
+        <button class="btn-secondary" id="usageResetBtn" type="button">Reset counter</button>
+      </section>
 
-    <div class="field update-row">
-      <span id="appVersionText" class="note"></span>
-      <button class="btn-secondary" id="checkUpdatesBtn" type="button">Check for updates</button>
+      <section class="settings-section">
+        <div class="settings-section-title">Model</div>
+        <select id="modelSelectSettings"></select>
+        <div class="note">Every model your backend exposes is listed here. Nutaan auto-switches to a working model when one is rate-limited or busy.</div>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-title">Model providers</div>
+        <div class="provider-list" id="providerList"></div>
+        <div class="byo" id="byoBlock">
+          <div class="byo-head">Bring your own key <span class="byo-sub" id="byoGateNote"></span></div>
+          <div class="field">
+            <label for="baseUrlInput">Provider endpoint (OpenAI-compatible / Azure)</label>
+            <input type="text" id="baseUrlInput" placeholder="Built-in Nutaan-managed backend" />
+          </div>
+          <div class="field">
+            <label for="apiKeyInput">Provider API key</label>
+            <input type="password" id="apiKeyInput" placeholder="Your own provider key" autocomplete="off" />
+          </div>
+          <button class="btn-secondary" id="useBuiltInBtn" type="button">Use the built-in (Nutaan-managed) backend</button>
+        </div>
+      </section>
+
+      <details class="advanced" id="advancedDetails">
+        <summary>Advanced</summary>
+        <div class="field">
+          <label for="imageModelInput">Image model override (optional)</label>
+          <input type="text" id="imageModelInput" placeholder="auto-detected — only set this to override" />
+          <div class="note">When the agent generates an image, it picks an image-capable model automatically. Only set this to force a specific one.</div>
+        </div>
+      </details>
+
+      <div class="field update-row">
+        <span id="appVersionText" class="note"></span>
+        <button class="btn-secondary" id="checkUpdatesBtn" type="button">Check for updates</button>
+      </div>
     </div>
 
     <div class="modal-actions">

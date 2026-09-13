@@ -382,7 +382,25 @@
 
   function renderAccountRow() {
     accountEmail.textContent = settings.nutaanEmail || (settings.nutaanKey ? "Activated" : "Not activated");
+    const dot = el("accountDot");
+    if (dot) dot.className = "status-dot " + (settings.nutaanKey ? "online" : "offline");
+    renderProviders();
   }
+
+  (function wireSettingsExtras() {
+    const closeX = el("settingsCloseX");
+    if (closeX) closeX.addEventListener("click", () => { settingsOverlay.hidden = true; });
+    const reset = el("usageResetBtn");
+    if (reset) reset.addEventListener("click", () => {
+      settings.usageInTokens = 0;
+      settings.usageOutTokens = 0;
+      settings.usageRequests = 0;
+      window.nutaan.setSettings(settings);
+      renderUsagePanel();
+    });
+    // Keep the provider list / gate live as the user types a custom endpoint.
+    baseUrlInput.addEventListener("input", () => renderProviders());
+  })();
 
   activateBtn.addEventListener("click", activate);
   nutaanKeyInput.addEventListener("keydown", (e) => {
@@ -2792,6 +2810,13 @@
     // so a handful of tool calls read as "50.9k tokens" when barely anything had been written.
     runTokenTotal += usage?.completion_tokens || 0;
     runContextTokens = usage?.prompt_tokens || runContextTokens;
+    // Lifetime totals for the Settings usage panel — count both prompt and completion tokens the
+    // account actually spent, persisted so it survives restarts.
+    settings.usageInTokens = (settings.usageInTokens || 0) + (usage?.prompt_tokens || 0);
+    settings.usageOutTokens = (settings.usageOutTokens || 0) + (usage?.completion_tokens || 0);
+    settings.usageRequests = (settings.usageRequests || 0) + 1;
+    window.nutaan.setSettings(settings);
+    if (!settingsOverlay.hidden) renderUsagePanel();
     paintRunStatus();
   });
 
@@ -3487,7 +3512,74 @@
       modelSelectSettings.value = settings.model;
     }
     renderAccountRow();
+    renderUsagePanel();
+    renderProviders();
     settingsOverlay.hidden = false;
+  }
+
+  function fmtNum(n) {
+    n = n || 0;
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+    return String(Math.round(n));
+  }
+
+  function renderUsagePanel() {
+    const inT = settings.usageInTokens || 0;
+    const outT = settings.usageOutTokens || 0;
+    const set = (id, v) => { const e = el(id); if (e) e.textContent = v; };
+    set("usageTotal", fmtNum(inT + outT));
+    set("usageIn", fmtNum(inT));
+    set("usageOut", fmtNum(outT));
+    set("usageReq", fmtNum(settings.usageRequests || 0));
+  }
+
+  // Informational provider list — shows what's Nutaan-managed vs needs your own key. Bring-your-
+  // own-key is gated behind the nutaan.com key (mandatory), per the account model.
+  const PROVIDERS = [
+    { id: "nutaan", name: "Nutaan (managed)", color: "#a855f7", mark: "N", managed: true },
+    { id: "openai", name: "OpenAI", color: "#10a37f", mark: "AI" },
+    { id: "anthropic", name: "Anthropic", color: "#d97757", mark: "A" },
+    { id: "azure", name: "Azure OpenAI", color: "#0a84ff", mark: "Az" },
+    { id: "bedrock", name: "AWS Bedrock", color: "#ff9900", mark: "aws" },
+    { id: "google", name: "Google Gemini", color: "#4285f4", mark: "G" },
+  ];
+
+  function detectProviderFromUrl(url) {
+    const u = String(url || "").toLowerCase();
+    if (/azure/.test(u)) return "azure";
+    if (/bedrock|amazonaws/.test(u)) return "bedrock";
+    if (/openai\.com/.test(u)) return "openai";
+    if (/anthropic/.test(u)) return "anthropic";
+    if (/googleapis|generativelanguage/.test(u)) return "google";
+    return "custom";
+  }
+
+  function renderProviders() {
+    const list = el("providerList");
+    if (!list) return;
+    const hasNutaan = !!(settings.nutaanKey && settings.nutaanKey.trim());
+    const usingCustom = !!(settings.baseUrl && settings.baseUrl.trim());
+    const activeCustom = usingCustom ? detectProviderFromUrl(settings.baseUrl) : null;
+    list.innerHTML = "";
+    for (const p of PROVIDERS) {
+      const active = p.managed ? !usingCustom : usingCustom && p.id === activeCustom;
+      const row = document.createElement("div");
+      row.className = "provider-row" + (active ? " active" : "");
+      row.innerHTML =
+        `<span class="provider-logo" style="background:${p.color}">${escapeHtml(p.mark)}</span>` +
+        `<span class="provider-name">${escapeHtml(p.name)}</span>` +
+        `<span class="provider-badge ${p.managed ? "managed" : "byo"}">${p.managed ? "Nutaan-managed" : "Bring your own key"}</span>` +
+        (active ? `<span class="provider-active">active</span>` : "");
+      list.appendChild(row);
+    }
+    const byo = el("byoBlock");
+    const gate = el("byoGateNote");
+    if (byo) byo.classList.toggle("locked", !hasNutaan);
+    baseUrlInput.disabled = !hasNutaan;
+    apiKeyInput.disabled = !hasNutaan;
+    if (gate) gate.textContent = hasNutaan ? "(optional — routes to your own provider)" : "— add your nutaan.com key first";
   }
 
   el("useBuiltInBtn").addEventListener("click", async () => {
