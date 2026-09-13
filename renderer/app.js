@@ -1737,6 +1737,7 @@
     if (name === "run_background") return `Starting background task <code>${escapeHtml((args.command || "").slice(0, 60))}</code>`;
     if (name === "check_background_task") return `Checking background task <code>${escapeHtml(args.id || "")}</code>`;
     if (name === "list_background_tasks") return `Listing background tasks`;
+    if (name === "cleanup_storage") return args.dry_run ? `Checking what storage can be freed` : `Freeing up disk space`;
     if (name === "stop_background_task") return `Stopping background task <code>${escapeHtml(args.id || "")}</code>`;
     if (name === "run_command") {
       const cmd = String(args.command || "").replace(/\s+/g, " ").trim();
@@ -2017,6 +2018,11 @@
       setToolStat(cardEl, `${result.id || ""} ${statusTxt}`.trim());
       const head = `${result.id || ""} · ${statusTxt}${result.command ? "\n$ " + result.command : ""}`;
       detail.innerHTML = `<pre>${escapeHtml(head + (result.output ? "\n\n" + result.output : (result.status === "running" ? "\n\n(running — check again for output)" : "")))}</pre>`;
+    } else if (name === "cleanup_storage" && (result.items || result.totalMB != null)) {
+      const stat = result.dryRun ? `${result.totalMB} MB reclaimable` : `freed ${result.freedMB} MB`;
+      setToolStat(cardEl, stat);
+      const lines = (result.items || []).map((i) => `${i.removed ? "✓" : "·"} ${i.mb} MB  ${i.label}`);
+      detail.innerHTML = `<pre>${escapeHtml((result.dryRun ? `Reclaimable: ${result.totalMB} MB across ${result.count} item(s)\n\n` : `Freed ${result.freedMB} MB\n\n`) + lines.join("\n"))}</pre>`;
     } else if (name === "list_background_tasks" && result.tasks) {
       setToolStat(cardEl, `${result.tasks.length} task${result.tasks.length === 1 ? "" : "s"}`);
       const lines = result.tasks.map((t) => `${t.id}  [${t.status}${t.exitCode != null ? " " + t.exitCode : ""}]  ${t.command}`).join("\n");
@@ -3260,7 +3266,7 @@
       "osint_http_recon", "osint_dork_generator", "vuln_static_scan",
       // run_background / stop_background_task go through the approval card (like run_command), so
       // they are NOT here — listing them too made a second, never-resolving spinner card.
-      "check_background_task", "list_background_tasks",
+      "check_background_task", "list_background_tasks", "cleanup_storage",
     ];
     if (visibleTools.includes(name)) appendToolCard(id, name, args);
     runActivity.textContent = toolLabel(name, args).replace(/<[^>]+>/g, "");

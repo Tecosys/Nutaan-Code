@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
 const path = require("node:path");
 const os = require("node:os");
 const fs = require("node:fs/promises");
+const fsSync = require("node:fs");
 const { exec, spawn, spawnSync } = require("node:child_process");
 const { autoUpdater } = require("electron-updater");
 const arsenal = require("./arsenal");
@@ -125,8 +126,84 @@ function createWindow() {
   win.loadFile(path.join(__dirname, "renderer", "index.html"));
 }
 
+// ---------- Storage cleanup (Nutaan Code cleans up after itself) ----------
+// Clears only regenerable junk: the auto-updater's stacked download cache, the app's own HTTP/GPU
+// caches, the redundant legacy userData caches, and stale OS temp — NEVER settings, chats, the
+// knowledge base, memory, or the browser logins under Partitions.
+const CACHE_SUBDIRS = ["Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache", "DawnCache", "ShaderCache", "GraphiteDawnCache", "Shared Dictionary", "blob_storage"];
+
+function dirSizeSync(dir) {
+  let total = 0;
+  try {
+    for (const e of fsSync.readdirSync(dir, { withFileTypes: true })) {
+      const fp = path.join(dir, e.name);
+      try { total += e.isDirectory() ? dirSizeSync(fp) : fsSync.statSync(fp).size; } catch {}
+    }
+  } catch {}
+  return total;
+}
+function rmrf(target) { try { fsSync.rmSync(target, { recursive: true, force: true }); return true; } catch { return false; } }
+
+function updaterCacheDir() {
+  const name = app.getName();
+  if (process.platform === "win32") return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), name + "-updater");
+  if (process.platform === "darwin") return path.join(os.homedir(), "Library", "Caches", name + "-updater");
+  return path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), name + "-updater");
+}
+
+function cleanupStorage({ dryRun = false, includeTemp = true } = {}) {
+  const items = [];
+  const consider = (label, target) => {
+    if (!target || !fsSync.existsSync(target)) return;
+    const mb = dirSizeSync(target) / 1048576;
+    if (mb < 0.05) return;
+    const removed = dryRun ? false : rmrf(target);
+    items.push({ label, path: target, mb: Math.round(mb * 10) / 10, removed });
+  };
+  consider("Update download cache", updaterCacheDir());
+  for (const base of [CANONICAL_STORE_DIR, LEGACY_STORE_DIR]) {
+    for (const c of CACHE_SUBDIRS) consider("Cache: " + path.basename(base) + "/" + c, path.join(base, c));
+  }
+  if (includeTemp) {
+    const tmp = os.tmpdir();
+    const cutoff = Date.now() - 7 * 86400000;
+    try {
+      for (const e of fsSync.readdirSync(tmp, { withFileTypes: true })) {
+        const fp = path.join(tmp, e.name);
+        try {
+          const st = fsSync.statSync(fp);
+          if (/nutaan|electron/i.test(e.name) || st.mtimeMs < cutoff) {
+            const mb = (e.isDirectory() ? dirSizeSync(fp) : st.size) / 1048576;
+            if (mb < 0.05) continue;
+            const removed = dryRun ? false : rmrf(fp);
+            items.push({ label: "Temp: " + e.name, path: fp, mb: Math.round(mb * 10) / 10, removed });
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+  const totalMB = Math.round(items.reduce((s, i) => s + i.mb, 0) * 10) / 10;
+  return { dryRun, totalMB, count: items.length, freedMB: dryRun ? 0 : Math.round(items.filter((i) => i.removed).reduce((s, i) => s + i.mb, 0) * 10) / 10, items: items.sort((a, b) => b.mb - a.mb).slice(0, 40) };
+}
+
+// On startup, prune stale update downloads so the updater cache can't quietly grow to gigabytes
+// (a truly-pending update just downloaded is recent and kept).
+function pruneUpdaterCacheOnStartup() {
+  const dir = updaterCacheDir();
+  try {
+    const cutoff = Date.now() - 2 * 86400000;
+    for (const e of fsSync.readdirSync(dir, { withFileTypes: true })) {
+      const fp = path.join(dir, e.name);
+      try { if (fsSync.statSync(fp).mtimeMs < cutoff) rmrf(fp); } catch {}
+    }
+  } catch {}
+}
+
+ipcMain.handle("storage:cleanup", (_e, opts) => cleanupStorage(opts || {}));
+
 app.whenReady().then(() => {
   createWindow();
+  setTimeout(() => { try { pruneUpdaterCacheOnStartup(); } catch {} }, 4000);
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -2129,6 +2206,19 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "cleanup_storage",
+      description: "Free up disk space by clearing Nutaan Code's own regenerable junk — the auto-update download cache (which stacks up old installers), the app's HTTP/GPU caches, redundant legacy caches, and stale temp files. It NEVER touches your settings, chats, knowledge base, memory, or saved browser logins. Pass dry_run:true first to preview exactly what would be removed and how much space it frees, then call it again to actually clean.",
+      parameters: {
+        type: "object",
+        properties: {
+          dry_run: { type: "boolean", description: "If true, only report what would be cleaned and how many MB it would free — delete nothing." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "memory_list",
       description: "List your persistent memory entries (shared across every project, not just this one) with their id, type, and one-line description. A summary of these is already given to you at the start of each conversation — call this only if you need the full up-to-date list, e.g. after writing a new one.",
       parameters: { type: "object", properties: {} },
@@ -2609,6 +2699,8 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
       return { tasks: listBgTasks() };
     case "stop_background_task":
       return stopBgTask(args.id);
+    case "cleanup_storage":
+      return cleanupStorage({ dryRun: !!args.dry_run });
     case "memory_list":
       return { entries: await listMemoryEntries() };
     case "memory_read":
@@ -2644,6 +2736,7 @@ function permissionPreview(name, args) {
     return { title: `Edit ${args.path}`, diff: { oldString: args.old_string, newString: args.new_string } };
   if (name === "run_command") return { title: "Run command", detail: args.command };
   if (name === "run_background") return { title: "Run in background", detail: args.command };
+  if (name === "cleanup_storage") return { title: "Free up disk space", detail: "Clears Nutaan Code's update-download cache, HTTP/GPU caches and stale temp files. Leaves your settings, chats, knowledge base, memory and saved logins untouched." };
   if (name === "stop_background_task") return { title: `Stop background task ${args.id}`, detail: "Kills the running process." };
   if (name === "browser_execute_script") return { title: "Run script in browser panel", detail: args.code };
   if (name === "memory_write") return { title: `Save memory: ${args.id}`, detail: args.content };
@@ -3165,6 +3258,7 @@ const TOOL_PRIORITY_REMINDER =
   "they gave you). Searching the web before checking code you already have direct access to is slower " +
   "and often wrong — never do that as a first resort.\n\n" +
   "PERSONAL / DEVICE FILES — SEARCH THE COMPUTER, NOT THE WEB: When the user refers to something of theirs — 'my file', 'a document/agreement/spreadsheet/email I have', 'in my Downloads', a contract or two company names they mention as if you'd have it — it is almost certainly a file ON THIS COMPUTER, not something to look up online. Use os_search to find it (search by a distinctive word — a company name, a keyword) and os_read to read it (it extracts Word/Excel/PowerPoint/PDF/email text). Do this BEFORE any web_search or browser_navigate. Only search the web if os_search genuinely finds nothing on the device or the user clearly wants public/online information. Answering 'I found no public results' when the file was sitting in their Downloads is the exact mistake to avoid.\n\n" +
+  "FREEING DISK SPACE: When the user asks to clean up storage, free disk space, clear the cache, or delete temp/useless files, use the cleanup_storage tool — it clears Nutaan Code's update-download cache, HTTP/GPU caches and stale temp without touching their settings, chats, knowledge base, memory or saved logins. Run it with dry_run:true first to show them how much can be freed, then again to clean. Don't try to rm these paths by hand.\n\n" +
   "READING THE USER'S EMAIL — GO GET IT, DON'T STOP AT 'NO LOCAL FILES': 'Read my emails' rarely means a loose .eml on disk. Most people's mail is either in a webmail account or in the Outlook/Gmail desktop app, so after a quick os_search for .eml/.mbox/.msg turns up nothing, OPEN THE WEBMAIL IN THE BUILT-IN BROWSER and read it — do not stop and hand the user a menu. browser_navigate to https://mail.google.com for Gmail, or https://outlook.live.com (personal) / https://outlook.office.com (work) for Outlook, then browser_read_page to read the inbox and click a message to open it. The built-in browser has its OWN session, separate from the user's Chrome, so if a sign-in page shows, say so and ask the user to sign in once in the browser panel (their own credentials, entered by them — you must NEVER type their email password yourself); then continue reading. Outlook DESKTOP mail is a proprietary local OST that can't be read as a file — use Outlook on the web instead. Only ask which account when it is genuinely ambiguous; otherwise open the obvious one (Gmail) and start reading.\n\n" +
   // A vague instruction is an instruction to go and find out, not a reason to stop. "Run it and
   // fix the UI issues" was answered with a table of things the user might have meant and a
@@ -3530,7 +3624,9 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
       }
 
       let approved = true;
-      if (!SAFE_TOOLS.has(name)) {
+      // A dry-run cleanup only reports what it *would* remove — no approval needed for a preview.
+      const isSafe = SAFE_TOOLS.has(name) || (name === "cleanup_storage" && args && args.dry_run);
+      if (!isSafe) {
         if (autoApprove) {
           sender.send("agent:permission-request", { id: call.id, name, args, autoApproved: true, ...permissionPreview(name, args) });
         } else {
