@@ -5,6 +5,15 @@
   "main": "main.js",
   "private": true,
   "author": "Tecosys",
+  "license": "AGPL-3.0-only",
+  "homepage": "https://github.com/Tecosys/Nutaan-Code",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Tecosys/Nutaan-Code.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Tecosys/Nutaan-Code/issues"
+  },
   "scripts": {
     "start": "node bin/nutaan-code.js",
     "build:icon": "node scripts/build-icon.js",
