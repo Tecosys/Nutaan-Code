@@ -4,40 +4,80 @@ on:
   push:
     tags:
       - "v*.*.*"
+    # Feature branches build installers too, so a branch can be tested on all three platforms
+    # without cutting a tag first. These never publish — see the --publish flag below.
+    branches:
+      - "feat/**"
+      - "release/**"
+  pull_request:
+    branches: ["main", "master"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to a GitHub release (otherwise build only)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
-  build-and-release:
-    runs-on: windows-latest
+  build:
+    # Each installer has to be produced on its own OS: electron-builder needs macOS tooling to
+    # make a .dmg and Linux tooling for .deb/.rpm, so a single Windows runner cannot ship all
+    # three. Running them in parallel keeps a full release at the speed of the slowest one.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+            artifact: windows-installers
+          - os: macos-latest
+            platform: mac
+            artifact: macos-installers
+          - os: ubuntu-latest
+            platform: linux
+            artifact: linux-installers
+
+    runs-on: ${{ matrix.os }}
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
 
-      # node-gyp (used to rebuild native modules like @parcel/watcher, a transitive dep of the
-      # bundled omniroute dashboard) shells out to Python to generate build files, then needs a
-      # Visual Studio C++ toolchain to actually compile.
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      - run: npm ci
 
-      # microsoft/setup-msbuild + GYP_MSVS_VERSION alone did NOT fix this (verified: same
-      # "Could not find any Visual Studio installation to use" on the next run) — node-gyp 9.x
-      # detects VS via vswhere, querying specifically for the VC.Tools.x86.x64 component, and
-      # apparently windows-latest's preinstalled VS doesn't reliably expose that component to it.
-      # Installing the workload explicitly removes the guesswork instead of hoping the base image
-      # has it, and msvc-dev-cmd then puts cl.exe/link.exe/INCLUDE/LIB on PATH for node-gyp to use.
-      - name: Ensure VC++ Build Tools workload
-        run: choco install visualstudio2022-workload-vctools --no-progress -y
+      # rpm packaging needs the rpm tool, which the Ubuntu runner does not ship with.
+      - name: Install Linux packaging tools
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y rpm
 
-      - uses: ilammy/msvc-dev-cmd@v1
-
-      - run: npm install
-
-      - run: npx electron-builder --win --publish always
+      # Publishing is gated on an actual version tag (or an explicit manual request), not on
+      # "was this a push" — otherwise every branch commit would create a GitHub release.
+      - name: Build ${{ matrix.platform }}
+        run: npx electron-builder --${{ matrix.platform }} ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.publish) && '--publish always' || '--publish never' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Unsigned builds otherwise fail the notarization step on macOS runners.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      # Named per run so branch builds don't collide, and downloadable straight from the run
+      # summary — that is how you get installers without publishing a release.
+      - name: Upload ${{ matrix.platform }} installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-${{ github.run_number }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.rpm

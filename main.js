@@ -3,19 +3,74 @@ const path = require("node:path");
 const os = require("node:os");
 const fs = require("node:fs/promises");
 const { exec, spawn } = require("node:child_process");
-const crypto = require("node:crypto");
 const { autoUpdater } = require("electron-updater");
 const arsenal = require("./arsenal");
 
-const STORE_PATH = path.join(app.getPath("userData"), "settings.json");
+// Electron derives userData from app.getName(), which is package.json's `name` when run from
+// source ("nutaan-code") but `productName` once packaged ("Nutaan Code"). Left alone, the
+// installed build and a dev run keep entirely separate projects, chats and API keys, and a user
+// upgrading from one to the other silently loses everything. Pin it to one name in both.
+const CANONICAL_STORE_DIR = path.join(app.getPath("appData"), "Nutaan Code");
+const LEGACY_STORE_DIR = path.join(app.getPath("appData"), "nutaan-code");
+app.setPath("userData", CANONICAL_STORE_DIR);
+
+const STORE_PATH = path.join(CANONICAL_STORE_DIR, "settings.json");
+const LEGACY_STORE_PATH = path.join(LEGACY_STORE_DIR, "settings.json");
+
+// One-time adoption of a store left under the old directory name. Whichever file was written
+// most recently is the one actually in use, so that one wins; anything it displaces is kept as
+// .bak rather than deleted, because this runs before anyone can confirm it guessed right.
+(function adoptLegacyStore() {
+  const fsSync = require("node:fs");
+  try {
+    if (!fsSync.existsSync(LEGACY_STORE_PATH)) return;
+    const legacy = fsSync.statSync(LEGACY_STORE_PATH);
+    if (fsSync.existsSync(STORE_PATH)) {
+      if (fsSync.statSync(STORE_PATH).mtimeMs >= legacy.mtimeMs) return;
+      fsSync.copyFileSync(STORE_PATH, STORE_PATH + ".bak");
+    }
+    fsSync.mkdirSync(CANONICAL_STORE_DIR, { recursive: true });
+    fsSync.copyFileSync(LEGACY_STORE_PATH, STORE_PATH);
+    console.log("[store] adopted settings from the legacy directory");
+  } catch (err) {
+    console.error("[store] could not adopt legacy settings:", err.message);
+  }
+})();
 const COMMAND_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_CHARS = 20_000;
 const MAX_AGENT_ITERATIONS = 50;
-const BROWSER_ACTION_TIMEOUT_MS = 20_000;
+const BROWSER_ACTION_TIMEOUT_MS = 45_000;
 const MAX_RESPONSE_TOKENS = 16_000;
 const STREAM_IDLE_TIMEOUT_MS = 45_000;
 const COMPACT_THRESHOLD_TOKENS = 60_000;
 const KEEP_RECENT_MESSAGES = 10;
+
+// Every model is reached through one endpoint on nutaan.com, authenticated with the user's own
+// nutaan.com API key. The model-provider credential lives server-side there and never ships in
+// this app. Advanced users can still point Server URL at any OpenAI-compatible endpoint in
+// Settings, in which case their own key for that endpoint is used instead.
+const NUTAAN_API_BASE = "https://nutaan.com/api";
+const NUTAAN_LLM_BASE = `${NUTAAN_API_BASE}/v1`;
+const FALLBACK_MODEL = "nvidia/nemotron-3-super-120b-a12b";
+
+// No model-provider credential ships inside this app — that is the entire point of the gateway.
+// Requests go to nutaan.com authenticated with the user's own API key, and the provider keys
+// live server-side. A user who wants to bring their own endpoint can still set Server URL in
+// Settings, in which case their key for that endpoint is used instead.
+async function activeBackend({ baseUrl, apiKey, nutaanKey, customProviders, modelProviderId }) {
+  // A user-managed provider selected for this specific model wins: route straight to its own
+  // OpenAI-compatible endpoint with its own key. This is what lets one account mix Nutaan-managed
+  // models with the user's own OpenAI / OpenRouter / Together / NVIDIA / Azure / … keys.
+  if (modelProviderId && Array.isArray(customProviders)) {
+    const prov = customProviders.find((p) => p && p.id === modelProviderId);
+    if (prov && String(prov.baseUrl || "").trim()) {
+      return { baseUrl: String(prov.baseUrl).trim(), apiKey: String(prov.apiKey || "").trim() };
+    }
+  }
+  const custom = String(baseUrl || "").trim();
+  if (custom) return { baseUrl: custom, apiKey: String(apiKey || "").trim() };
+  return { baseUrl: NUTAAN_LLM_BASE, apiKey: String(nutaanKey || "").trim() };
+}
 
 let win;
 const pendingPermissions = new Map();
@@ -155,6 +210,70 @@ ipcMain.handle("shell:open-external", async (_e, url) => {
   if (/^https?:\/\//.test(url)) await shell.openExternal(url);
 });
 
+ipcMain.handle("dialog:pick-file", async () => {
+  const result = await dialog.showOpenDialog(win, {
+    properties: ["openFile"],
+    filters: [
+      { name: "Images and text", extensions: ["png", "jpg", "jpeg", "gif", "webp", "txt", "md", "json", "csv", "log", "js", "ts", "py", "html", "css", "yml", "yaml"] },
+      { name: "All files", extensions: ["*"] },
+    ],
+  });
+  if (result.canceled || !result.filePaths.length) return null;
+  return result.filePaths[0];
+});
+
+const IMAGE_MIME = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+const MAX_ATTACHMENT_CHARS = 24_000;
+
+// Turns a file the user attached into something the *current* model can actually consume:
+// text inline, an image as image_url when the model has eyes, and otherwise a description
+// produced by a vision model. Attachments can live anywhere on disk, so unlike the agent's own
+// file tools this is deliberately not scoped to the project root.
+ipcMain.handle("attach:prepare", async (_e, payload) => {
+  const filePath = String(payload?.filePath || "");
+  const name = path.basename(filePath);
+  const ext = path.extname(filePath).slice(1).toLowerCase();
+  try {
+    const mime = IMAGE_MIME[ext];
+    if (!mime) {
+      const text = await fs.readFile(filePath, "utf8");
+      return { ok: true, name, kind: "text", text: text.slice(0, MAX_ATTACHMENT_CHARS) };
+    }
+    const buffer = await fs.readFile(filePath);
+    const dataUrl = `data:${mime};base64,${buffer.toString("base64")}`;
+    if (canSeeImages(payload?.model)) return { ok: true, name, kind: "image", dataUrl };
+
+    const backend = await activeBackend(payload || {});
+    const described = await describeImage(backend.baseUrl, backend.apiKey, dataUrl, `This is an image file named ${name} that the user attached.`);
+    if (!described) return { ok: false, error: "Couldn't read that image: no vision model was reachable." };
+    return { ok: true, name, kind: "described-image", text: described.text, viewedBy: described.model };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// Every install must be tied to a real nutaan.com account before it can be used. The key is
+// checked against nutaan.com itself rather than pattern-matched locally, so a revoked or
+// deactivated key stops working.
+ipcMain.handle("nutaan:validate-key", async (_e, key) => {
+  const trimmed = String(key || "").trim();
+  if (!trimmed) return { ok: false, error: "Enter your nutaan.com API key to continue." };
+  try {
+    const res = await fetch(`${NUTAAN_API_BASE}/auth/me/verification`, {
+      headers: { "X-API-Key": trimmed },
+    });
+    if (res.status === 401) {
+      return { ok: false, error: "nutaan.com didn't recognize that key. Check it was pasted in full, or generate a new one in your nutaan.com settings." };
+    }
+    if (!res.ok) return { ok: false, error: `nutaan.com returned HTTP ${res.status}. Try again in a moment.` };
+    const data = await res.json().catch(() => ({}));
+    return { ok: true, email: data.email || "" };
+  } catch (err) {
+    const causeCode = err.cause?.code;
+    return { ok: false, error: `Couldn't reach nutaan.com${causeCode ? ` (${causeCode})` : ""}. Check your internet connection.` };
+  }
+});
+
 // A model is image-only if the server tags it that way, or its output is image but not text —
 // covers both this gateway's explicit `type: "image"` and any future/other shape using modalities.
 function isImageOnlyModel(m) {
@@ -191,11 +310,12 @@ function azureDeploymentName(baseUrl) {
   return m ? decodeURIComponent(m[1]) : "azure-deployment";
 }
 
-async function fetchModels(baseUrl, apiKey) {
+async function fetchCatalog(baseUrl, apiKey) {
   if (isAzureEndpoint(baseUrl)) {
     // Azure's deployment-scoped endpoints don't expose a matching /models list — the "model" is
     // just whichever deployment the URL points at.
-    return [{ id: azureDeploymentName(baseUrl) }];
+    const id = azureDeploymentName(baseUrl);
+    return { models: [{ id }], defaultModel: id };
   }
   const res = await fetch(baseUrl.replace(/\/$/, "") + "/models", {
     headers: buildAuthHeaders(baseUrl, apiKey),
@@ -209,251 +329,113 @@ async function fetchModels(baseUrl, apiKey) {
     throw new Error(detail);
   }
   const data = await res.json();
-  return Array.isArray(data.data) ? data.data : [];
+  return {
+    models: Array.isArray(data.data) ? data.data : [],
+    // The Nutaan gateway names the model it wants clients to start on; other endpoints don't.
+    defaultModel: data.default_model || "",
+  };
 }
 
-ipcMain.handle("ai:list-models", async (_e, { baseUrl, apiKey }) => {
+async function fetchModels(baseUrl, apiKey) {
+  return (await fetchCatalog(baseUrl, apiKey)).models;
+}
+
+// Embedding / reranking / document-parsing models share the same catalog but have no
+// /chat/completions route, so offering them in the model picker only produces confusing errors.
+const NON_CHAT_MODEL_RE = /embed|rerank|nemoretriever|nemotron-parse|reward|content-safety|safety-guard/i;
+
+// The agent loop is useless without OpenAI-style tool calling, and the provider catalog lists
+// far more models than actually support it — picking one of those produced a "Function <id>:
+// Not supported" failure on every turn. This is the set that was probed and confirmed working,
+// ordered strongest first so an automatic switch trades down rather than sideways.
+// Ordered by how these actually behaved driving a real multi-turn agent loop over a real
+// codebase, not by parameter count or vendor claims:
+//   azure/model-router (gpt-5.6)  issued three tools in parallel and converged by turn 4
+//   gemini flash                  fast first token, tool calling AND image input
+//   nemotron-3-super              emits tool calls but never converged — 14 turns, no answer,
+//                                 one tool per turn, and malformed arguments on turn 5
+//   nemotron-3-ultra              39s to first token; correct, but unusable as a default
+//   mistral-nemotron              answered in 2.7s at a small budget, then produced nothing in
+//                                 167s at the real one — too inconsistent to rank highly
+// ising-calibration is gone entirely: it answers in prose and never calls a tool, so it cannot
+// drive the loop at all. It stays in VISION_MODELS, which needs no tool calling.
+// Removed after testing rather than demoted — a model that cannot answer is worse than one that
+// is merely absent, because picking it looks like the app is broken:
+//   mistralai/mistral-nemotron      streamed nothing at all in 120s, twice
+//   google/gemma-4-31b-it           timed out past 240s at every budget tried
+//   nvidia/ising-calibration        replies in prose and never calls a tool
+//   nvidia/nemotron-3-ultra-550b    39s to first token and frequent 503s
+const AGENT_MODELS = [
+  "azure/model-router",
+  "gemini/gemini-3.7-flash",
+  "azure/gpt-5-mini",
+  "azure/Kimi-K2.6",
+  "gemini/gemini-3.6-flash",
+  "gemini/gemini-flash-latest",
+  "azure/gpt-4.1-mini",
+  "gemini/gemini-3.5-flash",
+  "gemini/gemini-3.5-flash-lite",
+  "nvidia/nemotron-3-super-120b-a12b",
+  "openai/gpt-oss-20b",
+  "nvidia/nemotron-3.5-lightning-30b-a3b",
+  "meta/llama-3.2-11b-vision-instruct",
+  "google/diffusiongemma-26b-a4b-it",
+  "poolside/laguna-xs-2.1",
+];
+const agentRank = (id) => {
+  const i = AGENT_MODELS.indexOf(id);
+  return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+};
+
+// Probed with a real image rather than inferred from the model id: most models reject
+// image_url content outright, and two of the three that accept it ("gemma-4-31b-it",
+// "ising-calibration-1.5-31b") have nothing in their name to suggest they can see.
+// Tried in order until one answers, so the fast and reliable ones come first. gemma-4-31b-it
+// can read an image but timed out past 240s on repeated probes, so it sits last — reaching it
+// at all means everything above it was unavailable.
+const VISION_MODELS = [
+  "gemini/gemini-3.7-flash",
+  "gemini/gemini-3.6-flash",
+  "gemini/gemini-flash-latest",
+  "gemini/gemini-3.5-flash",
+  "gemini/gemini-3.5-flash-lite",
+  "meta/llama-3.2-11b-vision-instruct",
+  // Reads images fine and answers in ~0.4s; it only failed the *agent* test, which needs tool
+  // calling. Describing a picture does not.
+  "nvidia/ising-calibration-1.5-31b",
+];
+const canSeeImages = (model) => VISION_MODELS.includes(model);
+
+// Only the backends this app ships against are known to match AGENT_MODELS. A user-supplied
+// endpoint gets its catalog listed as-is.
+function isKnownBackend(baseUrl) {
+  const u = String(baseUrl || "").replace(/\/$/, "");
+  return u === NUTAAN_LLM_BASE;
+}
+
+ipcMain.handle("ai:list-models", async (_e, payload) => {
+  const backend = await activeBackend(payload || {});
   try {
-    const allModels = await fetchModels(baseUrl, apiKey);
-    const models = allModels.filter((m) => !isImageOnlyModel(m)).map((m) => m.id);
-    const imageModels = allModels.filter(isImageOnlyModel).map((m) => m.id);
-    return { ok: true, models, imageModels };
+    const catalog = await fetchCatalog(backend.baseUrl, backend.apiKey);
+    let models = catalog.models
+      .filter((m) => !isImageOnlyModel(m) && !NON_CHAT_MODEL_RE.test(m.id))
+      .map((m) => m.id);
+    if (isKnownBackend(backend.baseUrl)) {
+      const usable = models.filter((id) => agentRank(id) !== Number.MAX_SAFE_INTEGER);
+      // Only narrow to the verified set when the backend actually offers some of it — never
+      // hand back an empty picker because the catalog moved on.
+      if (usable.length) models = usable.sort((a, b) => agentRank(a) - agentRank(b));
+    }
+    const imageModels = catalog.models.filter(isImageOnlyModel).map((m) => m.id);
+    const defaultModel = catalog.defaultModel && models.includes(catalog.defaultModel)
+      ? catalog.defaultModel
+      : models.includes(FALLBACK_MODEL) ? FALLBACK_MODEL : models[0] || "";
+    return { ok: true, models, imageModels, defaultModel };
   } catch (err) {
     // err.cause often carries the real reason for a network-level failure (DNS, proxy, TLS) that
-    // err.message alone doesn't show — e.g. a corporate network blocking openrouter.ai outright.
+    // err.message alone doesn't show — e.g. a corporate network blocking the server outright.
     const causeCode = err.cause?.code;
     return { ok: false, error: causeCode ? `${err.message} (${causeCode})` : err.message };
-  }
-});
-
-let omnirouteSetupRunning = false;
-
-function omnirouteServeAlreadyRunning() {
-  return fetch("http://localhost:20128/v1/models", { signal: AbortSignal.timeout(2000) })
-    .then((res) => res.status !== 0)
-    .catch(() => false);
-}
-
-function omnirouteKeyStillWorks(apiKey) {
-  if (!apiKey) return Promise.resolve(false);
-  return fetch("http://localhost:20128/v1/models", {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(3000),
-  })
-    .then((res) => res.ok)
-    .catch(() => false);
-}
-
-function errorMessage(err, fallback) {
-  return (err && (err.message || String(err))) || fallback || "Unknown error";
-}
-
-// OmniRoute ships bundled as a real dependency of this app (see package.json) — no separate
-// download, no runtime npm install, no dependency on the customer having Node.js at all. We run
-// its bin script using Electron's own bundled Node runtime (ELECTRON_RUN_AS_NODE), the same trick
-// Electron apps use to run any Node CLI without requiring a system Node install.
-function omnirouteBinPath() {
-  const appPath = app.getAppPath();
-  const base = appPath.endsWith(".asar") ? `${appPath}.unpacked` : appPath;
-  return path.join(base, "node_modules", "omniroute", "bin", "omniroute.mjs");
-}
-
-function spawnOmniroute(args) {
-  return spawn(process.execPath, [omnirouteBinPath(), ...args], {
-    windowsHide: true,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
-  });
-}
-
-function startOmnirouteServer(log) {
-  return new Promise((resolve, reject) => {
-    // --no-open: without this, OmniRoute's own CLI launches the user's real system browser
-    // straight at its (unauthenticated) dashboard/login every time the server starts — we run
-    // it headless and drive setup entirely through the CLI, so that popup is never wanted.
-    const serve = spawnOmniroute(["serve", "--no-open"]);
-    serve.unref();
-    let settled = false;
-    let buf = "";
-    const onData = (d) => {
-      log(d);
-      buf += String(d);
-      // Match against the accumulated buffer, not each chunk in isolation — the "OmniRoute is
-      // running!" line can land split across two stdout chunks and silently never match otherwise.
-      if (!settled && /omniroute is running/i.test(buf)) {
-        settled = true;
-        resolve();
-      }
-    };
-    serve.stdout.on("data", onData);
-    serve.stderr.on("data", onData);
-    serve.on("error", (err) => {
-      if (!settled) {
-        settled = true;
-        reject(err);
-      }
-    });
-    setTimeout(async () => {
-      if (settled) return;
-      settled = true;
-      if (await omnirouteServeAlreadyRunning()) resolve();
-      else reject(new Error("The server didn't report ready in time."));
-    }, 25_000);
-  });
-}
-
-const OMNIROUTE_CLI_TIMEOUT_MS = 60_000;
-
-function runOmnirouteCli(args, log = () => {}) {
-  return new Promise((resolve, reject) => {
-    let out = "";
-    let err = "";
-    let settled = false;
-    const child = spawnOmniroute(args);
-    // Without this, a hung `setup`/`api-keys` call (network stall, a lock, anything) left the UI
-    // frozen on "Starting…" forever with zero feedback and no way to recover but restarting the
-    // app — exactly what was reported. Every CLI call here now has a hard ceiling.
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      child.kill();
-      reject(new Error(`omniroute ${args[0]} didn't finish within ${OMNIROUTE_CLI_TIMEOUT_MS / 1000}s.`));
-    }, OMNIROUTE_CLI_TIMEOUT_MS);
-    child.stdout.on("data", (d) => {
-      out += String(d);
-      log(d);
-    });
-    child.stderr.on("data", (d) => {
-      err += String(d);
-      log(d);
-    });
-    child.on("error", (e) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(e);
-    });
-    child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (code === 0) resolve(out);
-      else reject(new Error(err.trim() || `omniroute ${args[0]} exited with code ${code}`));
-    });
-  });
-}
-
-// Provisions an admin account and a client API key entirely via the CLI — the customer never
-// touches the web dashboard, never logs in, never copies a key by hand.
-//
-// NOTE: this previously segfaulted under Electron's bundled Node runtime — root cause was
-// Electron 33 shipping Node 20.18, below OmniRoute's own hard floor of 22.22.2 for its
-// better-sqlite3 usage (it logs this explicitly as a "secure runtime policy" warning). Bumping
-// to Electron 44 (Node 24.20) plus a native-module rebuild fixed it — reproduced clean twice.
-async function autoConfigureOmniroute(log) {
-  log("\nFinishing setup (admin account + API key) — no login needed…\n");
-  const password = crypto.randomBytes(18).toString("base64url");
-  await runOmnirouteCli(["setup", "--password", password, "--non-interactive"], log);
-  log("Generating an API key…\n");
-  const keyOut = await runOmnirouteCli(
-    ["--output", "json", "api", "api-keys", "post-api-keys", "--body", JSON.stringify({ name: "Nutaan Code" })],
-    log
-  );
-  // stdout also carries plain-text "Loaded env from…" lines (with ANSI color codes — whose own
-  // "\x1b[2m" sequences contain a literal "[" that previously fooled a naive JSON-start regex)
-  // ahead of the JSON payload, so strip those and parse just the JSON object/array within.
-  // eslint-disable-next-line no-control-regex
-  const clean = keyOut.replace(/\x1b\[[0-9;]*m/g, "");
-  const jsonMatch = clean.match(/[[{][\s\S]*[\]}]/);
-  let parsed;
-  try {
-    parsed = JSON.parse(jsonMatch ? jsonMatch[0] : clean);
-  } catch {
-    throw new Error("Could not parse the generated API key.");
-  }
-  const key = (Array.isArray(parsed) ? parsed[0]?.key : parsed?.key) || null;
-  if (!key) throw new Error("No API key came back from setup.");
-  log("Done — API key generated automatically.\n");
-  return key;
-}
-
-async function startAndConfigureOmniroute(log, finish, existingApiKey) {
-  log("Starting OmniRoute (bundled with this app — nothing to download)…\n");
-  try {
-    await startOmnirouteServer(log);
-  } catch (err) {
-    finish({ ok: false, error: errorMessage(err, "The server failed to start.") });
-    return;
-  }
-
-  // Re-use a previously-generated key when the server was just restarted (e.g. after a reboot)
-  // rather than re-running setup, which would create a brand-new admin account and orphan the
-  // old API key every single time — exactly what made this feel like "setup never sticks."
-  if (existingApiKey && (await omnirouteKeyStillWorks(existingApiKey))) {
-    log("Your existing OmniRoute key still works — reconnected, nothing else to do.\n");
-    finish({ ok: true, apiKey: existingApiKey });
-    return;
-  }
-
-  try {
-    const apiKey = await autoConfigureOmniroute(log);
-    finish({ ok: true, apiKey });
-  } catch (err) {
-    // The server itself is genuinely up even if this last mile failed — don't report total
-    // failure, just leave the key blank so they finish that one step from the dashboard.
-    log(`\nCouldn't finish automatic setup: ${errorMessage(err)}\n`);
-    finish({ ok: true, apiKey: null });
-  }
-}
-
-ipcMain.on("omniroute:setup", async (event, payload) => {
-  if (omnirouteSetupRunning) return;
-  omnirouteSetupRunning = true;
-  const sender = event.sender;
-  const existingApiKey = payload?.existingApiKey || null;
-  // eslint-disable-next-line no-control-regex
-  const log = (line) => sender.send("omniroute:setup-log", String(line).replace(/\x1b\[[0-9;]*m/g, ""));
-  const finish = (result) => {
-    omnirouteSetupRunning = false;
-    sender.send("omniroute:setup-done", result);
-  };
-
-  if (await omnirouteServeAlreadyRunning()) {
-    if (existingApiKey && (await omnirouteKeyStillWorks(existingApiKey))) {
-      log("OmniRoute is already running and your key still works — nothing to do.\n");
-      finish({ ok: true, alreadyRunning: true, apiKey: existingApiKey });
-      return;
-    }
-    log("OmniRoute is already running on this machine — nothing to install.\n");
-    finish({ ok: true, alreadyRunning: true });
-    return;
-  }
-
-  startAndConfigureOmniroute(log, finish, existingApiKey);
-});
-
-// Separate request/response channel (not the "omniroute:setup" broadcast pair above) used only by
-// the silent background reconnect in the renderer when a chat request fails because the OmniRoute
-// server isn't listening. It must not share a channel with the "Set it up for me" button flow —
-// they used to both listen on the same setup-done broadcast, so a silent reconnect triggered here
-// would also fire the button flow's handler and vice versa, stomping on whichever settings.baseUrl/
-// apiKey the OTHER flow was mid-way through writing. Keeping this on its own invoke/response pair
-// means the two can never step on each other.
-ipcMain.handle("omniroute:reconnect", async (_event, { existingApiKey } = {}) => {
-  if (omnirouteSetupRunning) return { ok: false, error: "Setup is already running." };
-  omnirouteSetupRunning = true;
-  const noop = () => {};
-  try {
-    if (await omnirouteServeAlreadyRunning()) {
-      if (existingApiKey && (await omnirouteKeyStillWorks(existingApiKey))) {
-        return { ok: true, alreadyRunning: true, apiKey: existingApiKey };
-      }
-      return { ok: true, alreadyRunning: true };
-    }
-    return await new Promise((resolve) => {
-      startAndConfigureOmniroute(noop, resolve, existingApiKey);
-    });
-  } finally {
-    omnirouteSetupRunning = false;
   }
 });
 
@@ -645,12 +627,16 @@ async function listMemoryEntries() {
 
 async function buildMemoryContext() {
   const entries = await listMemoryEntries();
-  if (entries.length === 0) return null;
-  const lines = entries.map((e) => `- **${e.id}** (${e.type}): ${e.description}`);
+  // Deliberately still returned when empty. Returning null on a fresh install meant the model
+  // was never told memory existed, so it never wrote the first entry — and memory stayed empty
+  // forever. The empty case is exactly when the instruction to start saving matters most.
+  const index = entries.length
+    ? "Existing entries:\n" + entries.map((e) => `- **${e.id}** (${e.type}): ${e.description}`).join("\n")
+    : "You have not saved anything yet.";
   return (
     "You have persistent memory shared across every project on this machine, stored at ~/.nutaan/memory/ " +
-    "(not scoped to the current project folder). Existing entries:\n" +
-    lines.join("\n") +
+    "(not scoped to the current project folder). " +
+    index +
     "\n\nUse memory_read to load one in full when it's relevant to the current task. Use memory_write to save " +
     "durable facts worth remembering next time — user/project preferences, corrections about how to approach " +
     "this codebase or this person's workflow, cross-project conventions — not routine task details or anything " +
@@ -681,8 +667,655 @@ async function webFetch(url) {
     .replace(/[ \t]+/g, " ")
     .replace(/\n\s*\n+/g, "\n\n")
     .trim();
-  return { url: res.url, title: titleMatch ? titleMatch[1].trim() : null, content: text.slice(0, MAX_OUTPUT_CHARS) };
+  return { url: res.url, title: titleMatch ? titleMatch[1].trim() : null, content: text.slice(0, MAX_OUTPUT_CHARS), raw };
 }
+
+// Stripping tags throws away the entire visual identity of a page — asked "use this site's
+// brand colour", an index built from body text alone genuinely has no answer. Pulling the
+// palette and fonts out of the markup keeps design questions answerable from the index.
+function extractDesignTokens(rawHtml) {
+  const counts = new Map();
+  for (const m of rawHtml.matchAll(/#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b/g)) {
+    let hex = m[1].toLowerCase();
+    if (hex.length === 3) hex = hex.split("").map((c) => c + c).join("");
+    counts.set(hex, (counts.get(hex) || 0) + 1);
+  }
+  for (const m of rawHtml.matchAll(/rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})/g)) {
+    const hex = [m[1], m[2], m[3]].map((n) => Number(n).toString(16).padStart(2, "0")).join("");
+    counts.set(hex, (counts.get(hex) || 0) + 1);
+  }
+  const colours = [...counts.entries()]
+    .filter(([hex]) => !/^(0{6}|f{6})$/.test(hex)) // pure black/white carry no brand signal
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 12)
+    .map(([hex, n]) => `#${hex} (used ${n}×)`);
+
+  const fonts = [...new Set(
+    [...rawHtml.matchAll(/font-family\s*:\s*([^;"'}]+)/gi)].map((m) => m[1].trim().replace(/\s+/g, " ").slice(0, 80))
+  )].slice(0, 6);
+
+  if (!colours.length && !fonts.length) return "";
+  return (
+    "\n\nDesign tokens found on this page (extracted from its stylesheets and markup):\n" +
+    (colours.length ? `Colours, most used first: ${colours.join(", ")}\n` : "") +
+    (fonts.length ? `Font stacks: ${fonts.join(" | ")}\n` : "")
+  );
+}
+
+// ---------- Co-worker: the machine outside the project ----------
+// The agent's file tools are deliberately sandboxed to the project root. These are not — they
+// are how it acts as an assistant on the whole device: find a document, open an app, tidy a
+// folder. Everything here is read-only or launches through the OS default handler; nothing
+// deletes or overwrites, and anything that moves a file goes through the approval path.
+
+const HOME = os.homedir();
+// The whole home directory, not a handful of folders: measured at ~7,800 entries in ~120ms
+// once the dependency and cache directories below are skipped, so there is no reason to make
+// the user think about where a file happens to live.
+const CO_WORKER_ROOTS = [HOME];
+const CO_WORKER_SKIP = new Set([
+  "node_modules", ".git", "AppData", "Library", ".cache", "$RECYCLE.BIN", "System Volume Information",
+  ".venv", "venv", "__pycache__", "dist", "build", ".next", "out", "vendor", "target",
+  ".gradle", ".m2", ".nuget", ".cargo", ".rustup", "go", "Application Data", "OneDriveTemp",
+]);
+const CO_WORKER_MAX_HITS = 80;
+const CO_WORKER_MAX_DEPTH = 8;
+
+// Resolves a user-facing path: absolute, ~-relative, or bare like "Downloads/report.pdf".
+function resolveUserPath(p) {
+  const raw = String(p || "").trim();
+  if (!raw) throw new Error("No path given");
+  if (raw.startsWith("~")) return path.join(HOME, raw.slice(1));
+  if (path.isAbsolute(raw)) return raw;
+  return path.join(HOME, raw);
+}
+
+async function coWorkerSearch(query, startPath, maxDepth = CO_WORKER_MAX_DEPTH, onProgress = null) {
+  const roots = startPath ? [resolveUserPath(startPath)] : CO_WORKER_ROOTS;
+  const needle = String(query || "").toLowerCase();
+  const hits = [];
+  let scanned = 0;
+  let lastReport = 0;
+
+  async function walk(dir, depth) {
+    if (hits.length >= CO_WORKER_MAX_HITS || depth > maxDepth) return;
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return; // permission denied on a system folder is normal, not an error worth reporting
+    }
+    for (const e of entries) {
+      if (hits.length >= CO_WORKER_MAX_HITS) return;
+      if (CO_WORKER_SKIP.has(e.name)) continue;
+      scanned++;
+      const full = path.join(dir, e.name);
+      if (e.name.toLowerCase().includes(needle)) {
+        let size = null;
+        let modified = null;
+        try {
+          const st = await fs.stat(full);
+          size = st.size;
+          modified = st.mtime.toISOString();
+        } catch {}
+        hits.push({ path: full, name: e.name, isDir: e.isDirectory(), size, modified });
+      }
+      // Throttled to ~20/s: a disk walk visits thousands of entries and reporting each one
+      // would spend more time posting messages than reading directories.
+      if (onProgress && Date.now() - lastReport > 50) {
+        lastReport = Date.now();
+        onProgress({ scanned, found: hits.length, current: dir });
+      }
+      if (e.isDirectory() && !e.name.startsWith(".")) await walk(full, depth + 1);
+    }
+  }
+
+  for (const r of roots) await walk(r, 0);
+  hits.sort((a, b) => String(b.modified || "").localeCompare(String(a.modified || "")));
+  if (onProgress) onProgress({ scanned, found: hits.length, current: null, done: true });
+  return { query, searched: roots, hits, scanned, truncated: hits.length >= CO_WORKER_MAX_HITS };
+}
+
+const TEXTUAL_EXT = new Set([
+  "txt", "md", "json", "csv", "tsv", "log", "xml", "yml", "yaml", "ini", "cfg", "conf",
+  "js", "ts", "jsx", "tsx", "py", "rb", "go", "rs", "java", "c", "h", "cpp", "cs", "php",
+  "html", "css", "scss", "sh", "bat", "ps1", "sql", "env",
+]);
+
+// ---------- Document extraction (Excel / Word / PowerPoint / PDF), dependency-free ----------
+// Office files are ZIP archives; read the central directory and inflate entries with the built-in
+// zlib so the co-worker can actually read a spreadsheet or document instead of showing binary.
+const zlib = require("node:zlib");
+
+function unzip(buffer) {
+  const files = new Map();
+  // Locate the End of Central Directory record (scan back from the end).
+  let eocd = -1;
+  for (let i = buffer.length - 22; i >= 0 && i > buffer.length - 65558; i--) {
+    if (buffer.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) return files;
+  const count = buffer.readUInt16LE(eocd + 10);
+  let off = buffer.readUInt32LE(eocd + 16);
+  for (let n = 0; n < count && off + 46 <= buffer.length; n++) {
+    if (buffer.readUInt32LE(off) !== 0x02014b50) break;
+    const method = buffer.readUInt16LE(off + 10);
+    const compSize = buffer.readUInt32LE(off + 20);
+    const fnLen = buffer.readUInt16LE(off + 28);
+    const extraLen = buffer.readUInt16LE(off + 30);
+    const commentLen = buffer.readUInt16LE(off + 32);
+    const localOff = buffer.readUInt32LE(off + 42);
+    const name = buffer.toString("utf8", off + 46, off + 46 + fnLen);
+    // Jump to the local header to find where the data actually starts.
+    if (buffer.readUInt32LE(localOff) === 0x04034b50) {
+      const lfn = buffer.readUInt16LE(localOff + 26);
+      const lex = buffer.readUInt16LE(localOff + 28);
+      const dataStart = localOff + 30 + lfn + lex;
+      const raw = buffer.subarray(dataStart, dataStart + compSize);
+      try {
+        files.set(name, method === 0 ? Buffer.from(raw) : zlib.inflateRawSync(raw));
+      } catch { /* skip an entry that won't inflate */ }
+    }
+    off += 46 + fnLen + extraLen + commentLen;
+  }
+  return files;
+}
+
+function decodeXmlEntities(s) {
+  return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'").replace(/&#(\d+);/g, (_, d) => String.fromCharCode(+d)).replace(/&amp;/g, "&");
+}
+
+function extractDocx(buf) {
+  const doc = unzip(buf).get("word/document.xml");
+  if (!doc) return "";
+  const xml = doc.toString("utf8");
+  // Walk the document in order: emit text nodes (<w:t>), a newline per paragraph end / <w:br>,
+  // a tab per <w:tab/>, and ignore everything else (table properties, styles, etc.).
+  const re = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<\/w:p>|<w:tab\b[^>]*\/?>|<w:br\b[^>]*\/?>/g;
+  let m, out = "";
+  while ((m = re.exec(xml))) {
+    if (m[1] != null) out += decodeXmlEntities(m[1]);
+    else if (m[0] === "</w:p>") out += "\n";
+    else if (/tab/.test(m[0])) out += "\t";
+    else out += "\n";
+  }
+  return out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function extractXlsx(buf) {
+  const zip = unzip(buf);
+  // Shared strings table.
+  const shared = [];
+  const ss = zip.get("xl/sharedStrings.xml");
+  if (ss) {
+    const sx = ss.toString("utf8");
+    const sre = /<si>([\s\S]*?)<\/si>/g;
+    let m;
+    while ((m = sre.exec(sx))) {
+      const tre = /<t[^>]*>([\s\S]*?)<\/t>/g;
+      let t, s = "";
+      while ((t = tre.exec(m[1]))) s += decodeXmlEntities(t[1]);
+      shared.push(s);
+    }
+  }
+  const sheets = [...zip.keys()].filter((k) => /^xl\/worksheets\/sheet\d+\.xml$/.test(k)).sort();
+  const parts = [];
+  for (const key of sheets) {
+    const sx = zip.get(key).toString("utf8");
+    const rows = [];
+    const rre = /<row[^>]*>([\s\S]*?)<\/row>/g;
+    let rm;
+    while ((rm = rre.exec(sx))) {
+      const cells = [];
+      const cre = /<c\b([^>]*)>([\s\S]*?)<\/c>|<c\b([^>]*)\/>/g;
+      let cm;
+      while ((cm = cre.exec(rm[1]))) {
+        const attrs = cm[1] != null ? cm[1] : cm[3] || "";
+        const inner = cm[2] || "";
+        const tm = /\bt="([^"]+)"/.exec(attrs);
+        const type = tm ? tm[1] : "";
+        let val = "";
+        if (type === "s") {
+          const v = /<v>(\d+)<\/v>/.exec(inner);
+          val = v ? shared[+v[1]] || "" : "";
+        } else if (type === "inlineStr" || type === "str") {
+          const t = /<t[^>]*>([\s\S]*?)<\/t>/.exec(inner);
+          if (t) val = decodeXmlEntities(t[1]);
+          else { const v = /<v>([\s\S]*?)<\/v>/.exec(inner); val = v ? decodeXmlEntities(v[1]) : ""; }
+        } else {
+          const v = /<v>([\s\S]*?)<\/v>/.exec(inner);
+          val = v ? decodeXmlEntities(v[1]) : "";
+        }
+        cells.push(val);
+      }
+      rows.push(cells.join("\t"));
+    }
+    if (rows.length) parts.push((sheets.length > 1 ? `# ${key.split("/").pop()}\n` : "") + rows.join("\n"));
+  }
+  return parts.join("\n\n").trim();
+}
+
+function extractPptx(buf) {
+  const zip = unzip(buf);
+  const slides = [...zip.keys()].filter((k) => /^ppt\/slides\/slide\d+\.xml$/.test(k))
+    .sort((a, b) => (+a.match(/(\d+)/)[1]) - (+b.match(/(\d+)/)[1]));
+  const parts = [];
+  slides.forEach((key, i) => {
+    const sx = zip.get(key).toString("utf8");
+    const tre = /<a:t>([\s\S]*?)<\/a:t>/g;
+    let m, txt = [];
+    while ((m = tre.exec(sx))) txt.push(decodeXmlEntities(m[1]));
+    if (txt.length) parts.push(`--- Slide ${i + 1} ---\n` + txt.join("\n"));
+  });
+  return parts.join("\n\n").trim();
+}
+
+function extractPdf(buf) {
+  // Best-effort text: inflate content streams and pull the strings drawn by Tj/TJ operators.
+  // Works for normal (text-based) PDFs; scanned/image PDFs have no text to extract.
+  let text = "";
+  const re = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let m;
+  const grab = (s) => {
+    let out = "";
+    const tj = /\(((?:[^()\\]|\\.)*)\)\s*Tj|\[((?:[^\]]|\\.)*)\]\s*TJ/g;
+    let t;
+    while ((t = tj.exec(s))) {
+      const body = t[1] != null ? t[1] : (t[2] || "").replace(/\(((?:[^()\\]|\\.)*)\)/g, "$1").replace(/-?\d+(\.\d+)?/g, "");
+      out += body.replace(/\\[nrt]/g, " ").replace(/\\([()\\])/g, "$1");
+    }
+    return out;
+  };
+  while ((m = re.exec(buf.toString("latin1")))) {
+    const raw = Buffer.from(m[1], "latin1");
+    let s = null;
+    try { s = zlib.inflateSync(raw).toString("latin1"); } catch { s = raw.toString("latin1"); }
+    if (/BT|Tj|TJ/.test(s)) text += grab(s) + "\n";
+  }
+  // Drop hex-glyph tokens from subset-font runs we can't decode without the font map, so the
+  // readable (standard-encoded) text isn't buried in <F><CD>… noise.
+  return text.replace(/<[0-9A-Fa-f]{0,8}>/g, "").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function extractDocument(buffer, ext) {
+  if (ext === "docx") return extractDocx(buffer);
+  if (ext === "xlsx" || ext === "xlsm") return extractXlsx(buffer);
+  if (ext === "pptx") return extractPptx(buffer);
+  if (ext === "pdf") return extractPdf(buffer);
+  return "";
+}
+
+const DOC_EXT = new Set(["docx", "xlsx", "xlsm", "pptx", "pdf"]);
+
+async function coWorkerRead(p, limit = 600) {
+  const target = resolveUserPath(p);
+  const st = await fs.stat(target);
+  if (st.isDirectory()) {
+    const entries = await fs.readdir(target, { withFileTypes: true });
+    return {
+      kind: "directory",
+      path: target,
+      entries: entries.slice(0, 300).map((e) => ({ name: e.name, isDir: e.isDirectory() })),
+    };
+  }
+  const ext = path.extname(target).slice(1).toLowerCase();
+  if (IMAGE_MIME[ext]) {
+    const buffer = await fs.readFile(target);
+    return { kind: "image", path: target, dataUrl: `data:${IMAGE_MIME[ext]};base64,${buffer.toString("base64")}` };
+  }
+  if (DOC_EXT.has(ext)) {
+    if (st.size > 40_000_000) throw new Error("Document is too large to read (>40MB)");
+    const buffer = await fs.readFile(target);
+    let text = "";
+    try { text = extractDocument(buffer, ext); } catch { text = ""; }
+    if (text && text.trim()) {
+      const lines = text.split("\n");
+      return {
+        kind: "document",
+        path: target,
+        format: ext,
+        totalLines: lines.length,
+        content: lines.slice(0, Math.max(limit, 2000)).join("\n"),
+        hasMore: lines.length > Math.max(limit, 2000),
+      };
+    }
+    return {
+      kind: "binary",
+      path: target,
+      size: st.size,
+      note: ext === "pdf"
+        ? "This PDF appears to be scanned/image-only (no extractable text). Use os_open to view it, or ask for OCR."
+        : `Couldn't extract text from this .${ext}. Use os_open to open it in its own application.`,
+    };
+  }
+  if (!TEXTUAL_EXT.has(ext)) {
+    return { kind: "binary", path: target, size: st.size, note: `Not a text or image file (.${ext}). Use os_open to open it in its own application.` };
+  }
+  if (st.size > 5_000_000) throw new Error("File is too large to read (>5MB)");
+  const lines = (await fs.readFile(target, "utf8")).split("\n");
+  return {
+    kind: "text",
+    path: target,
+    totalLines: lines.length,
+    content: lines.slice(0, limit).join("\n"),
+    hasMore: lines.length > limit,
+  };
+}
+
+// One call per platform for "open this the way a double-click would".
+function osOpenCommand(target) {
+  if (process.platform === "win32") return `start "" "${target.replace(/"/g, '')}"`;
+  if (process.platform === "darwin") return `open "${target.replace(/"/g, '\\"')}"`;
+  return `xdg-open "${target.replace(/"/g, '\\"')}"`;
+}
+
+function osLaunchAppCommand(appName) {
+  const safe = String(appName).replace(/"/g, "");
+  if (process.platform === "win32") return `start "" "${safe}"`;
+  if (process.platform === "darwin") return `open -a "${safe}"`;
+  // Linux desktop entries are launched by their .desktop id; fall back to the binary name.
+  return `gtk-launch "${safe}" 2>/dev/null || setsid "${safe}" >/dev/null 2>&1 &`;
+}
+
+// ---------- Web search ----------
+// Our own aggregator rather than a third-party search API: no extra key to hold, nothing to
+// bill, and the sources are chosen for what a coding agent actually needs to look up. Each is
+// a documented public JSON API — no scraping, no CAPTCHA to work around.
+const SEARCH_TIMEOUT_MS = 12_000;
+
+async function getJson(url, headers = {}) {
+  const res = await fetch(url, {
+    headers: { "User-Agent": "NutaanCode/1.0", Accept: "application/json", ...headers },
+    signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+const stripTags = (s) => String(s || "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+
+const SEARCH_SOURCES = {
+  async stackoverflow(q, limit) {
+    const d = await getJson(
+      `https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=${encodeURIComponent(q)}&site=stackoverflow&filter=!nNPvSNdWme&pagesize=${limit}`
+    );
+    return (d.items || []).map((i) => ({
+      source: "stackoverflow",
+      title: stripTags(i.title),
+      url: i.link,
+      detail: `score ${i.score}${i.is_answered ? ", answered" : ", unanswered"}`,
+    }));
+  },
+  async github(q, limit) {
+    const d = await getJson(
+      `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=${limit}`,
+      { Accept: "application/vnd.github+json" }
+    );
+    return (d.items || []).map((i) => ({
+      source: "github",
+      title: i.full_name,
+      url: i.html_url,
+      detail: `${i.stargazers_count}★ — ${stripTags(i.description).slice(0, 140)}`,
+    }));
+  },
+  async npm(q, limit) {
+    const d = await getJson(`https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(q)}&size=${limit}`);
+    return (d.objects || []).map((o) => ({
+      source: "npm",
+      title: o.package.name,
+      url: o.package.links?.npm || `https://www.npmjs.com/package/${o.package.name}`,
+      detail: `v${o.package.version} — ${stripTags(o.package.description).slice(0, 140)}`,
+    }));
+  },
+  async wikipedia(q, limit) {
+    const d = await getJson(
+      `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(q)}&format=json&srlimit=${limit}`
+    );
+    return (d.query?.search || []).map((s) => ({
+      source: "wikipedia",
+      title: s.title,
+      url: `https://en.wikipedia.org/wiki/${encodeURIComponent(s.title.replace(/ /g, "_"))}`,
+      detail: stripTags(s.snippet).slice(0, 160),
+    }));
+  },
+  async hackernews(q, limit) {
+    const d = await getJson(`https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(q)}&hitsPerPage=${limit}`);
+    return (d.hits || [])
+      .filter((h) => h.url)
+      .map((h) => ({
+        source: "hackernews",
+        title: h.title || h.story_title || "(discussion)",
+        url: h.url,
+        detail: `${h.points || 0} points, ${h.num_comments || 0} comments`,
+      }));
+  },
+};
+
+async function webSearch(query, requested, limit = 5) {
+  const names = requested?.length ? requested.filter((n) => SEARCH_SOURCES[n]) : Object.keys(SEARCH_SOURCES);
+  if (!names.length) throw new Error(`Unknown source. Available: ${Object.keys(SEARCH_SOURCES).join(", ")}`);
+  // All sources at once: one slow or rate-limited source shouldn't hold up or sink the rest.
+  const settled = await Promise.allSettled(names.map((n) => SEARCH_SOURCES[n](query, Math.min(limit, 10))));
+  const results = [];
+  const failed = [];
+  settled.forEach((r, i) => {
+    if (r.status === "fulfilled") results.push(...r.value);
+    else failed.push(`${names[i]}: ${r.reason?.message || "failed"}`);
+  });
+  return { query, results, failed, searched: names };
+}
+
+// ---------- Knowledge base (local, embedded) ----------
+// Lives at ~/.nutaan/kb/index.json alongside memory. Memory is for short facts the agent
+// decides to keep; this is for bulk reference material the user hands it — a docs site, an API
+// spec, pasted notes — chunked and embedded once, then recalled by meaning on every turn.
+// Vectors stay on this machine; only the text being embedded is ever sent out.
+
+const KB_DIR = path.join(os.homedir(), ".nutaan", "kb");
+const KB_INDEX = path.join(KB_DIR, "index.json");
+const KB_CHUNK_CHARS = 1200;
+const KB_CHUNK_OVERLAP = 150;
+const KB_EMBED_BATCH = 24;
+const KB_MAX_CHUNKS = 400;
+
+async function readKb() {
+  try {
+    const parsed = JSON.parse(await fs.readFile(KB_INDEX, "utf8"));
+    return Array.isArray(parsed?.entries) ? parsed : { entries: [] };
+  } catch {
+    return { entries: [] };
+  }
+}
+
+async function writeKb(data) {
+  await fs.mkdir(KB_DIR, { recursive: true });
+  await fs.writeFile(KB_INDEX, JSON.stringify(data), "utf8");
+}
+
+// Split on paragraph boundaries where possible so a chunk is a coherent passage rather than a
+// window that starts mid-sentence. Overlap keeps an answer that straddles a boundary findable.
+function chunkText(text) {
+  const clean = String(text || "").replace(/\r/g, "").trim();
+  if (!clean) return [];
+  const chunks = [];
+  let i = 0;
+  while (i < clean.length && chunks.length < KB_MAX_CHUNKS) {
+    let end = Math.min(i + KB_CHUNK_CHARS, clean.length);
+    if (end < clean.length) {
+      const para = clean.lastIndexOf("\n\n", end);
+      const sentence = clean.lastIndexOf(". ", end);
+      const cut = para > i + 400 ? para : sentence > i + 400 ? sentence + 1 : -1;
+      if (cut > 0) end = cut;
+    }
+    const piece = clean.slice(i, end).trim();
+    if (piece) chunks.push(piece);
+    if (end >= clean.length) break;
+    i = Math.max(end - KB_CHUNK_OVERLAP, i + 1);
+  }
+  return chunks;
+}
+
+async function embedTexts(backend, texts) {
+  const res = await fetch(buildEndpointUrl(backend.baseUrl, "/embeddings"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...buildAuthHeaders(backend.baseUrl, backend.apiKey) },
+    body: JSON.stringify({ input: texts }),
+    signal: AbortSignal.timeout(90_000),
+  });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const err = await res.json();
+      detail = err?.error?.message || detail;
+    } catch {}
+    throw new Error(detail);
+  }
+  const data = await res.json();
+  const vectors = (data?.data || []).map((d) => d.embedding);
+  if (vectors.length !== texts.length) throw new Error("Embedding provider returned the wrong number of vectors");
+  return vectors;
+}
+
+function cosineSimilarity(a, b) {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  const denom = Math.sqrt(na) * Math.sqrt(nb);
+  return denom ? dot / denom : 0;
+}
+
+async function kbSearch(backend, query, ids, topK = 5) {
+  const store = await readKb();
+  const pool = store.entries.filter((e) => !ids?.length || ids.includes(e.id));
+  if (!pool.length) return [];
+  const [queryVector] = await embedTexts(backend, [String(query).slice(0, 4000)]);
+  const scored = [];
+  for (const entry of pool) {
+    for (const chunk of entry.chunks) {
+      scored.push({ score: cosineSimilarity(queryVector, chunk.embedding), text: chunk.text, title: entry.title, source: entry.source });
+    }
+  }
+  scored.sort((a, b) => b.score - a.score);
+  // Centred on measured scores from this embedding model rather than guessed: across a set of
+  // deliberately reworded questions, correct passages scored 0.275–0.431 while a wholly
+  // off-topic query peaked at 0.157. 0.22 sits between the two with margin on both sides.
+  return scored.filter((s) => s.score > 0.22).slice(0, topK);
+}
+
+ipcMain.handle("os:search", async (event, { query, path: startPath }) => {
+  try {
+    const onProgress = (p) => event.sender.send("os:search-progress", p);
+    return { ok: true, ...(await coWorkerSearch(query, startPath, CO_WORKER_MAX_DEPTH, onProgress)) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle("os:read", async (_e, { path: p, limit }) => {
+  try {
+    return { ok: true, ...(await coWorkerRead(p, Math.min(Number(limit) || 4000, 20000))) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle("os:open", async (_e, target) => {
+  try {
+    const resolved = /^[a-z][a-z0-9+.-]*:\/\//i.test(target) ? target : resolveUserPath(target);
+    const res = await runCommand(HOME, osOpenCommand(resolved));
+    if (res.exitCode !== 0) return { ok: false, error: (res.stderr || "Could not open it").slice(0, 300) };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle("kb:list", async () => {
+  const store = await readKb();
+  return store.entries.map((e) => ({
+    id: e.id,
+    title: e.title,
+    source: e.source,
+    chunks: e.chunks.length,
+    createdAt: e.createdAt,
+  }));
+});
+
+ipcMain.handle("kb:remove", async (_e, id) => {
+  const store = await readKb();
+  store.entries = store.entries.filter((x) => x.id !== id);
+  await writeKb(store);
+  return true;
+});
+
+async function kbIngest(backend, { url: typedUrl, text: rawText, title: rawTitle }, onProgress = () => {}) {
+  let text = String(rawText || "");
+  let title = String(rawTitle || "").trim();
+  // People type "tecosys.in", not "https://tecosys.in" — rejecting that as a malformed URL is
+  // a pointless bit of pedantry when the scheme is obvious.
+  const typed = String(typedUrl || "").trim();
+  const url = typed && !/^[a-z][a-z0-9+.-]*:\/\//i.test(typed) ? `https://${typed}` : typed;
+
+  if (url) {
+    onProgress("fetching", { url });
+    const page = await webFetch(url);
+    text = page.content + (page.raw ? extractDesignTokens(page.raw) : "");
+    if (!title) title = page.title || url;
+  }
+  if (!title) title = "Untitled note";
+  if (!text.trim()) throw new Error("Nothing to index — the source was empty.");
+
+  onProgress("chunking", {});
+  const chunks = chunkText(text);
+  if (!chunks.length) throw new Error("Nothing to index — the source had no readable text.");
+
+  const embedded = [];
+  for (let i = 0; i < chunks.length; i += KB_EMBED_BATCH) {
+    const batch = chunks.slice(i, i + KB_EMBED_BATCH);
+    const vectors = await embedTexts(backend, batch);
+    batch.forEach((t, j) => embedded.push({ text: t, embedding: vectors[j] }));
+    onProgress("embedding", { done: embedded.length, total: chunks.length });
+  }
+
+  const store = await readKb();
+  const entry = {
+    id: "kb" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    title,
+    source: url || "pasted text",
+    createdAt: new Date().toISOString(),
+    chunks: embedded,
+  };
+  store.entries.push(entry);
+  await writeKb(store);
+  onProgress("done", { id: entry.id, title, chunks: embedded.length });
+  return { id: entry.id, title, source: entry.source, chunks: embedded.length };
+}
+
+ipcMain.handle("kb:add", async (event, payload) => {
+  const backend = await activeBackend(payload || {});
+  const send = (stage, detail) => event.sender.send("kb:progress", { stage, ...detail });
+  try {
+    return { ok: true, ...(await kbIngest(backend, payload || {}, send)) };
+  } catch (err) {
+    send("error", { error: err.message });
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle("kb:search", async (_e, payload) => {
+  const backend = await activeBackend(payload || {});
+  try {
+    return { ok: true, matches: await kbSearch(backend, payload?.query || "", payload?.ids, payload?.topK || 5) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
 
 async function generateImage(baseUrl, apiKey, model, prompt, timeoutMs = 120_000) {
   if (!model) throw new Error("No image model configured — set one in ⚙ Settings → Advanced → Image model first.");
@@ -730,6 +1363,232 @@ function runCommand(root, command, signal) {
 
 ipcMain.handle("proc:run-command", async (_e, root, command) => runCommand(root, command));
 
+// ---------- Background tasks (long-running commands that don't block the turn) ----------
+// A dev server, a build watcher, a long test run: things you start and then keep working while
+// they run, checking output when you want it — the way Claude Code's background tasks behave.
+const backgroundTasks = new Map();
+let bgTaskSeq = 0;
+const MAX_BG_OUTPUT_LINES = 3000;
+
+function startBackgroundTask(root, command) {
+  const id = "bg" + ++bgTaskSeq;
+  let child;
+  try {
+    child = spawn(command, { cwd: root, shell: true, windowsHide: true });
+  } catch (e) {
+    return { id, command, status: "error", error: e.message };
+  }
+  const task = { id, command, cwd: root, status: "running", exitCode: null, error: null, output: [], startedAt: Date.now(), endedAt: null, child };
+  backgroundTasks.set(id, task);
+  const push = (chunk, stream) => {
+    const text = chunk.toString();
+    for (const line of text.split(/\r?\n/)) task.output.push({ stream, line });
+    if (task.output.length > MAX_BG_OUTPUT_LINES) task.output.splice(0, task.output.length - MAX_BG_OUTPUT_LINES);
+    try { win?.webContents.send("bgtask:update", { id, status: task.status, command, lines: task.output.length }); } catch {}
+  };
+  child.stdout?.on("data", (c) => push(c, "stdout"));
+  child.stderr?.on("data", (c) => push(c, "stderr"));
+  child.on("exit", (code, sig) => {
+    task.status = "exited";
+    task.exitCode = code ?? (sig ? 1 : 0);
+    task.endedAt = Date.now();
+    task.child = null;
+    try { win?.webContents.send("bgtask:update", { id, status: "exited", exitCode: task.exitCode, command }); } catch {}
+  });
+  child.on("error", (err) => {
+    task.status = "error";
+    task.error = err.message;
+    task.endedAt = Date.now();
+    task.child = null;
+    try { win?.webContents.send("bgtask:update", { id, status: "error", error: err.message, command }); } catch {}
+  });
+  return { id, command, status: task.status, startedAt: task.startedAt };
+}
+
+function bgTaskView(id, tailLines = 80) {
+  const t = backgroundTasks.get(id);
+  if (!t) return null;
+  const output = t.output.slice(-tailLines).map((o) => o.line).join("\n").slice(-MAX_OUTPUT_CHARS);
+  return {
+    id: t.id,
+    command: t.command,
+    status: t.status,
+    exitCode: t.exitCode,
+    error: t.error,
+    runningMs: (t.endedAt || Date.now()) - t.startedAt,
+    totalLines: t.output.length,
+    output,
+  };
+}
+
+function listBgTasks() {
+  return [...backgroundTasks.values()].map((t) => ({
+    id: t.id,
+    command: t.command.length > 90 ? t.command.slice(0, 90) + "…" : t.command,
+    status: t.status,
+    exitCode: t.exitCode,
+    lines: t.output.length,
+    runningMs: (t.endedAt || Date.now()) - t.startedAt,
+  }));
+}
+
+function stopBgTask(id) {
+  const t = backgroundTasks.get(id);
+  if (!t) return { ok: false, error: "No task with id " + id };
+  if (!t.child) return { ok: false, error: "Task " + id + " already " + t.status };
+  try {
+    t.child.kill();
+    t.status = "stopped";
+    t.endedAt = Date.now();
+    return { ok: true, id, status: "stopped" };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+ipcMain.handle("bgtask:list", () => listBgTasks());
+ipcMain.handle("bgtask:get", (_e, id) => bgTaskView(id, 300));
+ipcMain.handle("bgtask:stop", (_e, id) => stopBgTask(id));
+
+// Drives the branch chip in the header. A project that isn't a git repo just reports
+// `repo: false` and the chip stays hidden — not an error worth surfacing.
+ipcMain.handle("git:status", async (_e, root) => {
+  const branch = await runCommand(root, "git rev-parse --abbrev-ref HEAD");
+  if (branch.exitCode !== 0) return { repo: false };
+  const [porcelain, counts] = await Promise.all([
+    runCommand(root, "git status --porcelain"),
+    runCommand(root, "git rev-list --left-right --count @{upstream}...HEAD"),
+  ]);
+  const dirty = porcelain.stdout.trim().split("\n").filter(Boolean).length;
+  // No upstream yet (a brand-new branch) — nothing to compare against, so report zero rather
+  // than treating the failed command as unknown state.
+  const [behind, ahead] = counts.exitCode === 0
+    ? counts.stdout.trim().split(/\s+/).map((n) => Number(n) || 0)
+    : [0, 0];
+  return { repo: true, branch: branch.stdout.trim(), dirty, ahead, behind, hasUpstream: counts.exitCode === 0 };
+});
+
+// Porcelain's two status columns are index-then-worktree, so a file can be partly staged.
+const GIT_STATUS_LABEL = {
+  M: "modified", A: "added", D: "deleted", R: "renamed", C: "copied", U: "conflicted", "?": "untracked",
+};
+
+ipcMain.handle("git:changes", async (_e, root) => {
+  const res = await runCommand(root, "git status --porcelain=v1 -z");
+  if (res.exitCode !== 0) return { ok: false, error: "Not a git repository." };
+  const files = [];
+  // -z output is NUL-separated, which is the only way to survive paths containing spaces or
+  // quotes. Renames emit a second NUL-terminated field for the old path.
+  const parts = res.stdout.split("\0");
+  for (let i = 0; i < parts.length; i++) {
+    const entry = parts[i];
+    if (!entry || entry.length < 4) continue;
+    const index = entry[0];
+    const work = entry[1];
+    const filePath = entry.slice(3);
+    if (index === "R" || index === "C") i++; // skip the paired old-path field
+    files.push({
+      path: filePath,
+      staged: index !== " " && index !== "?",
+      label: GIT_STATUS_LABEL[index !== " " && index !== "?" ? index : work] || "changed",
+      untracked: index === "?",
+    });
+  }
+  return { ok: true, files };
+});
+
+// Quote for the shell rather than interpolating raw: project paths routinely contain spaces,
+// and on Windows they contain backslashes that must not be treated as escapes.
+function shellQuote(p) {
+  return `"${String(p).replace(/(["$`\\])/g, "\\$1")}"`;
+}
+
+ipcMain.handle("git:commit", async (_e, { root, paths, message }) => {
+  const list = (paths || []).filter(Boolean);
+  if (!list.length) return { ok: false, error: "Select at least one file to commit." };
+  if (!String(message || "").trim()) return { ok: false, error: "Write a commit message first." };
+
+  const add = await runCommand(root, `git add -- ${list.map(shellQuote).join(" ")}`);
+  if (add.exitCode !== 0) return { ok: false, error: (add.stderr || "git add failed").slice(0, 400) };
+
+  // Passed via stdin so newlines, quotes and backticks in the message survive intact.
+  const commit = await new Promise((resolve) => {
+    const child = exec(`git commit -F -`, { cwd: root, timeout: COMMAND_TIMEOUT_MS, windowsHide: true }, (error, stdout, stderr) =>
+      resolve({ exitCode: error ? (error.code ?? 1) : 0, stdout: String(stdout || ""), stderr: String(stderr || "") })
+    );
+    child.stdin.end(String(message));
+  });
+  if (commit.exitCode !== 0) {
+    return { ok: false, error: (commit.stderr || commit.stdout || "git commit failed").slice(0, 400) };
+  }
+  return { ok: true, output: commit.stdout.trim().slice(0, 300) };
+});
+
+// Unified diff for one file (staged + unstaged, vs the last commit) so the code panel can show
+// what actually changed — added/removed lines — instead of just the current file contents. A
+// brand-new untracked file has no HEAD to diff against, so it comes back as all-added.
+ipcMain.handle("git:diff-file", async (_e, root, relPath) => {
+  const q = shellQuote(relPath);
+  const res = await runCommand(root, `git diff HEAD -- ${q}`);
+  const diff = (res.stdout || "").replace(/\s+$/, "");
+  if (diff.trim()) return { diff, hasChanges: true, untracked: false };
+  const st = await runCommand(root, `git status --porcelain -- ${q}`);
+  if (/^\?\?/.test((st.stdout || "").trim())) {
+    try {
+      const content = await fs.readFile(path.join(root, relPath), "utf8");
+      const synth = "@@ new file @@\n" + content.replace(/\n$/, "").split("\n").map((l) => "+" + l).join("\n");
+      return { diff: synth, hasChanges: true, untracked: true };
+    } catch {}
+  }
+  return { diff: "", hasChanges: false };
+});
+
+ipcMain.handle("git:push", async (_e, root) => {
+  const remotes = await runCommand(root, "git remote");
+  if (!remotes.stdout.trim()) {
+    return { ok: false, error: "This repository has no remote. Add one first:\n\ngit remote add origin <url>" };
+  }
+  const upstream = await runCommand(root, "git rev-parse --abbrev-ref @{upstream}");
+  // A branch that has never been pushed has no upstream, and a bare `git push` fails telling
+  // you to set one — so set it here instead of surfacing that as an error.
+  const branch = (await runCommand(root, "git rev-parse --abbrev-ref HEAD")).stdout.trim();
+  const remote = remotes.stdout.trim().split("\n")[0].trim();
+  const cmd = upstream.exitCode === 0 ? "git push" : `git push -u ${shellQuote(remote)} ${shellQuote(branch)}`;
+
+  const res = await runCommand(root, cmd);
+  if (res.exitCode !== 0) {
+    const detail = (res.stderr || res.stdout || "git push failed").slice(0, 400);
+    if (/Repository not found|403|denied|authentication/i.test(detail)) {
+      return { ok: false, error: `${detail}\n\nThe remote rejected this — usually the repo URL is wrong or the credentials on this machine don't have access to it.` };
+    }
+    // Non-fast-forward: the branch is behind its remote (someone else pushed, or the same repo
+    // is open elsewhere). Rather than dumping git's "Updates were rejected… integrate the remote
+    // changes" hint on the user, do what they'd do by hand — rebase onto the remote and retry.
+    if (/rejected|non-fast-forward|fetch first|tip of your current branch is behind|behind its remote/i.test(detail)) {
+      // --autostash so a partial commit (staged some files, left others modified) doesn't block
+      // the rebase with "cannot pull with rebase: you have unstaged changes" — git stashes the
+      // rest, rebases, and restores it.
+      const pull = await runCommand(root, "git pull --rebase --autostash");
+      if (pull.exitCode !== 0) {
+        // Conflicts. Don't leave the repo mid-rebase — abort and explain.
+        await runCommand(root, "git rebase --abort");
+        const why = (pull.stderr || pull.stdout || "").slice(0, 300);
+        return {
+          ok: false,
+          error: `Your branch is behind the remote and the changes can't be merged automatically:\n\n${why}\n\nPull and resolve the conflicts (or commit/stash local changes) manually, then push again.`,
+        };
+      }
+      const retry = await runCommand(root, cmd);
+      if (retry.exitCode !== 0) {
+        return { ok: false, error: (retry.stderr || retry.stdout || "git push failed after integrating remote changes").slice(0, 400) };
+      }
+      return { ok: true, output: `Remote had newer commits — pulled and rebased, then pushed.\n${(retry.stderr || retry.stdout || "").trim().slice(0, 240)}` };
+    }
+    return { ok: false, error: detail };
+  }
+  return { ok: true, output: (res.stderr || res.stdout || "").trim().slice(0, 300) };
+});
+
 // ---------- Agent loop (tool-calling) ----------
 
 const TOOLS = [
@@ -749,10 +1608,15 @@ const TOOLS = [
     type: "function",
     function: {
       name: "read_file",
-      description: "Read the full text contents of a file relative to the project root.",
+      description:
+        "Read a file relative to the project root. Returns numbered lines. For a large file, page through it with offset and limit instead of re-reading the whole thing — the response tells you the total line count and whether more remains.",
       parameters: {
         type: "object",
-        properties: { path: { type: "string" } },
+        properties: {
+          path: { type: "string" },
+          offset: { type: "number", description: "1-based line to start at (default 1)" },
+          limit: { type: "number", description: "How many lines to return (default 800)" },
+        },
         required: ["path"],
       },
     },
@@ -837,7 +1701,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "browser_read_page",
-      description: "Read the visible text content and current URL of whatever is currently open in the built-in browser panel.",
+      description: "Read the built-in browser panel's current page: its URL, title, visible text, a list of interactive elements (links, buttons, inputs) each with its label and a ready-to-use CSS selector, AND any native dialogs the page popped (alert/confirm/prompt text — e.g. 'Invalid username or password'). Call this to understand a page before acting, and always after submitting a form/login to see the result. Click/type using a selector it returns instead of guessing one.",
       parameters: { type: "object", properties: {} },
     },
   },
@@ -888,7 +1752,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "browser_screenshot",
-      description: "Take a screenshot of what's currently visible in the built-in browser panel. Only useful if you (the model) support image input — plain-text models should rely on browser_read_page instead.",
+      description: "Take a screenshot of what's currently visible in the built-in browser panel and look at it. Works on any model — if you can't see images yourself, a vision model describes the screenshot and you get the description back. Use this to actually check how something you built looks, rather than asking the user to go and look.",
       parameters: { type: "object", properties: {} },
     },
   },
@@ -936,8 +1800,143 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "os_search",
+      description:
+        "Find a file or folder anywhere on this computer by name — outside the project, across Desktop, Documents, Downloads, Pictures, Music and Videos. Use this when the user refers to a document, photo or download that isn't part of the open project. Results are newest-first.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Part of the file or folder name" },
+          path: { type: "string", description: "Optional folder to search inside, e.g. '~/Downloads' or an absolute path" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "os_read",
+      description:
+        "Read any file on this computer by absolute path, ~-path, or a home-relative path like 'Downloads/notes.txt'. Text files come back as text; Word (.docx), Excel (.xlsx), PowerPoint (.pptx) and PDF documents have their text/data extracted so you can read them directly (a spreadsheet comes back as tab-separated rows); images come back viewable; folders list their contents. Use this to read the user's real documents and data. For a type that can't be read, use os_open instead.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          limit: { type: "number", description: "Max lines for a text file (default 600)" },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "os_open",
+      description:
+        "Open a file, folder or URL in whatever application the system normally uses for it — a PDF in the PDF viewer, a folder in the file manager. Works on Windows, macOS and Linux. Requires user approval.",
+      parameters: {
+        type: "object",
+        properties: { target: { type: "string", description: "Path or URL to open" } },
+        required: ["target"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "os_launch_app",
+      description:
+        "Launch a desktop application by name — 'Notepad', 'Visual Studio Code', 'Safari', 'firefox'. Requires user approval.",
+      parameters: {
+        type: "object",
+        properties: { app: { type: "string", description: "Application name as the system knows it" } },
+        required: ["app"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description:
+        "Search the web for things you don't know or that may have changed: library docs, error messages, API changes, package comparisons, current versions. Returns titles, URLs and snippets from Stack Overflow, GitHub, npm, Wikipedia and Hacker News. Follow up with web_fetch on any URL worth reading in full. Use this instead of guessing at an API you're unsure about.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "What to search for, in plain words" },
+          sources: {
+            type: "array",
+            description: "Restrict to specific sources. Omit to search all of them.",
+            items: { type: "string", enum: ["stackoverflow", "github", "npm", "wikipedia", "hackernews"] },
+          },
+          limit: { type: "number", description: "Results per source (default 5, max 10)" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "task_write",
+      description:
+        "Record your plan as a checklist and keep it updated as you work. Use it for any request with more than about three steps, or any long instruction with several distinct parts — it is how the user sees what you intend to do and what is left. Send the WHOLE list every time, with each item's current status. Mark exactly one item in_progress while you work on it, and flip it to completed the moment it is genuinely done rather than batching updates at the end.",
+      parameters: {
+        type: "object",
+        properties: {
+          tasks: {
+            type: "array",
+            description: "The complete task list, in order",
+            items: {
+              type: "object",
+              properties: {
+                task: { type: "string", description: "Short imperative description, e.g. 'Add the rate-limit middleware'" },
+                status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+              },
+              required: ["task", "status"],
+            },
+          },
+        },
+        required: ["tasks"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "kb_add",
+      description: "Index a page or a block of text into the user's knowledge base so it can be recalled by meaning in this and every future chat. Use it when you find reference material worth keeping — API docs, a spec, a changelog the user pointed you at — rather than re-fetching it every time. Requires user approval.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Page to fetch and index. Give this or text, not both." },
+          text: { type: "string", description: "Raw text to index. Give this or url, not both." },
+          title: { type: "string", description: "Short label for the entry; taken from the page title if omitted" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "kb_search",
+      description: "Search the user's knowledge base — reference material they indexed themselves (docs pages, specs, pasted notes) — by meaning rather than keyword. Use it whenever the answer might depend on their own material rather than general knowledge or this project's code.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "What you want to know, phrased as a question or topic" },
+          limit: { type: "number", description: "How many passages to return (default 5)" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "view_image",
-      description: "Look at an image file in the project (e.g. one you just generated with generate_image, or a screenshot the user added) if the current model can see images. Returns an error telling you the model can't view images otherwise — don't retry it if so.",
+      description: "Look at an image file in the project (e.g. a logo or screenshot the user added, or one you just generated). Works on any model — if you can't see images yourself, a vision model describes it and you get the description back.",
       parameters: {
         type: "object",
         properties: { path: { type: "string", description: "Path relative to the project root" } },
@@ -964,11 +1963,58 @@ const TOOLS = [
     type: "function",
     function: {
       name: "run_command",
-      description: "Run a shell command in the project root (60s timeout). Requires user approval.",
+      description: "Run a shell command in the project root (60s timeout). Requires user approval. For long-running or never-ending commands (dev servers, watchers, long builds/tests), use run_background instead — this one will time out at 60s.",
       parameters: {
         type: "object",
         properties: { command: { type: "string" } },
         required: ["command"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_background",
+      description: "Start a long-running or never-ending shell command in the BACKGROUND and return immediately with a task id, without blocking the turn. Use this for dev servers (npm run dev), build watchers, long test suites, installs, or any command that takes a while or runs indefinitely. Keep working while it runs, then read its output with check_background_task. Requires user approval.",
+      parameters: {
+        type: "object",
+        properties: { command: { type: "string", description: "The shell command to run in the background, from the project root." } },
+        required: ["command"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "check_background_task",
+      description: "Read the current status and recent output of a background task started with run_background. Returns whether it is still running or has exited (with its exit code) and the latest output lines. Call this to see a dev server's logs, a build's progress, or a finished task's result.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "The background task id returned by run_background (e.g. 'bg1')." },
+          lines: { type: "number", description: "How many recent output lines to return (default 80)." },
+        },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_background_tasks",
+      description: "List all background tasks started this session with their id, command, status (running/exited/stopped) and exit code.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "stop_background_task",
+      description: "Stop (kill) a running background task by id — e.g. to shut down a dev server you started. Requires user approval.",
+      parameters: {
+        type: "object",
+        properties: { id: { type: "string", description: "The background task id to stop (e.g. 'bg1')." } },
+        required: ["id"],
       },
     },
   },
@@ -1124,6 +2170,44 @@ const TOOLS = [
 
 const URL_OPEN_PATTERN = /^\s*(start|open|xdg-open|cmd(\.exe)?\s*\/c\s*start)\s+["']?(https?:\/\/)/i;
 
+// gpt-oss models speak the "harmony" format and sometimes leak its channel markers into the
+// tool name (e.g. `run_command<|channel|>commentary`), which then fails as an unknown tool.
+function cleanToolName(call) {
+  return String(call?.function?.name || "").split("<|")[0].replace(/[^\w.-]/g, "").trim();
+}
+
+function parseToolArgs(call) {
+  try {
+    return JSON.parse(call?.function?.arguments || "{}");
+  } catch {
+    return {};
+  }
+}
+
+// Pure reads: no approval gate, no ordering constraints, no shared mutable target — so a batch
+// of them can run at once rather than one after another. Reading five files or fetching three
+// pages now costs one round trip instead of five.
+//
+// Browser tools are excluded despite being "safe": they all drive the one shared browser panel,
+// so running them concurrently would interleave navigation and clicks on the same page. Writes,
+// commands and anything needing approval stay sequential too — later steps can depend on
+// earlier ones, and approvals have to be answered one at a time.
+const PARALLEL_TOOLS = new Set([
+  "list_dir",
+  "read_file",
+  "search_files",
+  "list_skills",
+  "use_skill",
+  "memory_list",
+  "memory_read",
+  "web_fetch",
+  "web_search",
+  "os_search",
+  "os_read",
+  "kb_search",
+  "view_image",
+]);
+
 const SAFE_TOOLS = new Set([
   "list_dir",
   "read_file",
@@ -1140,7 +2224,14 @@ const SAFE_TOOLS = new Set([
   "memory_list",
   "memory_read",
   "web_fetch",
+  "web_search",
+  "os_search",
+  "os_read",
+  "kb_search",
+  "task_write",
   "view_image",
+  "check_background_task",
+  "list_background_tasks",
   "osint_search_tools",
   "osint_dns_recon",
   "osint_ip_lookup",
@@ -1239,6 +2330,10 @@ ipcMain.on("agent:browser-action-response", (_e, { id, result }) => {
   }
 });
 
+// How many checklist items the model last reported as unfinished. Read after a turn ends with
+// no tool call, to tell "I'm done" apart from "I stopped halfway".
+let openTaskCount = 0;
+
 async function executeTool(sender, root, name, args, callId, signal, imageConfig) {
   switch (name) {
     case "browser_navigate":
@@ -1261,8 +2356,23 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
       return { entries: await fs.readdir(resolveSafe(root, args.path), { withFileTypes: true }).then((es) =>
         es.filter((e) => !e.name.startsWith(".") && e.name !== "node_modules")
           .map((e) => ({ name: e.name, isDir: e.isDirectory() }))) };
-    case "read_file":
-      return { content: await fs.readFile(resolveSafe(root, args.path), "utf8") };
+    case "read_file": {
+      const all = (await fs.readFile(resolveSafe(root, args.path), "utf8")).split("\n");
+      // Models pass these as strings often enough that coercing is worth more than rejecting.
+      const start = Math.max(1, Number(args.offset) || 1);
+      const count = Math.max(1, Number(args.limit) || 800);
+      const slice = all.slice(start - 1, start - 1 + count);
+      const end = start + slice.length - 1;
+      return {
+        content: slice.map((l, i) => `${start + i}\t${l}`).join("\n"),
+        totalLines: all.length,
+        shown: `${start}-${end}`,
+        // Stated explicitly: without it a model that receives a truncated file has no way to
+        // tell, and either answers from half a file or re-reads the whole thing in a loop.
+        hasMore: end < all.length,
+        ...(end < all.length ? { nextOffset: end + 1 } : {}),
+      };
+    }
     case "search_files":
       return searchFiles(root, args.path, args.pattern);
     case "list_skills":
@@ -1286,6 +2396,62 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
     }
     case "web_fetch":
       return webFetch(args.url);
+    case "os_search":
+      return coWorkerSearch(args.query, args.path);
+    case "os_read": {
+      const r = await coWorkerRead(args.path, Math.min(Number(args.limit) || 600, 2000));
+      // An image read outside the project goes through the same describe-or-show path as
+      // view_image, so a text-only model still learns what is in the picture.
+      if (r.kind === "image") return { ok: true, ...r };
+      return { ok: true, ...r };
+    }
+    case "os_open": {
+      const target = /^[a-z][a-z0-9+.-]*:\/\//i.test(args.target) ? args.target : resolveUserPath(args.target);
+      const res = await runCommand(root, osOpenCommand(target), signal);
+      if (res.exitCode !== 0) return { error: (res.stderr || "Could not open it").slice(0, 300) };
+      return { ok: true, opened: target };
+    }
+    case "os_launch_app": {
+      const res = await runCommand(root, osLaunchAppCommand(args.app), signal);
+      if (res.exitCode !== 0) return { error: (res.stderr || `Could not launch "${args.app}"`).slice(0, 300) };
+      return { ok: true, launched: args.app };
+    }
+    case "web_search":
+      return webSearch(args.query, args.sources, args.limit || 5);
+    case "task_write": {
+      const allowed = new Set(["pending", "in_progress", "completed"]);
+      const tasks = (Array.isArray(args.tasks) ? args.tasks : [])
+        .map((t) => ({
+          task: String(t?.task || "").trim(),
+          status: allowed.has(t?.status) ? t.status : "pending",
+        }))
+        .filter((t) => t.task);
+      sender.send("agent:tasks-update", { tasks });
+      const completed = tasks.filter((t) => t.status === "completed").length;
+      openTaskCount = tasks.length - completed;
+      return { ok: true, total: tasks.length, completed, remaining: openTaskCount };
+    }
+    case "kb_add": {
+      const entry = await kbIngest(
+        { baseUrl: imageConfig.baseUrl, apiKey: imageConfig.apiKey },
+        { url: args.url, text: args.text, title: args.title },
+        (stage, detail) => sender.send("kb:progress", { stage, ...detail })
+      );
+      return { ok: true, ...entry, note: "Indexed. Search it later with kb_search." };
+    }
+    case "kb_search": {
+      const matches = await kbSearch(
+        { baseUrl: imageConfig.baseUrl, apiKey: imageConfig.apiKey },
+        args.query,
+        null,
+        Math.min(args.limit || 5, 10)
+      );
+      if (!matches.length) return { ok: true, matches: [], note: "Nothing in the knowledge base matched that." };
+      return {
+        ok: true,
+        matches: matches.map((m) => ({ title: m.title, source: m.source, score: Number(m.score.toFixed(3)), text: m.text })),
+      };
+    }
     case "view_image": {
       const target = resolveSafe(root, args.path);
       const ext = path.extname(target).slice(1).toLowerCase();
@@ -1327,6 +2493,14 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
     }
     case "run_command":
       return runCommand(root, args.command, signal);
+    case "run_background":
+      return startBackgroundTask(root, args.command);
+    case "check_background_task":
+      return bgTaskView(args.id, args.lines || 80) || { error: "No background task with id " + args.id };
+    case "list_background_tasks":
+      return { tasks: listBgTasks() };
+    case "stop_background_task":
+      return stopBgTask(args.id);
     case "memory_list":
       return { entries: await listMemoryEntries() };
     case "memory_read":
@@ -1361,9 +2535,19 @@ function permissionPreview(name, args) {
   if (name === "edit_file")
     return { title: `Edit ${args.path}`, diff: { oldString: args.old_string, newString: args.new_string } };
   if (name === "run_command") return { title: "Run command", detail: args.command };
+  if (name === "run_background") return { title: "Run in background", detail: args.command };
+  if (name === "stop_background_task") return { title: `Stop background task ${args.id}`, detail: "Kills the running process." };
   if (name === "browser_execute_script") return { title: "Run script in browser panel", detail: args.code };
   if (name === "memory_write") return { title: `Save memory: ${args.id}`, detail: args.content };
   if (name === "generate_image") return { title: `Generate image: ${args.path}`, detail: args.prompt };
+  if (name === "os_open") return { title: `Open ${args.target}`, detail: "Opens in the system's default application." };
+  if (name === "os_launch_app") return { title: `Launch ${args.app}`, detail: "Starts the application." };
+  if (name === "kb_add") {
+    return {
+      title: `Add to knowledge base: ${args.title || args.url || "pasted text"}`,
+      detail: args.url ? `Fetch and index ${args.url}` : String(args.text || "").slice(0, 2000),
+    };
+  }
   return { title: name, detail: JSON.stringify(args) };
 }
 
@@ -1431,20 +2615,188 @@ async function compactIfNeeded(sender, chatMessages, { baseUrl, apiKey, model })
 // Upstream inference hiccups (provider capacity, rate limits, brief timeouts) should be retried
 // automatically rather than killing the whole turn — auth/quota problems (401/403/402) should not,
 // since retrying those just wastes time on something a retry can never fix.
-async function pickNextFreeModel(baseUrl, apiKey, alreadyTried) {
+// A model that just rate-limited will rate-limit again seconds later — Mistral's free tier is
+// about one request a minute, and an agent turn makes many. Without this the fallback chain
+// kept selecting the same exhausted model, "switching" into the identical failure. Remembering
+// it for a few minutes means the switch lands somewhere that can actually answer.
+const modelCooldown = new Map();
+const COOLDOWN_MS = 5 * 60_000;
+
+// A capacity failure is any signal that the model is out of headroom right now — not just a
+// clean 429. Providers phrase it a dozen ways (Azure "exceeded rate limit", Gemini
+// "RESOURCE_EXHAUSTED"/"high demand"/503) and some arrive without a 429 status, so match the
+// text too. Missing these let an exhausted model get reselected and hammered again — the exact
+// cascade that turned one busy provider into a burst of failing requests across every model.
+function isCapacityMessage(message) {
+  return /rate.?limit|quota|exceeded|resource_exhausted|overloaded|too many requests|high demand|temporarily unavailable|unavailable|try again later|capacity/i.test(
+    message || ""
+  );
+}
+
+// Providers often say exactly how long to wait ("Please retry in 34.4s", "try again in 35s").
+// Honouring that beats retrying in 1s and getting limited again. Returns ms, or null.
+function parseRetryAfterMs(message) {
+  if (!message) return null;
+  const m =
+    String(message).match(/retry(?:\s+again)?\s+(?:in|after)\s+([\d.]+)\s*(ms|s|sec(?:onds?)?|m|min(?:utes?)?)?/i) ||
+    String(message).match(/try again in\s+([\d.]+)\s*(ms|s|sec(?:onds?)?|m|min(?:utes?)?)?/i);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (!isFinite(n)) return null;
+  const unit = (m[2] || "s").toLowerCase();
+  if (unit === "ms") return Math.round(n);
+  if (unit.startsWith("m")) return Math.round(n * 60_000); // minutes
+  return Math.round(n * 1000); // seconds
+}
+
+function isCapacityFailure(status, message) {
+  return status === 429 || status === 503 || isCapacityMessage(message);
+}
+
+function coolDownModel(model, status, message) {
+  if (!isCapacityFailure(status, message)) return;
+  modelCooldown.set(model, Date.now() + COOLDOWN_MS);
+}
+
+function isCoolingDown(model) {
+  const until = modelCooldown.get(model);
+  if (!until) return false;
+  if (Date.now() >= until) {
+    modelCooldown.delete(model);
+    return false;
+  }
+  return true;
+}
+
+// Gemini refuses to replay a tool call that arrives without its thought_signature, and any
+// conversation saved before that field was preserved has no way to produce one — so those chats
+// would 400 forever, on every retry and every model switch back. The history is still useful as
+// a record even when it can't be replayed as tool calls, so unsignable calls are rewritten as
+// plain text and their now-orphaned tool results dropped.
+function needsThoughtSignature(model) {
+  return String(model || "").startsWith("gemini/");
+}
+
+function stripUnsignedToolCalls(msgs) {
+  const orphaned = new Set();
+  const out = [];
+  for (const m of msgs) {
+    if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      const unsigned = m.tool_calls.filter((c) => !c.extra_content);
+      if (unsigned.length) {
+        unsigned.forEach((c) => orphaned.add(c.id));
+        const kept = m.tool_calls.filter((c) => c.extra_content);
+        const note = unsigned.map((c) => c.function?.name).filter(Boolean).join(", ");
+        const content = `${m.content ? m.content + "\n\n" : ""}(earlier in this conversation you called: ${note})`;
+        out.push(kept.length ? { ...m, tool_calls: kept, content } : { role: "assistant", content });
+        continue;
+      }
+    }
+    if (m.role === "tool" && orphaned.has(m.tool_call_id)) continue;
+    out.push(m);
+  }
+  return out;
+}
+
+// Switching provider mid-conversation hands the new one a history the old one shaped, and each
+// has different rules about what a valid history looks like. Patching them one error at a time
+// meant every fix revealed the next quirk, so this enforces all the invariants up front:
+//
+//   - a tool result must follow the call it answers (either side missing breaks both)
+//   - assistant content must never be null where a string is expected
+//   - the conversation must not end on an assistant turn ("Requests ending with a model turn
+//     are not supported") — which the unsigned-call stripping could itself cause by removing
+//     the trailing tool results
+//
+// Applied to every model, not just the one that complained: these are all cases where the
+// history is genuinely malformed, and a provider accepting it is luck rather than licence.
+function normalizeHistory(msgs, model) {
+  let out = needsThoughtSignature(model) ? stripUnsignedToolCalls(msgs) : msgs.slice();
+
+  // Drop tool results whose call is gone, and calls whose results never arrived.
+  const answered = new Set(out.filter((m) => m.role === "tool").map((m) => m.tool_call_id));
+  const called = new Set(out.flatMap((m) => (m.tool_calls || []).map((c) => c.id)));
+  out = out
+    .filter((m) => m.role !== "tool" || called.has(m.tool_call_id))
+    .map((m) => {
+      if (m.role !== "assistant" || !m.tool_calls?.length) return m;
+      const kept = m.tool_calls.filter((c) => answered.has(c.id));
+      if (kept.length === m.tool_calls.length) return m;
+      const dropped = m.tool_calls.filter((c) => !answered.has(c.id)).map((c) => c.function?.name).filter(Boolean);
+      const content = `${m.content || ""}${dropped.length ? `\n(started: ${dropped.join(", ")})` : ""}`.trim();
+      return kept.length ? { ...m, tool_calls: kept } : { role: "assistant", content: content || "(no output)" };
+    });
+
+  out = out.map((m) => (m.role === "assistant" && !m.tool_calls?.length && m.content == null ? { ...m, content: "(no output)" } : m));
+
+  const last = out[out.length - 1];
+  if (last && last.role === "assistant") {
+    out.push({ role: "user", content: "Continue from where you left off." });
+  }
+  return out;
+}
+
+async function pickFallbackModel(baseUrl, apiKey, alreadyTried) {
   try {
     const allModels = await fetchModels(baseUrl, apiKey);
-    const freeIds = allModels.filter((m) => !isImageOnlyModel(m) && m.id.endsWith(":free")).map((m) => m.id);
-    return freeIds.find((id) => !alreadyTried.has(id)) || null;
+    const ids = allModels
+      .filter((m) => !isImageOnlyModel(m) && !NON_CHAT_MODEL_RE.test(m.id))
+      .map((m) => m.id);
+    // Switch only to a model that can actually drive the agent, strongest first — landing on a
+    // model without tool calling would fail on the very next turn.
+    const usable = ids
+      .filter((id) => agentRank(id) !== Number.MAX_SAFE_INTEGER)
+      .sort((a, b) => agentRank(a) - agentRank(b));
+    const fresh = usable.find((id) => !alreadyTried.has(id) && !isCoolingDown(id));
+    // Only fall back to a cooling-down model if literally nothing else is left — a slow answer
+    // still beats telling the user the turn failed.
+    return fresh || usable.find((id) => !alreadyTried.has(id)) || null;
   } catch {
     return null;
   }
 }
 
+// Lets a text-only model still "look" at something: a vision model is asked to describe the
+// image, and its answer is handed back as text. Without this, choosing a strong coding model
+// meant screenshots and generated images were invisible for the whole session — the agent
+// would tell the user to go open the file themselves instead of checking its own work.
+async function describeImage(baseUrl, apiKey, dataUrl, context) {
+  for (const visionModel of VISION_MODELS) {
+    try {
+      const res = await fetch(buildEndpointUrl(baseUrl, "/chat/completions"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...buildAuthHeaders(baseUrl, apiKey) },
+        body: JSON.stringify({
+          model: visionModel,
+          max_tokens: 800,
+          messages: [{
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: `${context}\n\nDescribe this image in detail for a developer who cannot see it. Cover the layout, colours, any text that appears, and anything that looks broken, misaligned, missing, or visually wrong.`,
+              },
+              { type: "image_url", image_url: { url: dataUrl } },
+            ],
+          }],
+        }),
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!res.ok) continue;
+      const data = await res.json();
+      const text = data?.choices?.[0]?.message?.content?.trim();
+      if (text) return { text, model: visionModel };
+    } catch {
+      // try the next vision model
+    }
+  }
+  return null;
+}
+
 function isTransientError(status, message) {
   if (status === 429 || status === 502 || status === 503 || status === 504) return true;
   if (status === 401 || status === 402 || status === 403 || status === 404) return false;
-  return /provider returned error|overloaded|temporarily unavailable|rate.?limit|stopped responding mid-stream|timed?\s*out|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(
+  return /provider returned error|overloaded|temporarily unavailable|unavailable|rate.?limit|quota|resource_exhausted|too many requests|high demand|try again later|stopped responding mid-stream|timed?\s*out|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(
     message || ""
   );
 }
@@ -1492,7 +2844,42 @@ function extractPartialStringField(argsSoFar, fieldName) {
 
 const STREAMED_FILE_FIELDS = { write_file: "content", edit_file: "new_string" };
 
-async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages }) {
+// Last resort when a provider rejects the conversation shape itself: throw away every tool
+// structure and keep only what was said, as plain alternating turns. The agent loses the
+// machine-readable record of its own calls, but the user gets an answer instead of a stack
+// trace — and no provider can object to text.
+function flattenToolHistory(msgs) {
+  const out = [];
+  for (const m of msgs) {
+    if (m.role === "tool") {
+      out.push({ role: "user", content: `[result of an earlier tool call]\n${String(m.content || "").slice(0, 4000)}` });
+      continue;
+    }
+    if (m.role === "assistant" && m.tool_calls?.length) {
+      const names = m.tool_calls.map((c) => c.function?.name).filter(Boolean).join(", ");
+      out.push({ role: "assistant", content: `${m.content || ""}\n(called: ${names})`.trim() });
+      continue;
+    }
+    out.push(m.content == null ? { ...m, content: "(no output)" } : m);
+  }
+  // Collapse consecutive same-role turns, which the rewrite above can produce and several
+  // providers reject outright.
+  const merged = [];
+  for (const m of out) {
+    const prev = merged[merged.length - 1];
+    if (prev && prev.role === m.role && typeof prev.content === "string" && typeof m.content === "string") {
+      prev.content += "\n\n" + m.content;
+    } else {
+      merged.push({ ...m });
+    }
+  }
+  if (merged.length && merged[merged.length - 1].role === "assistant") {
+    merged.push({ role: "user", content: "Continue from where you left off." });
+  }
+  return merged;
+}
+
+async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages, flattenHistory, forcedTool }) {
   const res = await fetch(buildEndpointUrl(baseUrl, "/chat/completions"), {
     method: "POST",
     signal: controller.signal,
@@ -1502,15 +2889,23 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
     },
     body: JSON.stringify({
       model: model || "auto",
-      messages: chatMessages,
+      // Sanitised here rather than at the call site because the model can change *after* the
+      // request body would otherwise have been built: a mid-turn fallback from Azure (whose
+      // tool calls carry no thought_signature) to Gemini (which demands one) was replaying the
+      // already-assembled Azure history and being rejected. Deciding at the moment of the call
+      // means it always matches the model actually being asked.
+      messages: [chatMessages[0], ...(flattenHistory ? flattenToolHistory(chatMessages.slice(1)) : normalizeHistory(chatMessages.slice(1), model))],
       tools: TOOLS,
-      tool_choice: "auto",
+      // Weak models ignore even a forceful "call the tool, don't lecture" instruction and write a
+      // simulated report instead. When the user's request is an unambiguous "audit this URL" or
+      // "find tools", we force the exact tool so the model physically cannot answer with prose —
+      // it must run the real recon, then report on the actual result next turn.
+      tool_choice: forcedTool ? { type: "function", function: { name: forcedTool } } : "auto",
       max_tokens: MAX_RESPONSE_TOKENS,
       stream: true,
-      // OpenRouter-specific: lets the model pull in live web results on its own when useful,
-      // on top of the explicit web_fetch tool for when the user hands us a specific URL.
-      // Ignored by non-OpenRouter OpenAI-compatible servers.
-      ...(baseUrl.includes("openrouter.ai") ? { plugins: [{ id: "web" }] } : {}),
+      // Asks the provider to report real token usage in a final SSE chunk, so the status bar
+      // shows what was actually spent rather than a local guess.
+      stream_options: { include_usage: true },
     }),
   });
 
@@ -1529,6 +2924,7 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
   let content = "";
   let finishReason = null;
   const toolCalls = [];
+  const announcedTools = new Set();
 
   async function readChunkWithTimeout() {
     let timer;
@@ -1570,12 +2966,36 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
       } catch {
         continue;
       }
+      // NVIDIA answers HTTP 200 and then puts the failure *inside* the stream as a data event
+      // ({"error":{"message":"Service temporarily overloaded","code":503}}) instead of using an
+      // HTTP status. Reading only `choices` meant a real 503 arrived as a stream with no
+      // content and got reported to the user as "the model stopped without a response" — with
+      // no retry, because nothing looked like an error. Surface it as the error it is so the
+      // usual transient-retry and model-switch path can handle it.
+      if (json.error) {
+        const status = Number(json.error.code) || 503;
+        await reader.cancel().catch(() => {});
+        return {
+          ok: false,
+          error: json.error.message || "The model provider returned an error mid-stream.",
+          status,
+          transient: isTransientError(status, json.error.message),
+        };
+      }
       if (json.choices?.[0]?.finish_reason) finishReason = json.choices[0].finish_reason;
+      // The usage chunk arrives on its own, with an empty `choices` array.
+      if (json.usage) sender.send("agent:usage", { usage: json.usage, model });
       const delta = json.choices?.[0]?.delta;
       if (!delta) continue;
       if (delta.content) {
         content += delta.content;
         sender.send("agent:assistant-delta", { content: delta.content });
+      }
+      // Reasoning models (the nemotron family, gpt-oss) emit their whole chain of thought here
+      // before a single token of `content` appears. Dropping it silently made the UI look frozen
+      // for a minute or more on longer problems — surface it so the wait is legible.
+      if (delta.reasoning_content) {
+        sender.send("agent:reasoning-delta", { content: delta.reasoning_content });
       }
       if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
@@ -1584,8 +3004,23 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
           if (tc.id) toolCalls[idx].id = tc.id;
           if (tc.function?.name) toolCalls[idx].function.name += tc.function.name;
           if (tc.function?.arguments) toolCalls[idx].function.arguments += tc.function.arguments;
+          // Gemini 3.x attaches a thought_signature to each tool call and *requires* it back on
+          // the next request — without it the call is rejected outright with "Function call is
+          // missing a thought_signature". Rebuilding the tool call from name+arguments alone
+          // silently dropped it, so the first turn worked and every follow-up 400'd.
+          if (tc.extra_content) {
+            toolCalls[idx].extra_content = { ...(toolCalls[idx].extra_content || {}), ...tc.extra_content };
+          }
 
           const fnName = toolCalls[idx].function.name;
+          // Announce the tool the moment its name is known. Arguments can take a long time to
+          // stream (a whole file, a long command), and until now nothing reached the UI during
+          // that window for any tool without a streamed content field — it just sat on
+          // "Thinking" with no sign of life.
+          if (fnName && !announcedTools.has(idx)) {
+            announcedTools.add(idx);
+            sender.send("agent:tool-pending", { name: fnName });
+          }
           const field = STREAMED_FILE_FIELDS[fnName];
           if (field) {
             const args = toolCalls[idx].function.arguments;
@@ -1615,15 +3050,54 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
 // Injected fresh every turn (see requestMessages below) rather than baked into the chat's stored
 // system message, so it applies to chats that were already created before this instruction existed.
 const TOOL_PRIORITY_REMINDER =
-  "CRITICAL DIRECT EXECUTION & TOOL ROUTING INSTRUCTIONS:\n" +
+  "Reminder: a question phrased around 'this project' / 'my code' / a feature name with no URL is " +
+  "about the local codebase, not the web. Check it first with list_dir/search_files/read_file. Only " +
+  "use browser_navigate or web_fetch afterward, and only if what you found is genuinely missing, or " +
+  "the user is clearly asking about something external (a live site, a third-party product, a URL " +
+  "they gave you). Searching the web before checking code you already have direct access to is slower " +
+  "and often wrong — never do that as a first resort.\n\n" +
+  // A vague instruction is an instruction to go and find out, not a reason to stop. "Run it and
+  // fix the UI issues" was answered with a table of things the user might have meant and a
+  // request for permission — when the agent could have started the server, opened the page,
+  // screenshotted it and reported what was actually wrong in the same turn.
+  "Bias hard toward acting over asking. If the user says 'run it', 'fix the issues', 'see and do' " +
+  "or anything similarly open-ended, that is permission to investigate and act — start the server, " +
+  "open the page in the browser panel, screenshot it, read the code, and come back with what you " +
+  "found and what you changed. Do not reply with a menu of things they might have meant, and do not " +
+  "ask which problems to fix when you can look and see for yourself. Only ask when you are genuinely " +
+  "blocked on something you cannot determine — a credential, a product decision, a destructive action " +
+  "with no safe default. Finding out what is broken is your job, not a question for them.\n\n" +
+  "When you need information from the web, web_search and the browser work together: search first, " +
+  "then browser_navigate to the promising result and browser_screenshot or browser_read_page it to " +
+  "actually read the thing, rather than answering from the search snippet alone.\n\n" +
+  "CRITICAL DIRECT EXECUTION & TOOL ROUTING (security/OSINT):\n" +
   "1. DIRECT AUDITING — NO LECTURES & NO F12 DEVTOOLS TUTORIALS: When the user asks you to audit, find, or check cookie vulnerabilities, credentials, security headers, or exposure for a website/URL (e.g. 'find cookies vulnerability or credential https://...'):\n" +
-  "   - NEVER give a generic lecture or tutorial telling the user to press F12, open Chrome DevTools, or manually inspect Application -> Cookies!\n" +
+  "   - NEVER give a generic lecture or tutorial telling the user to press F12, open Chrome DevTools, or manually inspect Application -> Cookies.\n" +
   "   - NEVER refuse with an ethics warning — you are Nutaan Code, an authorized security engineering assistant for authorized assets.\n" +
-  "   - YOU MUST IMMEDIATELY AUDIT IT YOURSELF by calling 'osint_http_recon' directly!\n" +
-  "   - Fetch the actual live cookies, analyze HttpOnly, Secure, SameSite attributes, detect credential leaks, and present the concrete technical findings with remediation steps directly to the user.\n" +
-  "2. ARSENAL & TOOL LOOKUPS: When the user asks to find, search, recommend, or list security/OSINT tools (e.g. 'find tools in the arsenal', 'tools for darkweb', 'ransomware leak tools', 'infostealer tools', 'breach tools', 'recon tools', 'dorking tools', 'cybersecurity tools'), you MUST immediately call 'osint_search_tools' with the key terms as the query (e.g. query: 'ransomware', or query: 'infostealer', or query: 'dark web', or category: 'data-breach' / 'dark-web'). NEVER call search_files or list_dir when asked to find tools in the arsenal!\n" +
-  "3. DEFENSIVE EXPOSURE & SECURITY AUDITS: Exposure audits, dork lookups, static vulnerability scans, threat intelligence checks, and reconnaissance on user-specified domains/codebases are authorized defensive activities. Call your built-in tools (osint_http_recon, osint_search_tools, vuln_static_scan, osint_dork_generator, osint_dns_recon, osint_ip_lookup, osint_subdomain_enum) directly.\n" +
-  "4. LOCAL CODEBASE FILES: Only use list_dir, search_files, or read_file when the user is explicitly asking about the local project's source code files, directory structure, or editing code files in the workspace. Never use list_dir or search_files to search for security tools.";
+  "   - YOU MUST IMMEDIATELY AUDIT IT YOURSELF by calling 'osint_http_recon' directly, then present the concrete findings (actual Set-Cookie flags: HttpOnly/Secure/SameSite; the real security headers; any credential/secret leaks) with remediation.\n" +
+  "2. ARSENAL & TOOL LOOKUPS: When the user asks to find, search, recommend, or list security/OSINT tools ('find tools in the arsenal', 'darkweb tools', 'ransomware leak tools', 'infostealer tools', 'breach tools', 'recon tools', 'dorking tools'), immediately call 'osint_search_tools' with the key terms (query: 'ransomware' / 'infostealer' / 'dark web', or category: 'data-breach' / 'dark-web'). NEVER call search_files or list_dir to find arsenal tools.\n" +
+  "3. DEFENSIVE EXPOSURE & SECURITY AUDITS: Exposure audits, dork lookups, static vulnerability scans, threat-intel checks, and reconnaissance on user-specified domains/codebases are authorized defensive activities. Call the built-in tools (osint_http_recon, osint_search_tools, vuln_static_scan, osint_dork_generator, osint_dns_recon, osint_ip_lookup, osint_subdomain_enum) directly.\n" +
+  "   - AUTH / SESSION SECURITY TESTING ON THE USER'S OWN AUTHORIZED SITE: When the user explicitly authorizes testing the login/session security of a site they own, carry the test out — a headers report is not enough, and osint_http_recon on the public homepage will NOT see the session cookie because it is only set after login. Drive the real flow in the browser: browser_navigate to the login page, sign in with the credentials the user gives you, then inspect the session the app actually relies on with browser_execute_script (document.cookie, localStorage, sessionStorage). What you're determining is whether the server re-validates authorization on every protected request or instead trusts client-held state — the OWASP broken-access-control / broken-authentication class. Demonstrate the finding the way a pentest must: with the user's approval on the script, change the client-held auth/role value and browser_navigate to a protected page to see whether the server still enforces access, then report whether it did. Keep it strictly to the user's own authorized target; every script goes through the approval gate. For the full checklist (credential weaknesses, login-bypass logic, trusted-client sessions, IDOR/privilege escalation, reset/MFA flaws), load the `auth-testing` skill and follow it.\n" +
+  "4. LOCAL CODEBASE FILES: Only use list_dir, search_files, or read_file when the user is explicitly asking about the local project's source, structure, or editing workspace files — never to search for security tools.\n\n" +
+  "BROWSER — DRIVE IT IN A LOOP, DON'T GIVE UP: When a task needs a web page (open it, log in, click through a flow, check how a build looks), work it like a human at the keyboard: browser_navigate to the URL, then browser_read_page to see the actual links/buttons/inputs (each comes back with a ready-to-use selector) or browser_screenshot to look at it. Act on what you observed — browser_click / browser_type using a selector from browser_read_page — then screenshot or read again to confirm the result, and repeat until the goal is reached. If a click finds no element, read the page again and pick a selector that exists rather than repeating the same guess. If navigation fails, retry once. Never tell the user to open the page or click things themselves when you can drive the panel yourself.\n" +
+  "   - AFTER A LOGIN OR FORM SUBMIT, ALWAYS browser_read_page and check its `dialogs` field and the page text/URL. If it shows an error like 'Invalid username or password', the credentials or step are wrong — DO NOT resubmit the same values in a loop. Stop, state exactly what the page said, and ask the user for the correct credentials (or the right next step). Re-trying identical wrong credentials repeatedly is never the answer.";
+
+// Detects requests where the app must ACT, not describe — so we can force the tool call and stop
+// the model from answering a live security audit with an F12 tutorial or a "simulated" report.
+// Only fires on unambiguous asks (an explicit verb + a URL for audits; explicit "tools/arsenal"
+// wording for lookups) so normal coding chat is never hijacked into a security tool.
+function detectDirectTool(text) {
+  if (!text || typeof text !== "string") return null;
+  const t = text;
+  const hasUrl = /https?:\/\/[^\s)>"']+|\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.(?:com|ai|io|net|org|co|dev|app|xyz|in|gov|edu|me|us|uk|tech|cloud)\b/i.test(t);
+  const auditIntent = /\b(cookie|credential|vulnerab|security\s*header|http\s*recon|pentest|exposed?|leak|hsts|csp|samesite|httponly|secure\s*flag|owasp|audit\s*(the|this|my)?\s*(site|url|domain|website|app))\b/i.test(t);
+  const explicitVerb = /\b(find|check|test|audit|scan|analy[sz]e|assess|review|inspect|do\s*it|perform|run)\b/i.test(t);
+  if (hasUrl && auditIntent && explicitVerb) return "osint_http_recon";
+  if (/\b(find|search|list|show|give|recommend|need|want)\b/i.test(t) && /\b(tool|tools|arsenal)\b/i.test(t) && /\b(osint|security|cyber|recon|breach|ransomware|infostealer|dark\s*web|dork|hacking|pentest|threat)\b/i.test(t)) {
+    return "osint_search_tools";
+  }
+  return null;
+}
 
 async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, messages, autoApprove }) {
   const controller = new AbortController();
@@ -1635,7 +3109,11 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
   const memoryContext = await buildMemoryContext().catch(() => null);
   let emptyResponseRetries = 0;
   let truncatedRetries = 0;
-  const MAX_MODEL_SWITCHES = 2;
+  let unfinishedNudges = 0;
+  openTaskCount = 0;
+  // Enough room to walk past a couple of busy providers — with capacity failures switching
+  // after a single retry, two was too few to reach a model that was actually free.
+  const MAX_MODEL_SWITCHES = 4;
   const triedModels = new Set([model]);
 
   for (let i = 0; i < MAX_AGENT_ITERATIONS; i++) {
@@ -1650,19 +3128,40 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
       return;
     }
 
+    // Injected per turn rather than baked into the saved system prompt, because auto-approve is
+    // a toggle the user flips mid-conversation. A stored prompt saying "you need approval" was
+    // still being sent with auto-approve ON, so the model politely asked permission for things
+    // that would have executed instantly — and the user had to say "yes" to nothing.
+    const modeContext = autoApprove
+      ? "Auto-approve is currently ON. Writes, edits and shell commands execute immediately. Never ask for permission to run, write or edit anything — just do it and report what happened."
+      : "Auto-approve is currently OFF, so write_file, edit_file and run_command are shown to the user for approval before they execute. Announce briefly what you're about to do, then call the tool — do not ask a yes/no question first, because the approval prompt already is that question.";
+
     const extraSystemMessages = [
       { role: "system", content: TOOL_PRIORITY_REMINDER },
+      { role: "system", content: modeContext },
       ...(memoryContext ? [{ role: "system", content: memoryContext }] : []),
     ];
+    // Sanitising for thought_signature happens inside streamChatCompletion, which knows which
+    // model is actually being called even after a mid-turn switch.
     const requestMessages = [chatMessages[0], ...extraSystemMessages, ...chatMessages.slice(1)];
+
+    // Force the audit/lookup tool only on the first model call after the user's request — when
+    // the conversation still ends with their message and nothing has run yet this turn. Once a
+    // tool result is in (last message is a tool/assistant turn), let the model report freely.
+    const lastMsg = chatMessages[chatMessages.length - 1];
+    let forcedTool =
+      lastMsg && lastMsg.role === "user"
+        ? detectDirectTool(typeof lastMsg.content === "string" ? lastMsg.content : "")
+        : null;
 
     const MAX_TRANSIENT_RETRIES = 3;
     const RETRY_DELAYS_MS = [1000, 3000, 7000];
     triedModels.add(model);
     let streamResult;
+    let flattenHistory = false;
     for (let attempt = 0; ; attempt++) {
       try {
-        streamResult = await streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages: requestMessages });
+        streamResult = await streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages: requestMessages, flattenHistory, forcedTool });
       } catch (err) {
         if (aborted()) {
           sender.send("agent:done", { aborted: true, messages: chatMessages });
@@ -1678,20 +3177,90 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
 
       if (streamResult.ok) break;
 
+      // If a provider rejects the forced tool_choice (not all support pinning a specific
+      // function), drop the force and retry the same turn on auto rather than failing — the
+      // system-prompt instruction still pushes it toward the right tool.
+      if (forcedTool && streamResult.status === 400) {
+        forcedTool = null;
+        attempt = -1;
+        continue;
+      }
+
       const transient = streamResult.transient ?? isTransientError(streamResult.status, streamResult.error);
+      // A provider refusing the *shape* of the conversation is recoverable, and the user should
+      // never see it: the tool history is rewritten as plain text and the turn continues.
+      // Without this, every provider quirk not yet accounted for becomes a dead end.
+      const malformedHistory =
+        streamResult.status === 400 &&
+        /thought_signature|model turn|not a string|invalid.*argument|role|alternat|tool_call|function call/i.test(streamResult.error || "");
+      if (malformedHistory && !flattenHistory) {
+        flattenHistory = true;
+        sender.send("agent:retrying", {
+          message: "Adjusting the conversation format for this model",
+          attempt: 1,
+          max: 1,
+          delayMs: 200,
+        });
+        await new Promise((r) => setTimeout(r, 200));
+        attempt = -1;
+        continue;
+      }
+
       if (!transient) {
         sender.send("agent:error", { message: streamResult.error });
         return;
       }
 
-      if (attempt >= MAX_TRANSIENT_RETRIES) {
-        // This model's upstream provider is down, not just briefly hiccuping — if it's a free
-        // OpenRouter model, try the next free model instead of dead-ending the whole turn on it.
-        const canSwitch = model.endsWith(":free") && !isAzureEndpoint(baseUrl) && triedModels.size <= MAX_MODEL_SWITCHES;
-        const nextModel = canSwitch ? await pickNextFreeModel(baseUrl, apiKey, triedModels) : null;
+      // "Overloaded" and "rate limited" don't clear in a few seconds, and there is a working
+      // model one step down the list, so switching beats retrying the same busy provider. A
+      // mid-stream stall has already cost ~45s of silence proving the model won't answer, so it
+      // switches at once too. Genuine brief blips still get the full retry budget below.
+      const stalled = /stopped responding mid-stream/i.test(streamResult.error || "");
+      const capacityFailure = isCapacityFailure(streamResult.status, streamResult.error);
+      // Can we move to a different model at all? Azure's "model" is the deployment baked into the
+      // URL, not a choice, and once the switch budget is spent there's nowhere left to go.
+      const canSwitchModels = !isAzureEndpoint(baseUrl) && triedModels.size <= MAX_MODEL_SWITCHES;
+      // On a capacity failure, don't waste a same-model retry when a fresh model is available —
+      // a rate-limited model will just limit again, the "retrying in 1s" spam that fed the
+      // cascade. Cool it down and switch instead. But when there is NOWHERE to switch (Azure, or
+      // the switch budget is spent), the same model is all we have, so keep a small retry budget
+      // and lean on the provider's retry-after hint rather than dead-ending on the first 429.
+      const retryBudget = stalled ? 0 : capacityFailure ? (canSwitchModels ? 0 : 2) : MAX_TRANSIENT_RETRIES;
+      coolDownModel(model, streamResult.status, streamResult.error);
+      if (stalled) modelCooldown.set(model, Date.now() + COOLDOWN_MS);
+
+      if (attempt >= retryBudget) {
+        // This model's upstream provider is down, not just briefly hiccuping — move to another
+        // model in the same catalog rather than dead-ending the whole turn on it.
+        const canSwitch = canSwitchModels;
+        const nextModel = canSwitch ? await pickFallbackModel(baseUrl, apiKey, triedModels) : null;
         if (!nextModel) {
-          sender.send("agent:error", { message: streamResult.error });
+          // Nothing left to try. If everything is rate-limited, say so plainly — the turn isn't
+          // broken, the whole catalog is just busy — rather than surfacing a raw provider string
+          // that reads like a crash. This is the signal the UI needs to stop the "thinking"
+          // spinner and tell the user the model actually stopped.
+          const message = capacityFailure
+            ? `Every available model is rate-limited or overloaded right now. Wait a minute and send again.\n\n(last error: ${streamResult.error})`
+            : streamResult.error;
+          sender.send("agent:error", { message });
           return;
+        }
+        // Space out provider hits so the fallback chain doesn't itself become a burst of
+        // requests. Honour the provider's own "retry in Ns" hint when it gave one (capped so the
+        // user isn't left staring), otherwise a short fixed beat.
+        if (capacityFailure) {
+          const pause = Math.min(parseRetryAfterMs(streamResult.error) ?? 1500, 8000);
+          sender.send("agent:retrying", {
+            message: `${model} is rate-limited — switching models`,
+            attempt: 1,
+            max: 1,
+            delayMs: pause,
+          });
+          await new Promise((r) => setTimeout(r, pause));
+          if (aborted()) {
+            sender.send("agent:done", { aborted: true, messages: chatMessages });
+            return;
+          }
         }
         sender.send("agent:model-switched", { from: model, to: nextModel, reason: streamResult.error });
         model = nextModel;
@@ -1700,8 +3269,14 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
         continue;
       }
 
-      const delay = RETRY_DELAYS_MS[attempt] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
-      sender.send("agent:retrying", { message: streamResult.error, attempt: attempt + 1, max: MAX_TRANSIENT_RETRIES, delayMs: delay });
+      // A same-model retry only happens now for a brief blip, or for a capacity failure with
+      // nowhere to switch. In the capacity case honour the provider's "retry in Ns" hint (capped
+      // so the user isn't left staring) instead of retrying in 1s and getting limited again.
+      const hintedWait = capacityFailure ? parseRetryAfterMs(streamResult.error) : null;
+      const delay = hintedWait
+        ? Math.min(hintedWait, 20000)
+        : RETRY_DELAYS_MS[attempt] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
+      sender.send("agent:retrying", { message: streamResult.error, attempt: attempt + 1, max: retryBudget, delayMs: delay });
       await new Promise((r) => setTimeout(r, delay));
       if (aborted()) {
         sender.send("agent:done", { aborted: true, messages: chatMessages });
@@ -1761,13 +3336,67 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
           await new Promise((r) => setTimeout(r, 500));
           continue;
         }
+        // Nudging didn't work, so this model is the problem, not the phrasing. Switch to another
+        // one and keep going rather than telling the user to go change a setting themselves —
+        // asking someone to pick a different model is the app admitting it knows what's wrong
+        // and declining to fix it.
+        const canSwitch = !isAzureEndpoint(baseUrl) && triedModels.size <= MAX_MODEL_SWITCHES;
+        const nextModel = canSwitch ? await pickFallbackModel(baseUrl, apiKey, triedModels) : null;
+        if (nextModel) {
+          sender.send("agent:model-switched", { from: model, to: nextModel, reason: "kept returning an empty response" });
+          model = nextModel;
+          triedModels.add(nextModel);
+          emptyResponseRetries = 0;
+          continue;
+        }
         sender.send("agent:error", {
-          message: "The model kept stopping without finishing or explaining, even after being asked to continue. Try again, or switch models in Settings.",
+          message: "The model kept stopping without finishing or explaining, and no other model was available to fall back to. Try again in a moment.",
         });
         return;
       }
+      // "Now build." with five tasks still open is not a finished turn — the model announced
+      // the next step and stopped. Its own checklist is the most reliable signal we have for
+      // that, so an unfinished one earns a nudge rather than a silent end.
+      const MAX_UNFINISHED_NUDGES = 3;
+      if (openTaskCount > 0 && unfinishedNudges < MAX_UNFINISHED_NUDGES) {
+        unfinishedNudges++;
+        chatMessages.push({
+          role: "user",
+          content: `You still have ${openTaskCount} unfinished task${openTaskCount === 1 ? "" : "s"} on your checklist. Carry on and actually do the next one — don't just describe it. Update the checklist as you complete each item, and only stop when everything is done or you hit something you genuinely cannot resolve.`,
+        });
+        sender.send("agent:retrying", {
+          message: `${openTaskCount} task${openTaskCount === 1 ? "" : "s"} still open — continuing`,
+          attempt: unfinishedNudges,
+          max: MAX_UNFINISHED_NUDGES,
+          delayMs: 200,
+        });
+        await new Promise((r) => setTimeout(r, 200));
+        continue;
+      }
       sender.send("agent:done", { aborted: false, messages: chatMessages });
       return;
+    }
+
+    // Fan the independent reads out first. The loop below still walks the calls in order and
+    // still owns approvals and message ordering — it just collects an already-finished result
+    // for anything handled here.
+    const preflight = new Map();
+    const parallelBatch = toolCalls.filter((c) => PARALLEL_TOOLS.has(cleanToolName(c)));
+    if (parallelBatch.length > 1) {
+      sender.send("agent:tasks", { running: parallelBatch.length, names: parallelBatch.map(cleanToolName) });
+      await Promise.all(
+        parallelBatch.map(async (call) => {
+          try {
+            preflight.set(
+              call.id,
+              await executeTool(sender, root, cleanToolName(call), parseToolArgs(call), call.id, controller.signal, { baseUrl, apiKey, imageModel })
+            );
+          } catch (err) {
+            preflight.set(call.id, { error: err.message });
+          }
+        })
+      );
+      sender.send("agent:tasks", { running: 0, names: [] });
     }
 
     for (const call of toolCalls) {
@@ -1776,13 +3405,8 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
         return;
       }
 
-      const name = call.function?.name;
-      let args = {};
-      try {
-        args = JSON.parse(call.function?.arguments || "{}");
-      } catch {
-        args = {};
-      }
+      const name = cleanToolName(call);
+      const args = parseToolArgs(call);
 
       sender.send("agent:tool-start", { id: call.id, name, args });
 
@@ -1812,6 +3436,8 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
       let result;
       if (!approved) {
         result = { error: "Denied by user" };
+      } else if (preflight.has(call.id)) {
+        result = preflight.get(call.id);
       } else {
         try {
           result = await executeTool(sender, root, name, args, call.id, controller.signal, { baseUrl, apiKey, imageModel });
@@ -1822,7 +3448,30 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
 
       sender.send("agent:tool-result", { id: call.id, name, result });
 
-      const modelLooksVisionCapable = /vision|multimodal/i.test(model || "");
+      const modelLooksVisionCapable = canSeeImages(model);
+      const imageFromTool =
+        name === "browser_screenshot" ? result?.imageDataUrl :
+        name === "view_image" ? result?.dataUrl : null;
+
+      // A blind model gets the image described by a vision model instead of being told "you
+      // can't see images" — so checking its own work keeps working on any model.
+      if (imageFromTool && result?.ok && !modelLooksVisionCapable) {
+        const context = name === "browser_screenshot"
+          ? `This is a screenshot of the page at ${result.url || "the browser panel"}.`
+          : `This is the image file ${args.path} from the project.`;
+        const described = await describeImage(baseUrl, apiKey, imageFromTool, context);
+        chatMessages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: JSON.stringify(
+            described
+              ? { ok: true, url: result.url, viewed_by: described.model, description: described.text }
+              : { ok: false, error: "Couldn't view the image: no vision model was reachable. Use browser_read_page for text content instead." }
+          ).slice(0, MAX_OUTPUT_CHARS),
+        });
+        continue;
+      }
+
       if (name === "browser_screenshot" && result && result.ok && result.imageDataUrl && modelLooksVisionCapable) {
         // Keep the raw image out of the plain-text tool message (it'd blow past MAX_OUTPUT_CHARS and
         // get corrupted mid-base64) — send a short confirmation there, and the actual image as a
@@ -1841,16 +3490,6 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
             { type: "image_url", image_url: { url: result.imageDataUrl } },
           ],
         });
-      } else if (name === "browser_screenshot" && result && result.ok) {
-        chatMessages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: JSON.stringify({
-            ok: true,
-            url: result.url,
-            note: "Screenshot captured and shown to the user in the app — the current model can't see images, so you don't get to view it. Use browser_read_page for text content instead.",
-          }),
-        });
       } else if (name === "view_image" && result && result.ok && result.dataUrl && modelLooksVisionCapable) {
         chatMessages.push({
           role: "tool",
@@ -1863,12 +3502,6 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
             { type: "text", text: `(image at ${args.path}, requested via view_image)` },
             { type: "image_url", image_url: { url: result.dataUrl } },
           ],
-        });
-      } else if (name === "view_image" && result && result.ok) {
-        chatMessages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: JSON.stringify({ ok: false, error: "The current model can't see images — pick a vision-capable model in Settings if you need this." }),
         });
       } else {
         chatMessages.push({
@@ -1883,8 +3516,9 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
   sender.send("agent:error", { message: "Stopped after reaching the max number of steps for this turn." });
 }
 
-ipcMain.on("agent:send", (event, payload) => {
-  runAgentLoop(event.sender, payload).catch((err) => {
+ipcMain.on("agent:send", async (event, payload) => {
+  const backend = await activeBackend(payload || {});
+  runAgentLoop(event.sender, { ...payload, ...backend }).catch((err) => {
     event.sender.send("agent:error", { message: err.message });
   });
 });

@@ -1,51 +1,53 @@
-<p align="center">
-  <img src="assets/logo.png" width="72" alt="Nutaan Code logo" />
-</p>
+<div align="center">
 
-<h1 align="center">Nutaan Code</h1>
-<p align="center">A personal AI coding agent desktop app, built in-house at Tecosys.</p>
+<img src="assets/logo.png" alt="Nutaan Code" width="96" />
 
-Reads your project's files, proposes edits, runs commands, generates real image assets, and can drive a built-in browser panel to actually test what it builds. Every file write, edit, and shell command stops for your approval first (or runs immediately if you turn on Auto-approve) — same permission model as Claude Code.
+# Nutaan Code
 
-## Demo
+**An AI coding agent that understands your whole project — and the rest of your computer.**
 
-[![Watch the demo](docs/demo-thumb.png)](docs/demo.mp4)
+Windows · macOS · Linux
 
-*Click the thumbnail to play the full recording.*
+</div>
 
-## Install — no terminal, no dev setup
+---
 
-1. Go to the [Releases page](https://github.com/Tecosys/Nutaan-Code/releases) and download the latest `Nutaan-Code-Setup-x.x.x.exe`.
-2. Run it — it installs like any Windows app (Start Menu + desktop shortcut).
+![Nutaan Code](docs/screenshots/01-chat.png)
 
-   > **Windows shows a blue "Windows protected your PC" screen?** That's expected — the installer isn't code-signed yet (that costs a paid certificate), so Windows doesn't recognize the publisher. It's not a virus or a broken download. Click **More info**, then **Run anyway**. This one-time warning goes away for that file once you've run it.
-3. Launch Nutaan Code. On first run it opens **⚙ Settings** for you automatically:
-   - Click **Get a free API key →** — this opens OpenRouter's key page in Nutaan Code's own built-in browser panel, so you never leave the app. Sign in (Google/GitHub/email) and create a key.
-   - Paste the key into the **API key** field and hit **Save**. A free (`:free`) model is picked by default — no card needed.
-4. Click **+ Open Project**, pick a folder, and start chatting.
+## What it does
 
-Want a lot more free models? OpenRouter is the easy default, but **OmniRoute** ships bundled with the app (nothing to download separately) and pools ~1.5B free tokens/month across 42 providers — Settings offers to switch you over with one click, key generated automatically.
+Nutaan Code is a desktop app that reads your codebase, writes and edits files, runs commands,
+drives a built-in browser, and keeps a checklist of what it's doing so you can follow along.
 
-Prefer NVIDIA's models? **[NVIDIA NIM](https://build.nvidia.com)** gives you 3M tokens free per month across a wide model catalog, no setup — grab a key from their dashboard, paste it into the API key field, and set the Server URL (under Advanced) to `https://integrate.api.nvidia.com/v1`.
+- **Works on your real project** — reads, searches, edits and runs, all scoped to the folder you open.
+- **Checks its own work** — opens the page in the built-in browser and looks at it, rather than telling you to go and check.
+- **Remembers** — a knowledge base you fill with docs and notes, plus memory that carries between chats.
+- **Co-worker mode** — finds and opens files anywhere on your machine, not just in the project.
+- **One key** — models are reached through nutaan.com with your own API key. No provider keys to manage.
 
-Want to use a specific paid model later (e.g. an Anthropic Claude model)? Add credit on your provider and pick it from the Model dropdown — no code changes needed, since Nutaan Code speaks the standard OpenAI-compatible API any of these providers expose.
+---
 
-## Features
+## Install
 
-- **Multi-project sidebar** — each project keeps its own collapsible list of past chats, not just one growing thread. Create, switch, and delete chats freely.
-- **File tools** — read, write, edit (exact string replace), and search across a project, all scoped to its root folder.
-- **Code tab** — a live, syntax-highlighted view of whatever file the agent is currently reading or writing, right next to the browser panel. Click any file in the sidebar to open it there directly.
-- **Browser panel** — navigate, read page text, click, type/submit forms, scroll, screenshot, switch between mobile/tablet/desktop preview sizes, and (with approval) run arbitrary JS in the page for anything else.
-- **Image generation & vision** — the agent can generate real image files (hero images, icons, logos) and look at images it just made or ones you provide, when your server offers an image-capable model. Auto-detected, no manual model wiring.
-- **Persistent memory** — long-term facts, preferences, and corrections the agent saves on its own (`~/.nutaan/memory/`), shared across every project on the machine, not just the one it learned something in.
-- **Skills** — reusable instruction packs (`skills/*/SKILL.md`) for specific kinds of work: code review, debugging, refactoring, security review, performance review, writing tests, documentation, dependency upgrades, commit messages. Drop a `SKILL.md` into a project's `.nutaan/skills/<name>/` to add project-specific ones. If Claude Code is installed on the machine, its skills (`~/.claude/skills`, `<project>/.claude/skills`) are picked up automatically too.
-- **Terminal** — runs real shell commands in the project root, killable mid-run.
-- **Auto-approve** — toggle at the top of the chat to skip the approval prompt and move fast; every action still shows up in the thread, just already resolved.
-- **Context compaction** — long conversations get auto-summarized instead of hitting a context limit.
+### Download a build
 
-## Contributing
+Grab the latest from **[Releases](https://github.com/Tecosys/Nutaan-Code/releases)**.
 
-Bug reports, feature ideas, and pull requests are all welcome. If you're picking up something non-trivial, opening an issue first to align on approach is appreciated but not required — small fixes can just be a PR.
+| Platform | File | Notes |
+| --- | --- | --- |
+| **Windows** | `Nutaan-Code-Setup-*.exe` | SmartScreen may warn — *More info → Run anyway* |
+| **macOS (Apple Silicon)** | `*-arm64.dmg` | First launch: **right-click → Open** |
+| **macOS (Intel)** | `*-x64.dmg` | Same |
+| **Linux (any)** | `*.AppImage` | `chmod +x` then run |
+| **Debian / Ubuntu** | `*.deb` | `sudo dpkg -i nutaan-code_*.deb` |
+| **Fedora / RHEL** | `*.rpm` | `sudo rpm -i nutaan-code-*.rpm` |
+
+The macOS and Windows builds are **unsigned**, so the first launch shows a security prompt.
+On macOS you must right-click the app and choose *Open* — double-clicking will refuse.
+
+### Run from source
+
+Works the same on all three platforms:
 
 ```bash
 git clone https://github.com/Tecosys/Nutaan-Code.git
@@ -54,35 +56,142 @@ npm install
 npm start
 ```
 
-That's the full dev loop — `npm start` runs the app straight from source with hot-reload-on-restart, no build step needed while you're iterating on `renderer/` or `main.js`.
+`npm start` prints a banner and opens the app:
 
-To build the Windows installer locally:
-```bash
-npm run dist
 ```
-Output lands in `dist/`.
-
-## Releasing an update
-
-```bash
-npm version patch   # or minor / major
-git push --follow-tags
+  ███╗   ██╗
+  ████╗  ██║    Nutaan Code  v0.1.17
+  ██╔██╗ ██║    AI coding agent · darwin
+  ██║╚██╗██║
+  ██║ ╚████║    Starting the desktop app…
+  ╚═╝  ╚═══╝
 ```
 
-Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which builds the Windows installer and publishes it as a **draft** GitHub Release — deliberately not made public automatically. Download that build yourself, verify it, then click **Publish release** on it when you're satisfied. Every installed copy checks for updates on launch (and every few hours) against the latest *published* release and offers to install once one's downloaded.
+Ctrl+C in the terminal closes the app. `npm start -- --help` lists the options.
 
-## How it works
-
-- `main.js` — Electron main process: owns the file system and shell access, the tool-calling agent loop (streamed via SSE) against the configured OpenAI-compatible `/v1/chat/completions` endpoint, the permission gate, image generation, memory, and auto-update.
-- `preload.js` — the only bridge between the renderer (UI) and the main process, via `contextBridge`.
-- `renderer/` — the UI: project sidebar, file tree, chat thread, tool-call cards, permission prompts, the settings modal, the Code tab, and the embedded browser panel (also used to fetch an OpenRouter key without leaving the app).
-- `skills/` — built-in skill packs.
-
-Every install uses **its own** API key, entered locally — nothing is shared between installs, and nothing leaves the machine except through whichever endpoint (OpenRouter by default) each person configures.
+> **Requires Node.js 20+.** Don't install with `--production`: Electron is a devDependency, so
+> the app won't have anything to launch.
 
 ---
 
-<p align="center">
-  Maintained by the <a href="https://tecosys.in/teams">Tecosys team</a><br/>
-  Learn Tecosys: <a href="https://nutaan.com">nutaan.com</a> · Nutaan AI: <a href="https://nutaan.com">nutaan.com</a>
-</p>
+## Getting your API key
+
+Nutaan Code needs one credential: a **nutaan.com API key**. Models are reached through
+nutaan.com, so there's no OpenAI, Anthropic or Google key to set up.
+
+1. **Sign in** at **[https://nutaan.com](https://nutaan.com)** — create an account if you don't have one.
+2. Go to **[https://nutaan.com/dev-console](https://nutaan.com/dev-console)** — it's **Developers** in the dashboard sidebar.
+3. Under **API keys**, click **Create key**, give it a name like `Nutaan Code`, and **copy it**.
+4. Paste it into Nutaan Code when it asks.
+
+The key starts with `nut-`. It's stored only on your machine and is sent nowhere except
+nutaan.com. You can revoke it any time from the same page, and change it later in
+*Settings → nutaan.com account → Change key*.
+
+> Copy the key when it's shown — for security it isn't displayed in full again afterwards.
+
+## First run
+
+Once activated, **Open a project** and start typing. Turn on **Auto-approve** if you'd rather
+the agent edit files and run commands without asking each time.
+
+---
+
+## The interface
+
+### Chat and tasks
+
+For anything with more than a few steps, the agent writes a checklist first and keeps it updated
+as it works — so you can see what it intends to do and what's left, not just the final answer.
+
+The status line under the composer shows elapsed time, tokens generated, and how many tools are
+running in parallel. Independent reads — files, searches, web lookups — run at the same time
+rather than one after another.
+
+### Co-worker
+
+![Co-worker](docs/screenshots/02-coworker.png)
+
+Search your whole home folder by name, filter by type, and open a result straight into the
+editor. Non-text files open in whatever app your system normally uses. The agent has the same
+tools, so you can also just ask: *"organise my Downloads by file type"* or *"find the invoice
+from last March and summarise it"*.
+
+### Knowledge base
+
+![Knowledge base](docs/screenshots/04-knowledge.png)
+
+Point it at a docs page or paste in your own notes. It's chunked, embedded once, and recalled by
+meaning in every future chat — so you don't re-explain your stack each time. Attach or detach
+sources per conversation from **Add Context → Knowledge**.
+
+Text is embedded through nutaan.com; **the vectors stay on your machine.**
+
+### Commit and push
+
+![Commit and push](docs/screenshots/03-git.png)
+
+Click the branch chip to review changed files, write a message, and commit — or commit and push
+in one step. A branch with no upstream gets one set automatically.
+
+---
+
+## Models
+
+The picker lists only models confirmed to support tool calling. A lot of the catalog doesn't, and
+a model that can't call a tool can't drive an agent — it just looks like the app is broken.
+
+If a model is rate-limited, overloaded, or stalls, the app switches to the next one and carries
+on. A model that just failed goes into a short cooldown so the fallback doesn't land straight
+back on it.
+
+**Vision works on every model.** If the one you've picked can't see images, a vision-capable
+model describes the screenshot and the agent gets that description back.
+
+---
+
+## Building installers
+
+```bash
+npm run dist          # your current platform
+npm run dist:mac      # macOS  (.dmg, .zip)
+npm run dist:linux    # Linux  (.AppImage, .deb, .rpm)
+npm run dist:all      # all three
+```
+
+Each installer has to be built on its own OS — macOS tooling is required for `.dmg`, Linux
+tooling for `.deb`/`.rpm`. CI does all three in parallel: push a `v*.*.*` tag to publish a
+release, or use **Run workflow** on the Actions tab to build without publishing.
+
+---
+
+## Troubleshooting
+
+**"Not connected" on startup** — the API key was not accepted. Create a fresh one at
+https://nutaan.com/dev-console and re-enter it under *Settings →
+nutaan.com account → Change key*.
+
+**macOS says the app is damaged or from an unidentified developer** — it's unsigned. Right-click
+the app → *Open* → *Open*. Only needed once.
+
+**A model keeps failing** — the app switches automatically, but you can pick another from the
+composer. Models near the top of the list are the fastest and most reliable in testing.
+
+**Running from source does nothing** — check `node --version` is 20 or higher, and that you ran
+`npm install` without `--production`.
+
+---
+
+## Privacy
+
+Your code stays on your machine. Files are only read when the agent needs them for the task, and
+they're sent to whichever model you've selected, through nutaan.com. Knowledge base vectors,
+memory and chat history are stored locally:
+
+| | |
+| --- | --- |
+| Windows | `%APPDATA%\Nutaan Code` |
+| macOS | `~/Library/Application Support/Nutaan Code` |
+| Linux | `~/.config/Nutaan Code` |
+
+Knowledge base and memory live in `~/.nutaan/`.

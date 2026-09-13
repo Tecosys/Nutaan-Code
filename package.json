@@ -1,28 +1,30 @@
 {
   "name": "nutaan-code",
-  "version": "0.1.16",
-  "description": "Nutaan Code — a personal AI coding agent desktop app",
+  "version": "0.1.17",
+  "description": "Nutaan Code \u2014 a personal AI coding agent desktop app",
   "main": "main.js",
   "private": true,
   "author": "Tecosys",
   "scripts": {
-    "start": "electron .",
+    "start": "node bin/nutaan-code.js",
     "build:icon": "node scripts/build-icon.js",
     "dist": "electron-builder --win",
-    "release": "electron-builder --win --publish always"
+    "dist:mac": "electron-builder --mac",
+    "dist:linux": "electron-builder --linux",
+    "dist:all": "electron-builder --win --mac --linux",
+    "release": "electron-builder --win --publish always",
+    "release:mac": "electron-builder --mac --publish always",
+    "release:linux": "electron-builder --linux --publish always",
+    "start:raw": "electron ."
   },
   "dependencies": {
-    "electron-updater": "^6.3.9",
-    "omniroute": "^3.8.50"
+    "electron-updater": "^6.3.9"
   },
   "devDependencies": {
     "electron": "^44.3.0",
     "electron-builder": "^25.1.8",
     "jimp": "^1.6.1",
     "png-to-ico": "^3.0.2"
-  },
-  "overrides": {
-    "node-gyp": "^12.1.0"
   },
   "build": {
     "appId": "com.tecosys.nutaancode",
@@ -32,20 +34,25 @@
       "output": "dist"
     },
     "files": [
+      "bin/**/*",
       "main.js",
       "preload.js",
       "renderer/**/*",
       "skills/**/*",
-      "arsenal/**/*",
       "assets/**/*",
       "package.json",
       "node_modules/**/*"
     ],
-    "asarUnpack": [
-      "node_modules/**/*"
-    ],
     "win": {
-      "target": "nsis",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
       "icon": "assets/icon.ico"
     },
     "nsis": {
@@ -54,11 +61,85 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
     },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "assets/logo.png",
+      "category": "public.app-category.developer-tools",
+      "darkModeSupport": true,
+      "extendInfo": {
+        "NSDesktopFolderUsageDescription": "Nutaan Code opens and organises files you point it at.",
+        "NSDocumentsFolderUsageDescription": "Nutaan Code opens and organises files you point it at.",
+        "NSDownloadsFolderUsageDescription": "Nutaan Code opens and organises files you point it at."
+      }
+    },
+    "dmg": {
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "rpm",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/logo.png",
+      "category": "Development",
+      "maintainer": "Tecosys",
+      "synopsis": "AI coding agent desktop app",
+      "desktop": {
+        "StartupWMClass": "Nutaan Code"
+      }
+    },
     "publish": {
       "provider": "github",
       "owner": "Tecosys",
       "repo": "Nutaan-Code",
       "releaseType": "draft"
     }
+  },
+  "bin": {
+    "nutaan-code": "bin/nutaan-code.js"
   }
 }
