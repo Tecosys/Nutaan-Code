@@ -6,6 +6,7 @@
   const thread = el("thread");
   const threadScroll = el("threadScroll");
   const emptyState = el("emptyState");
+  const coworkerHero = el("coworkerHero");
   const quickGrid = el("quickGrid");
   const openProjectLink = el("openProjectLink");
   const openProjectLinkLabel = el("openProjectLinkLabel");
@@ -453,6 +454,7 @@
         sidebarView = d.id;
         renderNav();
         renderExplorer();
+        renderEmptyVisibility();
       });
       navList.appendChild(row);
     }
@@ -1592,7 +1594,38 @@
   // ---------- Thread rendering ----------
   function renderEmptyVisibility() {
     const hasContent = thread.querySelectorAll(".row, .tool-card, .permission-card, .file-group-card").length > 0;
-    emptyState.hidden = hasContent;
+    const coworker = sidebarView === "coworker";
+    emptyState.hidden = hasContent || coworker;
+    if (coworkerHero) coworkerHero.hidden = hasContent || !coworker;
+  }
+
+  // Outcome-oriented starters for the co-worker landing — clicking one drops it into the composer,
+  // which is where the actual work still happens (same editor).
+  const COWORKER_CHIPS = [
+    "Organise my Downloads folder by file type",
+    "Find and summarise a document on this computer",
+    "Audit this project for security issues and report back",
+    "Draft a handover doc from this codebase",
+    "Clean up old files I no longer need",
+  ];
+
+  function renderCoworkerChips() {
+    const box = el("cwChips");
+    if (!box) return;
+    box.innerHTML = "";
+    for (const text of COWORKER_CHIPS) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "cw-chip";
+      chip.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5.5v13M5.5 12h13"/></svg><span>${escapeHtml(text)}</span>`;
+      chip.addEventListener("click", () => {
+        input.value = text;
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+        autoGrowInput();
+      });
+      box.appendChild(chip);
+    }
   }
 
   // Delegated: streaming rewrites a bubble's innerHTML on every delta, so per-render listeners
@@ -2094,6 +2127,7 @@
   function renderThreadFromMessages(messages) {
     thread.innerHTML = "";
     thread.appendChild(emptyState);
+    if (coworkerHero) thread.appendChild(coworkerHero);
     toolCards.clear();
     liveWriteCards.clear();
     toolArgsById.clear();
@@ -2770,6 +2804,7 @@
     } else {
       thread.innerHTML = "";
       thread.appendChild(emptyState);
+    if (coworkerHero) thread.appendChild(coworkerHero);
       liveWriteCards.clear();
       resetFileGroup();
       renderEmptyVisibility();
@@ -3911,6 +3946,7 @@
     updateModelBadge();
     rebuildModels();
     renderQuickActions();
+    renderCoworkerChips();
     renderBookmarks();
     renderBrowserTabs();
     setBrowserSize("desktop");

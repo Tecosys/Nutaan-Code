@@ -938,15 +938,105 @@ function extractPdf(buf) {
   return text.replace(/<[0-9A-Fa-f]{0,8}>/g, "").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function stripHtml(html) {
+  return decodeXmlEntities(
+    String(html)
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<\/(p|div|tr|h[1-6]|li)>/gi, "\n")
+      .replace(/<br[^>]*>/gi, "\n")
+      .replace(/<[^>]+>/g, "")
+      .replace(/&nbsp;/g, " ")
+  ).replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function decodeEmailBody(body, encoding) {
+  const enc = String(encoding || "").toLowerCase();
+  if (enc === "base64") {
+    try { return Buffer.from(body.replace(/\s+/g, ""), "base64").toString("utf8"); } catch { return body; }
+  }
+  if (enc === "quoted-printable") {
+    const s = body.replace(/=\r?\n/g, "");
+    const bytes = [];
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === "=" && /^[0-9A-Fa-f]{2}$/.test(s.substr(i + 1, 2))) { bytes.push(parseInt(s.substr(i + 1, 2), 16)); i += 2; }
+      else bytes.push(s.charCodeAt(i) & 0xff);
+    }
+    return Buffer.from(bytes).toString("utf8");
+  }
+  return body;
+}
+
+// Parse one RFC822 message (.eml) — headers plus the readable text body (prefers text/plain, falls
+// back to stripped HTML), decoding base64 / quoted-printable.
+function extractEml(raw) {
+  const idx = raw.search(/\r?\n\r?\n/);
+  const headerBlock = idx >= 0 ? raw.slice(0, idx) : raw;
+  const body = idx >= 0 ? raw.slice(idx).replace(/^\r?\n\r?\n/, "") : "";
+  const headers = {};
+  headerBlock.replace(/^([\w-]+):[ \t]*([\s\S]*?)(?=\r?\n[\w-]+:|\r?\n?$)/gm, (m, k, v) => {
+    headers[k.toLowerCase()] = v.replace(/\r?\n[ \t]+/g, " ").trim();
+    return m;
+  });
+  const ctype = headers["content-type"] || "";
+  let text;
+  const bMatch = /boundary="?([^";\r\n]+)"?/i.exec(ctype);
+  if (bMatch) {
+    const parts = body.split("--" + bMatch[1]);
+    const chosen =
+      parts.find((pt) => /content-type:\s*text\/plain/i.test(pt)) ||
+      parts.find((pt) => /content-type:\s*text\/html/i.test(pt)) || "";
+    const pidx = chosen.search(/\r?\n\r?\n/);
+    const pbody = pidx >= 0 ? chosen.slice(pidx + 2) : chosen;
+    const enc = (/content-transfer-encoding:\s*([\w-]+)/i.exec(chosen) || [])[1] || "";
+    text = decodeEmailBody(pbody, enc);
+    if (/content-type:\s*text\/html/i.test(chosen)) text = stripHtml(text);
+  } else {
+    text = decodeEmailBody(body, headers["content-transfer-encoding"]);
+    if (/text\/html/i.test(ctype)) text = stripHtml(text);
+  }
+  const hdr = [
+    headers.from && "From: " + headers.from,
+    headers.to && "To: " + headers.to,
+    headers.date && "Date: " + headers.date,
+    headers.subject && "Subject: " + headers.subject,
+  ].filter(Boolean).join("\n");
+  return (hdr + "\n\n" + (text || "").trim()).trim();
+}
+
+function extractMbox(raw) {
+  const msgs = raw.split(/\r?\nFrom .*\r?\n/).filter((m) => m.trim());
+  return msgs.slice(0, 50).map((m, i) => `===== Message ${i + 1} =====\n` + extractEml(m)).join("\n\n");
+}
+
+// Outlook .msg is an OLE compound binary; without a full parser, pull the readable UTF-16LE runs
+// (subject and body are stored that way) as a best effort.
+function extractMsg(buf) {
+  let out = "";
+  let run = "";
+  for (let i = 0; i + 1 < buf.length; i += 2) {
+    const code = buf.readUInt16LE(i);
+    if (code >= 32 && code < 0xd800) run += String.fromCharCode(code);
+    else if (code === 10 || code === 13) run += "\n";
+    else { if (run.trim().length >= 4) out += run.replace(/\n{3,}/g, "\n\n") + "\n"; run = ""; }
+  }
+  if (run.trim().length >= 4) out += run;
+  // De-duplicate the noisy short property-name runs; keep lines with real words.
+  return out.split("\n").filter((l) => /[A-Za-z]{3,}\s+[A-Za-z]{2,}|@|\bhttp/.test(l)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function extractDocument(buffer, ext) {
   if (ext === "docx") return extractDocx(buffer);
   if (ext === "xlsx" || ext === "xlsm") return extractXlsx(buffer);
   if (ext === "pptx") return extractPptx(buffer);
   if (ext === "pdf") return extractPdf(buffer);
+  if (ext === "eml") return extractEml(buffer.toString("utf8"));
+  if (ext === "mbox") return extractMbox(buffer.toString("utf8"));
+  if (ext === "msg") return extractMsg(buffer);
   return "";
 }
 
-const DOC_EXT = new Set(["docx", "xlsx", "xlsm", "pptx", "pdf"]);
+const DOC_EXT = new Set(["docx", "xlsx", "xlsm", "pptx", "pdf", "eml", "mbox", "msg"]);
 
 async function coWorkerRead(p, limit = 600) {
   const target = resolveUserPath(p);
@@ -1818,7 +1908,7 @@ const TOOLS = [
     function: {
       name: "os_read",
       description:
-        "Read any file on this computer by absolute path, ~-path, or a home-relative path like 'Downloads/notes.txt'. Text files come back as text; Word (.docx), Excel (.xlsx), PowerPoint (.pptx) and PDF documents have their text/data extracted so you can read them directly (a spreadsheet comes back as tab-separated rows); images come back viewable; folders list their contents. Use this to read the user's real documents and data. For a type that can't be read, use os_open instead.",
+        "Read any file on this computer by absolute path, ~-path, or a home-relative path like 'Downloads/notes.txt'. Text files come back as text; Word (.docx), Excel (.xlsx), PowerPoint (.pptx), PDF, and email (.eml/.mbox/.msg) files have their text/data extracted so you can read them directly (a spreadsheet comes back as tab-separated rows; an email as its From/To/Subject/Date plus body); images come back viewable; folders list their contents. Use this to read the user's real documents, data and emails. For a type that can't be read, use os_open instead.",
       parameters: {
         type: "object",
         properties: {
@@ -3056,6 +3146,7 @@ const TOOL_PRIORITY_REMINDER =
   "the user is clearly asking about something external (a live site, a third-party product, a URL " +
   "they gave you). Searching the web before checking code you already have direct access to is slower " +
   "and often wrong — never do that as a first resort.\n\n" +
+  "PERSONAL / DEVICE FILES — SEARCH THE COMPUTER, NOT THE WEB: When the user refers to something of theirs — 'my file', 'a document/agreement/spreadsheet/email I have', 'in my Downloads', a contract or two company names they mention as if you'd have it — it is almost certainly a file ON THIS COMPUTER, not something to look up online. Use os_search to find it (search by a distinctive word — a company name, a keyword) and os_read to read it (it extracts Word/Excel/PowerPoint/PDF/email text). Do this BEFORE any web_search or browser_navigate. Only search the web if os_search genuinely finds nothing on the device or the user clearly wants public/online information. Answering 'I found no public results' when the file was sitting in their Downloads is the exact mistake to avoid.\n\n" +
   // A vague instruction is an instruction to go and find out, not a reason to stop. "Run it and
   // fix the UI issues" was answered with a table of things the user might have meant and a
   // request for permission — when the agent could have started the server, opened the page,

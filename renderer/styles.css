@@ -807,6 +807,60 @@ button, input, textarea, select { font-family: inherit; }
   gap: 14px;
   text-align: left;
 }
+
+/* ---------- AI Co-worker landing ---------- */
+.coworker-hero { text-align: left; max-width: 760px; margin: 0 auto; padding: 8px 0; }
+.cw-head { display: flex; gap: 15px; align-items: flex-start; margin-bottom: 20px; }
+.cw-avatar {
+  width: 46px; height: 46px; flex-shrink: 0;
+  border-radius: 13px;
+  background: var(--grad);
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 8px 22px -8px rgba(168, 85, 247, 0.7);
+}
+.cw-title-row { display: flex; align-items: center; gap: 10px; }
+.cw-head-text h1 { margin: 0; font-size: 24px; font-weight: 800; color: var(--text-bright); }
+.cw-badge {
+  font-size: 11px; font-weight: 700;
+  padding: 3px 10px; border-radius: 7px;
+  background: rgba(74, 222, 128, 0.15); color: #4ade80;
+}
+.cw-sub { margin: 6px 0 0; font-size: 13.5px; line-height: 1.55; color: var(--text-2); max-width: 620px; }
+
+.cw-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px; }
+.cw-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 8px 14px; border-radius: 10px;
+  border: 1px solid var(--border-card);
+  background: var(--bg-card);
+  color: var(--text-2);
+  font-size: 12.5px; font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+}
+.cw-chip svg { color: var(--text-dim); }
+.cw-chip:hover { background: var(--bg-hover); border-color: rgba(168, 85, 247, 0.45); transform: translateY(-1px); }
+
+.cw-abilities {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+.cw-ability {
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: 14px;
+  padding: 16px;
+  transition: border-color 0.16s, transform 0.16s;
+}
+.cw-ability:hover { border-color: var(--border-strong); transform: translateY(-2px); }
+.cw-ability-icon {
+  width: 34px; height: 34px; border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  margin-bottom: 11px;
+}
+.cw-ability-name { font-size: 14px; font-weight: 700; color: var(--text); }
+.cw-ability-desc { font-size: 12px; color: var(--text-dim); margin-top: 3px; line-height: 1.4; }
 .quick-card {
   display: flex;
   flex-direction: column;
