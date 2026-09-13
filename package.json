@@ -133,6 +133,12 @@
         "StartupWMClass": "Nutaan Code"
       }
     },
+    "deb": {
+      "afterRemove": "build/linux-after-remove.sh"
+    },
+    "rpm": {
+      "afterRemove": "build/linux-after-remove.sh"
+    },
     "publish": {
       "provider": "github",
       "owner": "Tecosys",
