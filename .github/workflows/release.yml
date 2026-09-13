@@ -45,16 +45,27 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+      # This endpoint returns a 502 often enough to have broken the last two releases, so retry it.
+      # The existence check runs before every attempt because a 502 can come back from a request
+      # that actually succeeded — retrying blindly would then fail on a release that is already there.
       - name: Create the draft release if it is missing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${{ steps.tag.outputs.tag }}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists — reusing it."
-          else
-            gh release create "$tag" --draft --title "$tag" --generate-notes
-          fi
+          for attempt in 1 2 3 4 5; do
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "Release $tag is present."
+              exit 0
+            fi
+            if gh release create "$tag" --draft --title "$tag" --generate-notes; then
+              exit 0
+            fi
+            echo "Attempt $attempt did not land; retrying in $((attempt * 10))s."
+            sleep $((attempt * 10))
+          done
+          echo "Could not create release $tag after 5 attempts."
+          exit 1
 
   build:
     needs: prepare
@@ -132,4 +143,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-        run: gh release edit "${{ needs.prepare.outputs.tag }}" --draft=false --latest
+        run: |
+          tag="${{ needs.prepare.outputs.tag }}"
+          for attempt in 1 2 3 4 5; do
+            if gh release edit "$tag" --draft=false --latest; then
+              exit 0
+            fi
+            echo "Attempt $attempt did not land; retrying in $((attempt * 10))s."
+            sleep $((attempt * 10))
+          done
+          echo "Built every installer but could not publish $tag — flip it by hand."
+          exit 1
