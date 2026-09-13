@@ -47,6 +47,8 @@
       "main.js",
       "preload.js",
       "arsenal/**/*",
+      "agents/**/*",
+      "tools/**/*",
       "renderer/**/*",
       "skills/**/*",
       "assets/**/*",

@@ -6,6 +6,7 @@ const fsSync = require("node:fs");
 const { exec, spawn, spawnSync } = require("node:child_process");
 const { autoUpdater } = require("electron-updater");
 const arsenal = require("./arsenal");
+const { ToolRegistry } = require("./tools/registry");
 
 // Electron derives userData from app.getName(), which is package.json's `name` when run from
 // source ("nutaan-code") but `productName` once packaged ("Nutaan Code"). Left alone, the
@@ -142,7 +143,79 @@ function dirSizeSync(dir) {
   } catch {}
   return total;
 }
-function rmrf(target) { try { fsSync.rmSync(target, { recursive: true, force: true }); return true; } catch { return false; } }
+function sizeOf(target) {
+  let st;
+  try { st = fsSync.lstatSync(target); } catch { return 0; }
+  return st.isDirectory() ? dirSizeSync(target) : st.size;
+}
+
+// Delete a tree one entry at a time rather than with a recursive rmSync. On a live desktop there
+// is always some locked file — held open by this very app, or by another running program — and a
+// recursive rm gives up at the first one and takes the whole sweep down with it. Walking the tree
+// ourselves means everything that *can* go, goes, and we learn why the rest stayed.
+function rmTree(target) {
+  let st;
+  try { st = fsSync.lstatSync(target); } catch (err) { return err.code === "ENOENT" ? null : err; }
+  if (st.isDirectory() && !st.isSymbolicLink()) {
+    let firstErr = null;
+    try {
+      for (const name of fsSync.readdirSync(target)) {
+        const err = rmTree(path.join(target, name));
+        if (err && !firstErr) firstErr = err;
+      }
+    } catch (err) { return err; }
+    if (firstErr) return firstErr;
+    try { fsSync.rmdirSync(target); return null; } catch (err) { return err; }
+  }
+  try { fsSync.unlinkSync(target); return null; } catch (err) {
+    // Windows refuses to unlink a read-only file until the flag comes off.
+    try { fsSync.chmodSync(target, 0o666); fsSync.unlinkSync(target); return null; } catch (retryErr) { return retryErr; }
+  }
+}
+
+// Before touching anything in the shared OS temp folder that isn't ours, rename it out of the way
+// first. Windows won't rename a directory another program still has open, so a rename that
+// succeeds proves nothing is using it — and one that fails lets us skip the entry completely
+// instead of half-deleting some other app's working files.
+// A rename only proves the folder itself is free; a program running out of a subfolder renames
+// away happily and then loses its files one by one. So walk the tree first and try to open each
+// file for writing — Windows refuses that for anything a running process holds open. One locked
+// file means the whole entry still belongs to something, and we leave all of it alone rather
+// than deleting the unlocked half. (POSIX has no such locking, but there deleting a file out
+// from under a running program is harmless anyway.)
+const LOCK_PROBE_BUDGET = 5000;
+function firstLockedFile(target, budget = { left: LOCK_PROBE_BUDGET }) {
+  let st;
+  try { st = fsSync.lstatSync(target); } catch { return null; }
+  if (st.isSymbolicLink()) return null;
+  if (st.isDirectory()) {
+    let entries;
+    try { entries = fsSync.readdirSync(target); } catch { return target; }
+    for (const name of entries) {
+      if (--budget.left <= 0) return null; // a huge tree is not worth stalling the whole cleanup over
+      const hit = firstLockedFile(path.join(target, name), budget);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  // A read-only file is not a locked one, and opening it for writing would wrongly say it is.
+  if (!(st.mode & 0o200)) return null;
+  try { fsSync.closeSync(fsSync.openSync(target, "r+")); return null; }
+  catch (err) { return err.code === "EBUSY" || err.code === "EPERM" ? target : null; }
+}
+function claimForDeletion(target) {
+  const claimed = target + ".nutaan-gc";
+  try { fsSync.rmSync(claimed, { recursive: true, force: true }); } catch {}
+  try { fsSync.renameSync(target, claimed); return { path: claimed, err: null }; }
+  catch (err) { return { path: null, err }; }
+}
+
+function whyItStayed(err) {
+  if (!err) return null;
+  if (err.code === "EBUSY" || err.code === "EPERM" || err.code === "EACCES") return "in use by a running program";
+  if (err.code === "ENOTEMPTY") return "its owner wrote new files while we were cleaning";
+  return err.code ? err.code.toLowerCase() : err.message;
+}
 
 function updaterCacheDir() {
   const name = app.getName();
@@ -151,39 +224,109 @@ function updaterCacheDir() {
   return path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), name + "-updater");
 }
 
-function cleanupStorage({ dryRun = false, includeTemp = true } = {}) {
-  const items = [];
-  const consider = (label, target) => {
-    if (!target || !fsSync.existsSync(target)) return;
-    const mb = dirSizeSync(target) / 1048576;
-    if (mb < 0.05) return;
-    const removed = dryRun ? false : rmrf(target);
-    items.push({ label, path: target, mb: Math.round(mb * 10) / 10, removed });
-  };
-  consider("Update download cache", updaterCacheDir());
-  for (const base of [CANONICAL_STORE_DIR, LEGACY_STORE_DIR]) {
-    for (const c of CACHE_SUBDIRS) consider("Cache: " + path.basename(base) + "/" + c, path.join(base, c));
+// The app's own HTTP and code caches are open handles inside this very process, so deleting the
+// files underneath them just fails. Asking Chromium to drop them is the only thing that actually
+// frees that space while the app is running. Caches only — never clearStorageData, which would
+// sign the user out of every site in the browser panel.
+async function releaseLiveCaches() {
+  const { session } = require("electron");
+  const sessions = [session.defaultSession];
+  try { sessions.push(session.fromPartition("persist:nutaan-browser")); } catch {}
+  for (const ses of sessions) {
+    try { await ses.clearCache(); } catch {}
+    try { await ses.clearCodeCaches({}); } catch {}
   }
+}
+
+const mb1 = (n) => Math.round(n * 10) / 10;
+
+async function cleanupStorage({ dryRun = false, includeTemp = true } = {}) {
+  const appCaches = [];
+  for (const base of [CANONICAL_STORE_DIR, LEGACY_STORE_DIR]) {
+    for (const c of CACHE_SUBDIRS) appCaches.push({ label: "Cache: " + path.basename(base) + "/" + c, dir: path.join(base, c) });
+  }
+  // Sizes read before Chromium drops its caches, so what it releases still counts as freed —
+  // measure after and the folder is already empty and the saving belongs to nobody.
+  const sizeBefore = new Map();
+  if (!dryRun) {
+    for (const c of appCaches) sizeBefore.set(c.dir, sizeOf(c.dir));
+    try { await releaseLiveCaches(); } catch {}
+  }
+  const items = [];
+
+  // Every number here is measured, never assumed. A delete can half-succeed or fail outright, so
+  // the size read going in says nothing about what was freed — only the size left behind does.
+  const sweep = (label, target, { probeFirst = false } = {}) => {
+    const preMeasured = sizeBefore.get(target);
+    if (!target || (preMeasured == null && !fsSync.existsSync(target))) return;
+    const beforeMB = (preMeasured != null ? preMeasured : sizeOf(target)) / 1048576;
+    if (beforeMB < 0.05) return;
+    const item = { label, path: target, mb: mb1(beforeMB), freedMB: 0, removed: false };
+    items.push(item);
+    if (dryRun) return;
+    let victim = target;
+    if (probeFirst) {
+      const locked = firstLockedFile(target);
+      if (locked) {
+        item.error = "in use by a running program";
+        item.leftMB = item.mb;
+        return;
+      }
+      const claim = claimForDeletion(target);
+      if (!claim.path) { item.error = whyItStayed(claim.err); item.leftMB = item.mb; return; }
+      victim = claim.path;
+    }
+    const err = rmTree(victim);
+    const afterMB = sizeOf(victim) / 1048576;
+    item.freedMB = mb1(Math.max(0, beforeMB - afterMB));
+    item.removed = !err && !fsSync.existsSync(victim);
+    if (err) {
+      item.error = whyItStayed(err);
+      item.leftMB = mb1(afterMB);
+      // Put a claimed-but-undeletable entry back under its real name so we leave no litter.
+      if (victim !== target && fsSync.existsSync(victim)) { try { fsSync.renameSync(victim, target); } catch {} }
+    }
+  };
+
+  sweep("Update download cache", updaterCacheDir());
+  for (const c of appCaches) sweep(c.label, c.dir);
   if (includeTemp) {
     const tmp = os.tmpdir();
     const cutoff = Date.now() - 7 * 86400000;
-    try {
-      for (const e of fsSync.readdirSync(tmp, { withFileTypes: true })) {
-        const fp = path.join(tmp, e.name);
-        try {
-          const st = fsSync.statSync(fp);
-          if (/nutaan|electron/i.test(e.name) || st.mtimeMs < cutoff) {
-            const mb = (e.isDirectory() ? dirSizeSync(fp) : st.size) / 1048576;
-            if (mb < 0.05) continue;
-            const removed = dryRun ? false : rmrf(fp);
-            items.push({ label: "Temp: " + e.name, path: fp, mb: Math.round(mb * 10) / 10, removed });
-          }
-        } catch {}
-      }
-    } catch {}
+    let entries = [];
+    try { entries = fsSync.readdirSync(tmp, { withFileTypes: true }); } catch {}
+    for (const e of entries) {
+      if (e.name.endsWith(".nutaan-gc")) continue;
+      const fp = path.join(tmp, e.name);
+      let st;
+      try { st = fsSync.statSync(fp); } catch { continue; }
+      const ours = /nutaan|electron/i.test(e.name);
+      if (!ours && st.mtimeMs >= cutoff) continue;
+      sweep("Temp: " + e.name, fp, { probeFirst: !ours });
+    }
   }
-  const totalMB = Math.round(items.reduce((s, i) => s + i.mb, 0) * 10) / 10;
-  return { dryRun, totalMB, count: items.length, freedMB: dryRun ? 0 : Math.round(items.filter((i) => i.removed).reduce((s, i) => s + i.mb, 0) * 10) / 10, items: items.sort((a, b) => b.mb - a.mb).slice(0, 40) };
+
+  const scannedMB = mb1(items.reduce((s, i) => s + i.mb, 0));
+  const freedMB = dryRun ? 0 : mb1(items.reduce((s, i) => s + (i.freedMB || 0), 0));
+  const blocked = items.filter((i) => i.error);
+  const blockedMB = mb1(blocked.reduce((s, i) => s + (i.leftMB || 0), 0));
+  const reasons = [...new Set(blocked.map((i) => i.error))].join("; ");
+  const summary = dryRun
+    ? `Up to ${scannedMB} MB across ${items.length} location(s) looks reclaimable. Some of it may be locked by running programs, so the real figure is only known after actually cleaning — do not promise this number.`
+    : `Freed ${freedMB} MB.` +
+      (blocked.length
+        ? ` ${blockedMB} MB in ${blocked.length} location(s) could NOT be removed (${reasons}) and is still on disk — report that plainly and never count it as freed.`
+        : "");
+  return {
+    dryRun,
+    freedMB,
+    scannedMB,
+    count: items.length,
+    blockedCount: blocked.length,
+    blockedMB,
+    summary,
+    items: items.sort((a, b) => (b.freedMB || b.mb) - (a.freedMB || a.mb)).slice(0, 40),
+  };
 }
 
 // On startup, prune stale update downloads so the updater cache can't quietly grow to gigabytes
@@ -194,16 +337,209 @@ function pruneUpdaterCacheOnStartup() {
     const cutoff = Date.now() - 2 * 86400000;
     for (const e of fsSync.readdirSync(dir, { withFileTypes: true })) {
       const fp = path.join(dir, e.name);
-      try { if (fsSync.statSync(fp).mtimeMs < cutoff) rmrf(fp); } catch {}
+      try { if (fsSync.statSync(fp).mtimeMs < cutoff) rmTree(fp); } catch {}
     }
   } catch {}
 }
 
+
+// ---------- Configured tools (MCP servers, other agents, signed-in web tools) ----------
+// Whatever the user switched on in Tools becomes callable by the agent. The registry owns the
+// connections and the naming; everything below is the wiring into this process.
+
+let toolsSender = null; // the renderer running the current turn, for session-tool actions
+const pendingSessionActions = new Map();
+let sessionActionSeq = 0;
+const SESSION_ACTION_TIMEOUT_MS = 60_000;
+
+function requestSessionAction(payload) {
+  const sender = toolsSender;
+  if (!sender) return Promise.resolve({ ok: false, error: "The app window is not ready to open a tool yet." });
+  const id = "sess" + ++sessionActionSeq;
+  return new Promise((resolve) => {
+    pendingSessionActions.set(id, resolve);
+    sender.send("agent:tool-session-action", { id, ...payload });
+    setTimeout(() => {
+      if (pendingSessionActions.has(id)) {
+        pendingSessionActions.delete(id);
+        resolve({ ok: false, error: `${payload.name} did not respond in time.` });
+      }
+    }, SESSION_ACTION_TIMEOUT_MS);
+  });
+}
+
+ipcMain.on("agent:tool-session-response", (_e, { id, result }) => {
+  const resolve = pendingSessionActions.get(id);
+  if (resolve) {
+    resolve(result);
+    pendingSessionActions.delete(id);
+  }
+});
+
+// Settings are read from disk on demand rather than cached: the user can change a tool in the
+// same breath as using it, and a stale copy here would silently ignore that.
+let settingsCache = {};
+async function refreshSettingsCache() {
+  settingsCache = await readStore();
+  return settingsCache;
+}
+
+const toolRegistry = new ToolRegistry({
+  getSettings: () => settingsCache,
+  saveSettings: async (next) => {
+    settingsCache = next;
+    await writeStore(next);
+  },
+  openBrowser: async (url) => shell.openExternal(url),
+  runSessionAction: (payload) => requestSessionAction(payload),
+  onStatusChange: () => {
+    try { win?.webContents.send("tools:status", toolRegistry.status()); } catch {}
+  },
+});
+
+ipcMain.handle("tools:status", async () => {
+  await refreshSettingsCache();
+  return toolRegistry.status();
+});
+
+ipcMain.handle("tools:set-enabled", async (_e, id, enabled) => {
+  const store = await refreshSettingsCache();
+  const custom = (store.customTools || []).find((c) => c.id === id);
+  if (custom) {
+    custom.enabled = Boolean(enabled);
+    await writeStore(store);
+  } else {
+    const tools = { ...(store.tools || {}) };
+    tools[id] = { ...(tools[id] || {}), enabled: Boolean(enabled) };
+    await writeStore({ ...store, tools });
+  }
+  await refreshSettingsCache();
+  if (enabled) await toolRegistry.connect(id).catch(() => {});
+  else await toolRegistry.disconnect(id);
+  return toolRegistry.status();
+});
+
+ipcMain.handle("tools:save-config", async (_e, id, config) => {
+  const store = await refreshSettingsCache();
+  const idx = (store.customTools || []).findIndex((c) => c.id === id);
+  if (idx >= 0) {
+    store.customTools[idx] = { ...store.customTools[idx], ...config, id };
+    await writeStore(store);
+  } else {
+    const tools = { ...(store.tools || {}) };
+    tools[id] = { ...(tools[id] || {}), config: { ...(tools[id]?.config || {}), ...config } };
+    await writeStore({ ...store, tools });
+  }
+  await refreshSettingsCache();
+  // Reconnect so a changed URL, command or key takes effect straight away instead of at restart.
+  const entry = toolRegistry.entry(id);
+  if (entry?.enabled && entry.def.kind === "mcp") await toolRegistry.connect(id).catch(() => {});
+  return toolRegistry.status();
+});
+
+ipcMain.handle("tools:connect", async (_e, id) => {
+  await refreshSettingsCache();
+  return toolRegistry.connect(id);
+});
+
+ipcMain.handle("tools:authorize", async (_e, id) => {
+  await refreshSettingsCache();
+  try {
+    await toolRegistry.authorize(id);
+    return { ok: true, status: toolRegistry.status() };
+  } catch (err) {
+    return { ok: false, error: err.message, status: toolRegistry.status() };
+  }
+});
+
+ipcMain.handle("tools:sign-out", async (_e, id) => {
+  await refreshSettingsCache();
+  await toolRegistry.signOut(id);
+  return toolRegistry.status();
+});
+
+ipcMain.handle("tools:add-custom", async (_e, spec) => {
+  const store = await refreshSettingsCache();
+  const id = "custom-" + Date.now().toString(36);
+  const customTools = [...(store.customTools || []), { ...spec, id, enabled: true }];
+  await writeStore({ ...store, customTools });
+  await refreshSettingsCache();
+  await toolRegistry.connect(id).catch(() => {});
+  return toolRegistry.status();
+});
+
+ipcMain.handle("tools:remove-custom", async (_e, id) => {
+  const store = await refreshSettingsCache();
+  await toolRegistry.disconnect(id);
+  await writeStore({ ...store, customTools: (store.customTools || []).filter((c) => c.id !== id) });
+  await refreshSettingsCache();
+  return toolRegistry.status();
+});
+
+// Catalogue metadata the Tools panel renders — icons live on disk next to the app. `custom` is
+// the form for adding an MCP server that is not in the catalogue.
+ipcMain.handle("tools:catalog", () => {
+  const { CATALOG, CUSTOM_TEMPLATE } = require("./tools/catalog");
+  return {
+    tools: CATALOG.map((t) => ({
+      id: t.id, name: t.name, kind: t.kind, blurb: t.blurb, icon: t.icon, accent: t.accent,
+      docs: t.docs || null, noApi: t.noApi || null, oauthNote: t.oauthNote || null,
+      fields: t.fields || [], oauthFields: t.oauthFields || [], needsOAuth: t.auth === "oauth",
+    })),
+    custom: { name: CUSTOM_TEMPLATE.name, blurb: CUSTOM_TEMPLATE.blurb, icon: CUSTOM_TEMPLATE.icon, accent: CUSTOM_TEMPLATE.accent, fields: CUSTOM_TEMPLATE.fields },
+  };
+});
 ipcMain.handle("storage:cleanup", (_e, opts) => cleanupStorage(opts || {}));
+
+// Per-turn guidance for connected tools whose good use is a workflow, not a single call. Only the
+// guidance for tools that are actually connected is sent, so it costs nothing when they are off.
+function toolGuidance() {
+  const parts = [];
+  const nutaan = toolRegistry.status("nutaan");
+  if (nutaan?.connected) {
+    parts.push(
+      "When you call nutaan_list_agents, the app already renders the agents as interactive cards " +
+      "with a Use Agent button. So do NOT repeat the agents as a text list or table in your reply — " +
+      "that duplicates the cards and buries them. Keep your reply to one short line (e.g. \"Here are " +
+      "your real-estate agents — tap Use Agent on any card\") plus any genuinely new note. Placing a " +
+      "call needs an agent whose caller number is actually rented on the account; if a call fails " +
+      "with a caller-ID error, say plainly that the number must be rented/assigned in the Nutaan " +
+      "dashboard — it is an account action, not something a retry fixes."
+    );
+  }
+  const canva = toolRegistry.status("canva");
+  if (canva?.connected) {
+    parts.push(
+      "The user's Canva account is connected. Make ONE finished design and see it through — never " +
+      "stop at generate-design candidates, and never hand back a list of blank candidate links.\n" +
+      "\n" +
+      "For a multi-page design — a carousel, a presentation, a multi-slide doc — do NOT use a brand " +
+      "template unless the user named one. Brand-template IDs cannot be guessed: inventing one is " +
+      "what fails with \"template not found\". Instead:\n" +
+      "1. generate-design with a design_type that is inherently multi-page (e.g. \"presentation\", or " +
+      "an Instagram/social carousel type) and a length that gives the number of slides you want. This " +
+      "returns candidates with a job_id.\n" +
+      "2. create-design-from-candidate (job_id + the candidate_id you pick) to get a real design_id.\n" +
+      "3. start-editing-transaction on that design_id, then perform-editing-operations to fill EVERY " +
+      "page with real content — headings, body text, and images (upload-asset-from-url first for an " +
+      "image, then place it). perform-editing-operations takes a pages array, so set each slide's " +
+      "content. Then commit-editing-transaction.\n" +
+      "4. Give the design's Canva link, and offer export-design (PDF/PNG/MP4) to download it.\n" +
+      "\n" +
+      "Only if the user explicitly wants a brand template: call search-brand-templates FIRST and use a " +
+      "real template ID from its results — never a made-up one.\n" +
+      "Canva has no video-timeline or audio tools: do not promise clip editing or attaching audio — say " +
+      "so plainly if asked."
+    );
+  }
+  return parts.length ? parts.join("\n\n") : null;
+}
 
 app.whenReady().then(() => {
   createWindow();
   setTimeout(() => { try { pruneUpdaterCacheOnStartup(); } catch {} }, 4000);
+  // Connect the user's tools in the background so they are ready by the time they are asked for.
+  refreshSettingsCache().then(() => toolRegistry.sync()).catch(() => {});
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -858,6 +1194,306 @@ const TEXTUAL_EXT = new Set([
   "js", "ts", "jsx", "tsx", "py", "rb", "go", "rs", "java", "c", "h", "cpp", "cs", "php",
   "html", "css", "scss", "sh", "bat", "ps1", "sql", "env",
 ]);
+
+// ---------- System resources (the numbers Task Manager / Activity Monitor shows) ----------
+// "How much CPU is this actually using?" is a question about the whole machine, not the project,
+// so it lives with the co-worker tools. Everything here is a pure read.
+
+function capture(cmd, args, timeoutMs = 25_000) {
+  return new Promise((resolve) => {
+    let child;
+    let out = "";
+    let err = "";
+    try {
+      child = spawn(cmd, args, { windowsHide: true });
+    } catch (e) {
+      return resolve({ ok: false, out: "", err: e.message });
+    }
+    const timer = setTimeout(() => { try { child.kill(); } catch {} }, timeoutMs);
+    child.stdout?.on("data", (c) => { out += c; });
+    child.stderr?.on("data", (c) => { err += c; });
+    child.on("error", (e) => { clearTimeout(timer); resolve({ ok: false, out, err: e.message }); });
+    child.on("close", (code) => { clearTimeout(timer); resolve({ ok: code === 0, out, err }); });
+  });
+}
+
+function cpuSnapshot() {
+  return os.cpus().map((c) => {
+    let total = 0;
+    for (const k of Object.keys(c.times)) total += c.times[k];
+    return { idle: c.times.idle, total };
+  });
+}
+
+// Windows reports a process's CPU as lifetime processor-seconds, so a single reading is a
+// lifetime average, not "what it's doing now". Sampling twice inside the same shell and dividing
+// the delta by elapsed time and core count gives the live percentage Task Manager displays.
+const WIN_STATS_PS = [
+  "$ErrorActionPreference = 'SilentlyContinue'",
+  "$cores = [Environment]::ProcessorCount",
+  "$first = @{}",
+  "foreach ($p in Get-Process) { if ($p.CPU -ne $null) { $first[$p.Id] = $p.CPU } }",
+  "$t0 = Get-Date",
+  "Start-Sleep -Milliseconds 700",
+  "$elapsed = ((Get-Date) - $t0).TotalSeconds",
+  "$rows = foreach ($p in Get-Process) {",
+  "  $prev = $first[$p.Id]",
+  "  $pct = 0.0",
+  "  if ($prev -ne $null -and $p.CPU -ne $null -and $elapsed -gt 0) { $pct = (($p.CPU - $prev) / $elapsed / $cores) * 100 }",
+  "  [pscustomobject]@{ n = $p.ProcessName; c = $pct; m = ($p.WorkingSet64 / 1MB) }",
+  "}",
+  "$procs = $rows | Group-Object n | ForEach-Object {",
+  "  [pscustomobject]@{",
+  "    name  = $_.Name",
+  "    procs = $_.Count",
+  "    cpu   = [Math]::Round((($_.Group | Measure-Object -Property c -Sum).Sum), 1)",
+  "    memMB = [Math]::Round((($_.Group | Measure-Object -Property m -Sum).Sum), 1)",
+  "  }",
+  "} | Sort-Object -Property @{Expression='cpu';Descending=$true}, @{Expression='memMB';Descending=$true} | Select-Object -First 15",
+  "$disks = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object {",
+  "  [pscustomobject]@{ drive = $_.DeviceID; totalGB = [Math]::Round($_.Size / 1GB, 1); freeGB = [Math]::Round($_.FreeSpace / 1GB, 1) }",
+  "}",
+  "[pscustomobject]@{ processes = @($procs); disks = @($disks) } | ConvertTo-Json -Depth 4 -Compress",
+].join("\n");
+
+function parseWinStats(text) {
+  try {
+    const parsed = JSON.parse(text);
+    const arr = (v) => (Array.isArray(v) ? v : v ? [v] : []);
+    return { processes: arr(parsed.processes), disks: arr(parsed.disks) };
+  } catch {
+    return { processes: [], disks: [] };
+  }
+}
+
+// ps reports a live %CPU on both macOS and Linux; only the sort flag differs.
+function parsePsStats(text, cores) {
+  const merged = new Map();
+  for (const line of String(text).trim().split(/\r?\n/)) {
+    // The command comes last precisely because it is the one field that contains spaces.
+    const m = line.trim().match(/^(\d+)\s+([\d.]+)\s+(\d+)\s+(.+)$/);
+    if (!m) continue;
+    const raw = m[4].trim();
+    // Linux brackets its kernel threads — [kworker/0:1] is a name, not a path to take apart.
+    const name = raw.startsWith("[") ? raw.replace(/^\[|\]$/g, "") : path.basename(raw);
+    // ps counts a fully-busy core as 100%; Task Manager counts a fully-busy machine as 100%.
+    const cpu = parseFloat(m[2]) / (cores || 1);
+    const memMB = parseInt(m[3], 10) / 1024;
+    const prev = merged.get(name);
+    if (prev) { prev.procs += 1; prev.cpu += cpu; prev.memMB += memMB; }
+    else merged.set(name, { name, procs: 1, cpu, memMB });
+  }
+  return [...merged.values()]
+    .map((p) => ({ ...p, cpu: Math.round(p.cpu * 10) / 10, memMB: Math.round(p.memMB * 10) / 10 }))
+    .sort((a, b) => b.cpu - a.cpu || b.memMB - a.memMB)
+    .slice(0, 15);
+}
+
+function parseDfStats(text) {
+  const disks = [];
+  for (const line of String(text).trim().split(/\r?\n/).slice(1)) {
+    const f = line.trim().split(/\s+/);
+    if (f.length < 6 || !f[0].startsWith("/")) continue;
+    disks.push({
+      drive: f[5],
+      totalGB: Math.round((parseInt(f[1], 10) / 1048576) * 10) / 10,
+      freeGB: Math.round((parseInt(f[3], 10) / 1048576) * 10) / 10,
+    });
+  }
+  return disks;
+}
+
+async function systemStats() {
+  const cores = os.cpus().length || 1;
+  const before = cpuSnapshot();
+  const startedAt = Date.now();
+
+  let processes = [];
+  let disks = [];
+  let probeError = null;
+  if (process.platform === "win32") {
+    const res = await capture("powershell", ["-NoProfile", "-NonInteractive", "-Command", WIN_STATS_PS]);
+    const parsed = parseWinStats(res.out);
+    processes = parsed.processes;
+    disks = parsed.disks;
+    if (!processes.length) probeError = (res.err || "").trim().slice(0, 300) || "could not read the process list";
+  } else {
+    const psArgs = process.platform === "darwin"
+      ? ["-Aceo", "pid=,pcpu=,rss=,comm=", "-r"]
+      : ["-eo", "pid=,pcpu=,rss=,comm=", "--sort=-pcpu"];
+    const [psRes, dfRes] = await Promise.all([capture("ps", psArgs), capture("df", ["-kP"])]);
+    processes = parsePsStats(psRes.out, cores);
+    disks = parseDfStats(dfRes.out);
+    if (!processes.length) probeError = (psRes.err || "").trim().slice(0, 300) || "could not read the process list";
+  }
+
+  // The process probe above takes about a second, which doubles as the sampling window for
+  // overall CPU. If it bailed out early, wait out the rest of the window so the reading still
+  // means something — two snapshots taken milliseconds apart are noise, not a measurement.
+  const elapsed = Date.now() - startedAt;
+  if (elapsed < 500) await new Promise((r) => setTimeout(r, 500 - elapsed));
+  const after = cpuSnapshot();
+  const perCore = before.map((b, i) => {
+    const a = after[i] || b;
+    const dTotal = a.total - b.total;
+    const dIdle = a.idle - b.idle;
+    return dTotal > 0 ? Math.round((1 - dIdle / dTotal) * 1000) / 10 : 0;
+  });
+  const cpuPercent = Math.round((perCore.reduce((s, v) => s + v, 0) / perCore.length) * 10) / 10;
+
+  const totalMemMB = Math.round(os.totalmem() / 1048576);
+  const freeMemMB = Math.round(os.freemem() / 1048576);
+  const usedMemMB = totalMemMB - freeMemMB;
+
+  // Nutaan Code's own share, split the way its internals are: browser, renderer, gpu, utility.
+  const own = { processes: [], cpu: 0, memMB: 0 };
+  try {
+    for (const m of app.getAppMetrics()) {
+      const cpu = Math.round(((m.cpu?.percentCPUUsage || 0) / cores) * 10) / 10;
+      const memMB = Math.round(((m.memory?.workingSetSize || 0) / 1024) * 10) / 10;
+      own.processes.push({ type: m.type, pid: m.pid, cpu, memMB });
+      own.cpu = Math.round((own.cpu + cpu) * 10) / 10;
+      own.memMB = Math.round((own.memMB + memMB) * 10) / 10;
+    }
+    own.processes.sort((a, b) => b.cpu - a.cpu || b.memMB - a.memMB);
+  } catch {}
+
+  const busiest = processes.slice(0, 3).map((p) => `${p.name} ${p.cpu}%`).join(", ");
+  const summary =
+    `CPU ${cpuPercent}% of ${cores} cores · RAM ${Math.round((usedMemMB / totalMemMB) * 100)}% used ` +
+    `(${(usedMemMB / 1024).toFixed(1)} of ${(totalMemMB / 1024).toFixed(1)} GB)` +
+    (busiest ? ` · busiest: ${busiest}` : "") +
+    ` · Nutaan Code itself: ${own.cpu}% CPU, ${(own.memMB / 1024).toFixed(1)} GB across ${own.processes.length} processes.`;
+
+  return {
+    summary,
+    cpu: {
+      percent: cpuPercent,
+      cores,
+      perCore,
+      loadAverage: process.platform === "win32" ? null : os.loadavg().map((n) => Math.round(n * 100) / 100),
+    },
+    memory: {
+      totalMB: totalMemMB,
+      usedMB: usedMemMB,
+      freeMB: freeMemMB,
+      percent: Math.round((usedMemMB / totalMemMB) * 1000) / 10,
+    },
+    topProcesses: processes,
+    disks,
+    app: own,
+    uptimeHours: Math.round((os.uptime() / 3600) * 10) / 10,
+    platform: `${os.type()} ${os.release()} (${os.arch()})`,
+    ...(probeError ? { note: `Per-process figures unavailable: ${probeError}` } : {}),
+  };
+}
+
+// Killing a process is the one co-worker action that can take the machine down with it, so the
+// list of things we refuse is not advisory. lsass or csrss blue-screens Windows on the spot;
+// systemd or launchd does the equivalent elsewhere. Nobody asking to "close that app" means one
+// of these, so refuse rather than ask. explorer/Finder are deliberately absent — restarting the
+// shell is a normal thing to want, and the OS brings them straight back.
+const PROTECTED_PROCESSES = new Set([
+  "system", "system idle process", "registry", "memory compression", "smss", "csrss", "wininit",
+  "winlogon", "services", "lsass", "lsaiso", "svchost", "fontdrvhost", "dwm", "sihost", "ctfmon",
+  "audiodg", "securityhealthservice", "msmpeng",
+  "init", "systemd", "systemd-journald", "systemd-logind", "dbus-daemon", "kthreadd", "launchd",
+  "kernel_task", "windowserver", "loginwindow", "coreaudiod", "mds", "mds_stores", "syslogd",
+  "xorg", "wayland", "gnome-shell", "kwin_x11", "kwin_wayland", "pipewire", "pulseaudio",
+]);
+
+async function listProcesses() {
+  if (process.platform === "win32") {
+    const res = await capture("powershell", [
+      "-NoProfile", "-NonInteractive", "-Command",
+      "Get-Process | Select-Object Id, ProcessName | ConvertTo-Json -Compress",
+    ]);
+    try {
+      const parsed = JSON.parse(res.out);
+      return (Array.isArray(parsed) ? parsed : [parsed]).map((p) => ({ pid: p.Id, name: String(p.ProcessName || "") }));
+    } catch {
+      return [];
+    }
+  }
+  const res = await capture("ps", ["-eo", "pid=,comm="]);
+  return String(res.out).trim().split(/\r?\n/).map((line) => {
+    const m = line.trim().match(/^(\d+)\s+(.+)$/);
+    if (!m) return null;
+    const raw = m[2].trim();
+    return { pid: parseInt(m[1], 10), name: raw.startsWith("[") ? raw.replace(/^\[|\]$/g, "") : path.basename(raw) };
+  }).filter(Boolean);
+}
+
+// The whole app is one process tree — killing the GPU or a renderer child takes the window with
+// it, so our own tree is off limits however it was addressed.
+function ownPids() {
+  const mine = new Set([process.pid, process.ppid].filter((n) => typeof n === "number"));
+  try { for (const m of app.getAppMetrics()) mine.add(m.pid); } catch {}
+  return mine;
+}
+
+async function killProcess({ pid, name, force = false }) {
+  const wanted = String(name || "").trim().toLowerCase().replace(/\.exe$/, "");
+  if (pid == null && !wanted) throw new Error("Give either a pid or a process name to close.");
+
+  const all = await listProcesses();
+  const mine = ownPids();
+  let targets = pid != null
+    ? all.filter((p) => p.pid === Number(pid))
+    : all.filter((p) => p.name.toLowerCase().replace(/\.exe$/, "") === wanted);
+
+  // Fall back to a substring match so "chrome" still finds "Google Chrome Helper".
+  if (!targets.length && wanted) targets = all.filter((p) => p.name.toLowerCase().includes(wanted));
+
+  if (!targets.length) {
+    if (pid != null && !all.length) targets = [{ pid: Number(pid), name: "pid " + pid }]; // no listing available; trust the pid
+    else return { ok: false, killed: [], error: pid != null ? `No running process with pid ${pid}.` : `Nothing running called "${name}".` };
+  }
+
+  const blocked = [];
+  const doomed = [];
+  for (const t of targets) {
+    if (PROTECTED_PROCESSES.has(t.name.toLowerCase().replace(/\.exe$/, ""))) blocked.push({ ...t, reason: "a critical operating-system process — closing it would crash or freeze the machine" });
+    else if (mine.has(t.pid)) blocked.push({ ...t, reason: "part of Nutaan Code itself — closing it would kill this conversation" });
+    else doomed.push(t);
+  }
+
+  const killed = [];
+  const failed = [];
+  for (const t of doomed) {
+    if (process.platform === "win32") {
+      // /T takes the child processes with it, which is what "close this app" means for anything
+      // Chromium-based or any program that spawns helpers.
+      const args = ["/PID", String(t.pid), "/T"];
+      if (force) args.push("/F");
+      const res = await capture("taskkill", args, 10_000);
+      if (res.ok) killed.push(t);
+      else failed.push({ ...t, error: (res.err || res.out || "taskkill refused").trim().slice(0, 200) });
+    } else {
+      try { process.kill(t.pid, force ? "SIGKILL" : "SIGTERM"); killed.push(t); }
+      catch (e) { failed.push({ ...t, error: e.code === "EPERM" ? "needs elevated permissions" : e.message }); }
+    }
+  }
+
+  const parts = [];
+  if (killed.length) parts.push(`Closed ${killed.map((t) => `${t.name} (pid ${t.pid})`).join(", ")}.`);
+  if (failed.length) parts.push(`Could not close ${failed.map((t) => `${t.name} (${t.error})`).join(", ")}.`);
+  if (blocked.length) {
+    // Ten Chrome helpers refused for the same reason should read as one sentence, not ten.
+    const byReason = new Map();
+    for (const t of blocked) byReason.set(t.reason, (byReason.get(t.reason) || new Set()).add(t.name));
+    for (const [reason, names] of byReason) parts.push(`Refused to touch ${[...names].join(", ")} — ${reason}.`);
+  }
+  if (!force && failed.length) parts.push("Retry with force:true to terminate it outright.");
+
+  return {
+    ok: killed.length > 0,
+    killed,
+    failed,
+    blocked,
+    summary: parts.join(" ") || "Nothing was closed.",
+  };
+}
 
 // ---------- Document extraction (Excel / Word / PowerPoint / PDF), dependency-free ----------
 // Office files are ZIP archives; read the central directory and inflate entries with the built-in
@@ -1536,6 +2172,8 @@ ipcMain.handle("proc:run-command", async (_e, root, command) => runCommand(root,
 const backgroundTasks = new Map();
 let bgTaskSeq = 0;
 const MAX_BG_OUTPUT_LINES = 3000;
+// The self-healing monitor listens here: { output(task, stream, line), exit(task) }.
+const bgTaskListeners = [];
 
 function startBackgroundTask(root, command) {
   const id = "bg" + ++bgTaskSeq;
@@ -1549,7 +2187,10 @@ function startBackgroundTask(root, command) {
   backgroundTasks.set(id, task);
   const push = (chunk, stream) => {
     const text = chunk.toString();
-    for (const line of text.split(/\r?\n/)) task.output.push({ stream, line });
+    for (const line of text.split(/\r?\n/)) {
+      task.output.push({ stream, line });
+      for (const l of bgTaskListeners) { try { l.output?.(task, stream, line); } catch {} }
+    }
     if (task.output.length > MAX_BG_OUTPUT_LINES) task.output.splice(0, task.output.length - MAX_BG_OUTPUT_LINES);
     try { win?.webContents.send("bgtask:update", { id, status: task.status, command, lines: task.output.length }); } catch {}
   };
@@ -1561,6 +2202,7 @@ function startBackgroundTask(root, command) {
     task.endedAt = Date.now();
     task.child = null;
     try { win?.webContents.send("bgtask:update", { id, status: "exited", exitCode: task.exitCode, command }); } catch {}
+    for (const l of bgTaskListeners) { try { l.exit?.(task); } catch {} }
   });
   child.on("error", (err) => {
     task.status = "error";
@@ -2043,6 +2685,31 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "os_system_stats",
+      description:
+        "Read what Task Manager (Windows) or Activity Monitor (macOS) shows: live CPU usage overall and per core, RAM used vs free, the 15 busiest programs by CPU and memory, free disk space per drive, system uptime, and Nutaan Code's own CPU and memory broken down by internal process. Use this whenever the user asks how much CPU or memory something is using, why the machine or the app feels slow, what is running, or how much disk space is left. Takes about a second, because CPU has to be sampled over an interval to mean anything. Read-only.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "os_kill_process",
+      description:
+        "Close a running program on this computer — the same thing as End Task in Task Manager, Quit in Activity Monitor, or kill on Linux. Works on Windows, macOS and Linux. Give either a pid (from os_system_stats) or a program name; a name closes every process with that name, and on Windows their child processes too. Asks politely first, so pass force:true only if the program ignored that and the user wants it terminated outright. Critical operating-system processes and Nutaan Code's own processes are always refused. Requires user approval.",
+      parameters: {
+        type: "object",
+        properties: {
+          pid: { type: "number", description: "Process id to close — preferred, since it is unambiguous." },
+          name: { type: "string", description: "Program name instead of a pid, e.g. 'chrome' or 'Spotify'." },
+          force: { type: "boolean", description: "Terminate immediately instead of asking the program to quit. Unsaved work in that program is lost." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "web_search",
       description:
         "Search the web for things you don't know or that may have changed: library docs, error messages, API changes, package comparisons, current versions. Returns titles, URLs and snippets from Stack Overflow, GitHub, npm, Wikipedia and Hacker News. Follow up with web_fetch on any URL worth reading in full. Use this instead of guessing at an API you're unsure about.",
@@ -2366,6 +3033,116 @@ const TOOLS = [
   },
 ];
 
+// Tools for the autonomous layer: scheduled workers, the swarm, the self-healing loop. The chat
+// sees the worker/swarm ones so "every morning at 8 check the weather" or "launch my SaaS" can
+// be set up from a sentence; heal_step only exists inside a repair run.
+const EXTRA_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "worker_create",
+      description:
+        "Create a scheduled worker: a job Nutaan runs on its own at a set time or interval (a morning briefing, 'did any new RERA project get registered today', a stock price every hour, the weather, a site uptime check) and posts to the Updates feed with a desktop notification. Use when the user asks for something recurring, 'every morning', 'each day at', 'every hour', 'remind/tell/update me'. Write the prompt as instructions to a worker that will do the real lookup with web/browser tools and report facts with sources.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Short name, e.g. 'Morning briefing', 'RERA new projects'" },
+          icon: { type: "string", description: "One emoji" },
+          prompt: { type: "string", description: "What the worker must do and report, written for an unattended agent. Include cities, tickers, portals, URLs, thresholds the user mentioned." },
+          schedule_type: { type: "string", enum: ["daily", "interval", "once", "project-open", "app-start"], description: "daily at a time, interval every N minutes, once at a datetime, when this project opens, when the app starts" },
+          time: { type: "string", description: "HH:MM 24h local time, for daily" },
+          days: { type: "array", items: { type: "integer" }, description: "For daily: weekdays to run, 0=Sunday…6=Saturday. Empty = every day." },
+          every_minutes: { type: "integer", description: "For interval" },
+          at: { type: "string", description: "ISO datetime, for once" },
+          use_project: { type: "boolean", description: "true if the worker should run inside the currently open project (needed for git/test/code tasks)" },
+          allow_changes: { type: "boolean", description: "true only if the worker must edit files or run commands; default false (look-only)" },
+        },
+        required: ["name", "prompt", "schedule_type"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "worker_list",
+      description: "List the user's scheduled workers with their schedule, last run and last headline, and the most recent updates they produced.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "worker_update",
+      description: "Change a scheduled worker: enable/disable it, or change its name, prompt, schedule or permissions. Pass only the fields to change.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          enabled: { type: "boolean" },
+          name: { type: "string" },
+          prompt: { type: "string" },
+          schedule_type: { type: "string", enum: ["daily", "interval", "once", "project-open", "app-start"] },
+          time: { type: "string" },
+          days: { type: "array", items: { type: "integer" } },
+          every_minutes: { type: "integer" },
+          allow_changes: { type: "boolean" },
+        },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "worker_delete",
+      description: "Delete a scheduled worker by id.",
+      parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "worker_run_now",
+      description: "Run a scheduled worker immediately (in the background) and return; its update will appear in the Updates feed when done.",
+      parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "swarm_launch",
+      description:
+        "Hand a large, multi-part outcome to Nutaan Swarm — a team of agents (Planner, Developer, Browser QA, Researcher, Reviewer, DevOps) that splits the goal, works in parallel, shares findings and merges a final report. Use for outcome-sized asks ('launch my SaaS', 'fix production', 'research my competitors', 'deploy this') rather than one-file edits. Returns at once; progress shows in the Swarm panel. After launching, tell the user it is running and stop — do not also attempt the work yourself.",
+      parameters: { type: "object", properties: { goal: { type: "string", description: "The outcome wanted, with any constraints the user stated" } }, required: ["goal"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "workspace_health",
+      description: "Read the Self-Healing Workspace state: monitoring mode, open incidents (crashes, failing tests, a dead health URL, browser errors) with their evidence and repair stages. Optionally run the project's health checks now.",
+      parameters: { type: "object", properties: { check_now: { type: "boolean", description: "Also run the test command and health URL now" } } },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "heal_step",
+      description: "(Repair runs only) Report progress through the repair loop so the user sees it live: stage is one of reproduce, diagnose, patch, test, deploy, verify.",
+      parameters: {
+        type: "object",
+        properties: {
+          stage: { type: "string", enum: ["reproduce", "diagnose", "patch", "test", "deploy", "verify"] },
+          status: { type: "string", enum: ["in_progress", "done", "skipped", "failed"] },
+          note: { type: "string", description: "One line: what you found / did / why skipped" },
+        },
+        required: ["stage", "status"],
+      },
+    },
+  },
+];
+const HEADLESS_ONLY_TOOLS = new Set(["heal_step"]);
+
 const URL_OPEN_PATTERN = /^\s*(start|open|xdg-open|cmd(\.exe)?\s*\/c\s*start)\s+["']?(https?:\/\/)/i;
 
 // gpt-oss models speak the "harmony" format and sometimes leak its channel markers into the
@@ -2402,6 +3179,7 @@ const PARALLEL_TOOLS = new Set([
   "web_search",
   "os_search",
   "os_read",
+  "os_system_stats",
   "kb_search",
   "view_image",
 ]);
@@ -2425,6 +3203,7 @@ const SAFE_TOOLS = new Set([
   "web_search",
   "os_search",
   "os_read",
+  "os_system_stats",
   "kb_search",
   "task_write",
   "view_image",
@@ -2437,6 +3216,9 @@ const SAFE_TOOLS = new Set([
   "osint_http_recon",
   "osint_dork_generator",
   "vuln_static_scan",
+  "worker_list",
+  "workspace_health",
+  "swarm_launch",
   // browser_execute_script, memory_write, and generate_image are deliberately NOT in this list — they require approval.
 ]);
 const SEARCH_SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", "out"]);
@@ -2529,8 +3311,10 @@ ipcMain.on("agent:browser-action-response", (_e, { id, result }) => {
 });
 
 // How many checklist items the model last reported as unfinished. Read after a turn ends with
-// no tool call, to tell "I'm done" apart from "I stopped halfway".
-let openTaskCount = 0;
+// no tool call, to tell "I'm done" apart from "I stopped halfway". Keyed by sender because
+// headless runs (workers, swarm agents, the healer) run alongside the interactive chat, each
+// with its own checklist.
+const openTaskCounts = new WeakMap();
 
 async function executeTool(sender, root, name, args, callId, signal, imageConfig) {
   switch (name) {
@@ -2603,6 +3387,10 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
       if (r.kind === "image") return { ok: true, ...r };
       return { ok: true, ...r };
     }
+    case "os_kill_process":
+      return await killProcess(args || {});
+    case "os_system_stats":
+      return await systemStats();
     case "os_open": {
       const target = /^[a-z][a-z0-9+.-]*:\/\//i.test(args.target) ? args.target : resolveUserPath(args.target);
       const res = await runCommand(root, osOpenCommand(target), signal);
@@ -2626,8 +3414,8 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
         .filter((t) => t.task);
       sender.send("agent:tasks-update", { tasks });
       const completed = tasks.filter((t) => t.status === "completed").length;
-      openTaskCount = tasks.length - completed;
-      return { ok: true, total: tasks.length, completed, remaining: openTaskCount };
+      openTaskCounts.set(sender, tasks.length - completed);
+      return { ok: true, total: tasks.length, completed, remaining: tasks.length - completed };
     }
     case "kb_add": {
       const entry = await kbIngest(
@@ -2725,7 +3513,52 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
       return arsenal.generateDorks(args.target, args.type);
     case "vuln_static_scan":
       return await arsenal.scanProject(root, args.path || ".");
+    case "worker_create": {
+      const schedule = workerScheduleFromArgs(args);
+      const w = await workers.create({
+        name: args.name,
+        icon: args.icon,
+        prompt: args.prompt,
+        schedule,
+        root: args.use_project ? root : null,
+        readOnly: !args.allow_changes,
+      });
+      return { ok: true, worker: summariseWorker(w), note: `Created. It will run ${w.scheduleText || describeSchedule(w.schedule)}; results land in the Updates feed (Workers in the sidebar) with a desktop notification.` };
+    }
+    case "worker_list":
+      return { workers: workers.list().map(summariseWorker), recentUpdates: workers.listUpdates(10).map((u) => ({ worker: u.workerName, at: new Date(u.at).toLocaleString(), status: u.status, headline: u.headline })) };
+    case "worker_update": {
+      const patch = {};
+      if (args.enabled != null) patch.enabled = !!args.enabled;
+      if (args.name) patch.name = args.name;
+      if (args.prompt) patch.prompt = args.prompt;
+      if (args.allow_changes != null) patch.readOnly = !args.allow_changes;
+      if (args.schedule_type || args.time || args.days || args.every_minutes) {
+        const cur = workers.get(args.id)?.schedule || {};
+        patch.schedule = workerScheduleFromArgs({ schedule_type: args.schedule_type || cur.type, time: args.time || cur.time, days: args.days || cur.days, every_minutes: args.every_minutes || cur.everyMinutes, at: args.at || cur.at });
+      }
+      return { ok: true, worker: summariseWorker(await workers.update(args.id, patch)) };
+    }
+    case "worker_delete":
+      return workers.remove(args.id);
+    case "worker_run_now":
+      return workers.runNow(args.id);
+    case "swarm_launch": {
+      const { runId } = swarm.start({ goal: args.goal, root, model: settingsCache.model });
+      sender.send("swarm:launched", { runId, goal: args.goal });
+      return { ok: true, runId, note: "Nutaan Swarm is running this goal in the background. Tell the user it's running and that the team's progress and final report appear in the Swarm panel — then stop; do not do the work yourself." };
+    }
+    case "workspace_health": {
+      if (args.check_now && root) return healer.scan(root);
+      return healer.view(root);
+    }
+    case "heal_step": {
+      if (!sender.hooks?.heal_step) return { ok: false, error: "heal_step is only available inside a repair run" };
+      return sender.hooks.heal_step(args);
+    }
     default:
+      // A tool the user configured, rather than one built in.
+      if (toolRegistry.owns(name)) return toolRegistry.call(name, args, { root, sender });
       throw new Error(`Unknown tool: ${name}`);
   }
 }
@@ -2741,6 +3574,10 @@ function permissionPreview(name, args) {
   if (name === "browser_execute_script") return { title: "Run script in browser panel", detail: args.code };
   if (name === "memory_write") return { title: `Save memory: ${args.id}`, detail: args.content };
   if (name === "generate_image") return { title: `Generate image: ${args.path}`, detail: args.prompt };
+  if (name === "os_kill_process") {
+    const who = args.pid != null ? `pid ${args.pid}` : args.name;
+    return { title: `Close ${who}`, detail: args.force ? "Terminates it immediately — any unsaved work in that program is lost." : "Asks the program to quit. Unsaved work may be lost." };
+  }
   if (name === "os_open") return { title: `Open ${args.target}`, detail: "Opens in the system's default application." };
   if (name === "os_launch_app") return { title: `Launch ${args.app}`, detail: "Starts the application." };
   if (name === "kb_add") {
@@ -2749,6 +3586,8 @@ function permissionPreview(name, args) {
       detail: args.url ? `Fetch and index ${args.url}` : String(args.text || "").slice(0, 2000),
     };
   }
+  const fromRegistry = toolRegistry.describe(name, args);
+  if (fromRegistry) return fromRegistry;
   return { title: name, detail: JSON.stringify(args) };
 }
 
@@ -2771,6 +3610,39 @@ function summarizableTranscript(msgs) {
       return `${m.role}: ${String(m.content || "").slice(0, 2000)}`;
     })
     .join("\n");
+}
+
+// Last resort when every model is rate-limited or down: if the user has a coding-agent CLI
+// connected (Codex, Claude Code), hand the task to it and stream its answer back, rather than
+// ending the turn with "all models are busy". Returns true if the handoff produced an answer.
+async function tryCliAgentFallback(sender, chatMessages, root, signal) {
+  const agent = toolRegistry.firstCliAgent();
+  if (!agent) return false;
+
+  // Give the agent the request plus what has happened, so it picks up the task rather than a bare
+  // last line. The system prompt (message 0) is skipped — it is this app's tool wiring, not context.
+  const context = summarizableTranscript(chatMessages.slice(1)).slice(-12000);
+  const prompt =
+    "You are being handed a task because the primary models are unavailable. Continue it and give a " +
+    "complete answer. Here is the conversation so far:\n\n" + context;
+
+  sender.send("agent:model-switched", { from: "all models", to: agent.def.name, reason: "every model was unavailable — handed to " + agent.def.name });
+  sender.send("agent:assistant-delta", { content: `_All models were unavailable, so ${agent.def.name} took over:_\n\n` });
+
+  let res;
+  try {
+    res = await toolRegistry.callCli(agent, { prompt }, { root, signal });
+  } catch (e) {
+    res = { ok: false, error: e.message };
+  }
+  if (!res.ok) {
+    sender.send("agent:assistant-delta", { content: `\n(${agent.def.name} could not finish: ${res.error || "unknown error"})` });
+    return false;
+  }
+  sender.send("agent:assistant-delta", { content: res.result });
+  chatMessages.push({ role: "assistant", content: `[${agent.def.name}] ${res.result}` });
+  sender.send("agent:done", { aborted: false, messages: chatMessages });
+  return true;
 }
 
 async function compactIfNeeded(sender, chatMessages, { baseUrl, apiKey, model }) {
@@ -3080,7 +3952,14 @@ function flattenToolHistory(msgs) {
   return merged;
 }
 
-async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages, flattenHistory, forcedTool }) {
+async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages, flattenHistory, forcedTool, allowedTools }) {
+  // A swarm role or a worker only gets the tools its job needs — a Researcher cannot write
+  // files, a Planner cannot run commands — so the model can't wander outside its remit. The
+  // interactive chat sees everything except the tools that only make sense inside a headless run.
+  const offered = [...TOOLS, ...toolRegistry.agentTools(), ...EXTRA_TOOLS];
+  const toolList = allowedTools
+    ? offered.filter((t) => allowedTools.has(t.function.name))
+    : offered.filter((t) => !HEADLESS_ONLY_TOOLS.has(t.function.name));
   const res = await fetch(buildEndpointUrl(baseUrl, "/chat/completions"), {
     method: "POST",
     signal: controller.signal,
@@ -3096,7 +3975,8 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
       // already-assembled Azure history and being rejected. Deciding at the moment of the call
       // means it always matches the model actually being asked.
       messages: [chatMessages[0], ...(flattenHistory ? flattenToolHistory(chatMessages.slice(1)) : normalizeHistory(chatMessages.slice(1), model))],
-      tools: TOOLS,
+      // Everything the user switched on in Tools is offered to the model as well.
+      tools: toolList,
       // Weak models ignore even a forceful "call the tool, don't lecture" instruction and write a
       // simulated report instead. When the user's request is an unambiguous "audit this URL" or
       // "find tools", we force the exact tool so the model physically cannot answer with prose —
@@ -3258,7 +4138,12 @@ const TOOL_PRIORITY_REMINDER =
   "they gave you). Searching the web before checking code you already have direct access to is slower " +
   "and often wrong — never do that as a first resort.\n\n" +
   "PERSONAL / DEVICE FILES — SEARCH THE COMPUTER, NOT THE WEB: When the user refers to something of theirs — 'my file', 'a document/agreement/spreadsheet/email I have', 'in my Downloads', a contract or two company names they mention as if you'd have it — it is almost certainly a file ON THIS COMPUTER, not something to look up online. Use os_search to find it (search by a distinctive word — a company name, a keyword) and os_read to read it (it extracts Word/Excel/PowerPoint/PDF/email text). Do this BEFORE any web_search or browser_navigate. Only search the web if os_search genuinely finds nothing on the device or the user clearly wants public/online information. Answering 'I found no public results' when the file was sitting in their Downloads is the exact mistake to avoid.\n\n" +
-  "FREEING DISK SPACE: When the user asks to clean up storage, free disk space, clear the cache, or delete temp/useless files, use the cleanup_storage tool — it clears Nutaan Code's update-download cache, HTTP/GPU caches and stale temp without touching their settings, chats, knowledge base, memory or saved logins. Run it with dry_run:true first to show them how much can be freed, then again to clean. Don't try to rm these paths by hand.\n\n" +
+  "FREEING DISK SPACE: When the user asks to clean up storage, free disk space, clear the cache, or delete temp/useless files, use the cleanup_storage tool — it clears Nutaan Code's update-download cache, HTTP/GPU caches and stale temp without touching their settings, chats, knowledge base, memory or saved logins. Run it with dry_run:true first to show them how much can be freed, then again to clean. Don't try to rm these paths by hand.\n" +
+  "REPORT THE CLEANUP NUMBER THAT IS TRUE, NOT THE ONE THAT SOUNDS GOOD: a dry run's scannedMB is only a candidate — plenty of it is locked by running programs and will not budge. After a real clean, the ONLY number you may call freed is freedMB, which is measured from what is actually gone. If blockedCount is above zero, say so in the same breath: name what could not be removed and why, and never fold blockedMB into the total. The tool hands you a `summary` field that already says all of this correctly — follow it. Claiming hundreds of megabytes were freed when the folders are still sitting there is the single worst thing you can do here; the user WILL check.\n\n" +
+  "RECURRING ASKS BECOME WORKERS: 'every morning', 'each day at 8', 'every hour', 'keep me updated on', 'check daily whether a new RERA project came', 'tell me the weather/stock price every…' — these are scheduled workers, not something to do once now. Call worker_create with a prompt written for an unattended agent (include the city, tickers, portal, URL, thresholds), the schedule (daily+time+days / interval), and use_project:true only if it needs this project's files. Then confirm the schedule and that results land in the Updates feed with a desktop notification. If they say 'run it now too', also call worker_run_now. worker_list shows what exists; worker_update / worker_delete change it.\n" +
+  "OUTCOME-SIZED ASKS GO TO THE SWARM: 'launch my SaaS', 'fix production', 'launch the website', 'build a marketing campaign', 'research my competitors', 'set up a CRM', 'deploy this' — a goal with several independent parts that a team would split — call swarm_launch with the goal and stop; the Planner/Developer/Browser QA/Researcher/Reviewer/DevOps agents run it in parallel and the report appears in the Swarm panel. A single focused change (one file, one bug) stays with you.\n" +
+  "WORKSPACE HEALTH: workspace_health tells you what the self-healing monitor has seen (crashes in background tasks, failing tests, a dead health URL, browser console errors) — check it when the user says something is broken and you don't yet know what.\n\n" +
+  "THE MACHINE ITSELF, NOT JUST THE PROJECT: when the user asks how much CPU or memory something is using, why their computer or this app feels slow, what is running, or how much disk space is left, call os_system_stats — it is the Task Manager / Activity Monitor reading, live, on Windows, macOS and Linux alike. Never guess at these numbers and never tell the user to go open Task Manager themselves; you can read it, so read it. To close a program — 'kill that', 'shut it down', 'it's frozen' — use os_kill_process with the pid from os_system_stats. It asks the program to quit first; only pass force:true if that was already tried or the user asks for it, and warn that unsaved work is lost. Critical OS processes are refused by the tool, so never work around that with run_command.\n\n" +
   "READING THE USER'S EMAIL — GO GET IT, DON'T STOP AT 'NO LOCAL FILES': 'Read my emails' rarely means a loose .eml on disk. Most people's mail is either in a webmail account or in the Outlook/Gmail desktop app, so after a quick os_search for .eml/.mbox/.msg turns up nothing, OPEN THE WEBMAIL IN THE BUILT-IN BROWSER and read it — do not stop and hand the user a menu. browser_navigate to https://mail.google.com for Gmail, or https://outlook.live.com (personal) / https://outlook.office.com (work) for Outlook, then browser_read_page to read the inbox and click a message to open it. The built-in browser has its OWN session, separate from the user's Chrome, so if a sign-in page shows, say so and ask the user to sign in once in the browser panel (their own credentials, entered by them — you must NEVER type their email password yourself); then continue reading. Outlook DESKTOP mail is a proprietary local OST that can't be read as a file — use Outlook on the web instead. Only ask which account when it is genuinely ambiguous; otherwise open the obvious one (Gmail) and start reading.\n\n" +
   // A vague instruction is an instruction to go and find out, not a reason to stop. "Run it and
   // fix the UI issues" was answered with a table of things the user might have meant and a
@@ -3303,9 +4188,12 @@ function detectDirectTool(text) {
   return null;
 }
 
-async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, messages, autoApprove }) {
-  const controller = new AbortController();
-  agentAbort = controller;
+// `headless` runs (workers, swarm agents, the healer) bring their own AbortController, get a
+// tool allowlist, may be read-only, and never block on a permission prompt — there is nobody
+// at the keyboard to answer it. Everything else is the same loop the chat uses.
+async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, messages, autoApprove, headless, controller: ownController, allowedTools, readOnly, maxIterations }) {
+  const controller = ownController || new AbortController();
+  if (!headless) agentAbort = controller;
   let chatMessages = [...messages];
   const aborted = () => controller.signal.aborted;
   // Read fresh each turn (not persisted into chatMessages) so memory_write calls take effect
@@ -3314,13 +4202,15 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
   let emptyResponseRetries = 0;
   let truncatedRetries = 0;
   let unfinishedNudges = 0;
-  openTaskCount = 0;
+  openTaskCounts.set(sender, 0);
+  const openTaskCount = () => openTaskCounts.get(sender) || 0;
+  const iterationBudget = Math.max(1, Number(maxIterations) || MAX_AGENT_ITERATIONS);
   // Enough room to walk past a couple of busy providers — with capacity failures switching
   // after a single retry, two was too few to reach a model that was actually free.
   const MAX_MODEL_SWITCHES = 4;
   const triedModels = new Set([model]);
 
-  for (let i = 0; i < MAX_AGENT_ITERATIONS; i++) {
+  for (let i = 0; i < iterationBudget; i++) {
     if (aborted()) {
       sender.send("agent:done", { aborted: true, messages: chatMessages });
       return;
@@ -3343,6 +4233,7 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
     const extraSystemMessages = [
       { role: "system", content: TOOL_PRIORITY_REMINDER },
       { role: "system", content: modeContext },
+      ...(toolGuidance() ? [{ role: "system", content: toolGuidance() }] : []),
       ...(memoryContext ? [{ role: "system", content: memoryContext }] : []),
     ];
     // Sanitising for thought_signature happens inside streamChatCompletion, which knows which
@@ -3365,7 +4256,7 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
     let flattenHistory = false;
     for (let attempt = 0; ; attempt++) {
       try {
-        streamResult = await streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages: requestMessages, flattenHistory, forcedTool });
+        streamResult = await streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages: requestMessages, flattenHistory, forcedTool, allowedTools });
       } catch (err) {
         if (aborted()) {
           sender.send("agent:done", { aborted: true, messages: chatMessages });
@@ -3439,6 +4330,10 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
         const canSwitch = canSwitchModels;
         const nextModel = canSwitch ? await pickFallbackModel(baseUrl, apiKey, triedModels) : null;
         if (!nextModel) {
+          // No model left. Before failing, hand the task to a connected coding-agent CLI (Codex,
+          // Claude Code) if there is one — it runs on its own account, so a Nutaan-side outage
+          // does not have to stop the work.
+          if (await tryCliAgentFallback(sender, chatMessages, root, controller.signal)) return;
           // Nothing left to try. If everything is rate-limited, say so plainly — the turn isn't
           // broken, the whole catalog is just busy — rather than surfacing a raw provider string
           // that reads like a crash. This is the signal the UI needs to stop the "thinking"
@@ -3562,14 +4457,15 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
       // the next step and stopped. Its own checklist is the most reliable signal we have for
       // that, so an unfinished one earns a nudge rather than a silent end.
       const MAX_UNFINISHED_NUDGES = 3;
-      if (openTaskCount > 0 && unfinishedNudges < MAX_UNFINISHED_NUDGES) {
+      if (openTaskCount() > 0 && unfinishedNudges < MAX_UNFINISHED_NUDGES) {
         unfinishedNudges++;
+        const n = openTaskCount();
         chatMessages.push({
           role: "user",
-          content: `You still have ${openTaskCount} unfinished task${openTaskCount === 1 ? "" : "s"} on your checklist. Carry on and actually do the next one — don't just describe it. Update the checklist as you complete each item, and only stop when everything is done or you hit something you genuinely cannot resolve.`,
+          content: `You still have ${n} unfinished task${n === 1 ? "" : "s"} on your checklist. Carry on and actually do the next one — don't just describe it. Update the checklist as you complete each item, and only stop when everything is done or you hit something you genuinely cannot resolve.`,
         });
         sender.send("agent:retrying", {
-          message: `${openTaskCount} task${openTaskCount === 1 ? "" : "s"} still open — continuing`,
+          message: `${n} task${n === 1 ? "" : "s"} still open — continuing`,
           attempt: unfinishedNudges,
           max: MAX_UNFINISHED_NUDGES,
           delayMs: 200,
@@ -3625,9 +4521,18 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
 
       let approved = true;
       // A dry-run cleanup only reports what it *would* remove — no approval needed for a preview.
-      const isSafe = SAFE_TOOLS.has(name) || (name === "cleanup_storage" && args && args.dry_run);
+      const isSafe = SAFE_TOOLS.has(name) || (name === "cleanup_storage" && args && args.dry_run) ||
+        toolRegistry.isSafe(name) || HEADLESS_ONLY_TOOLS.has(name);
+      if (!isSafe && readOnly) {
+        // A look-only worker asked to change something. Refuse with a reason the model can
+        // relay, rather than silently doing it — the user set this worker up as read-only.
+        const result = { error: `This run is read-only: ${name} is not allowed. Report what you would have changed instead.` };
+        sender.send("agent:tool-result", { id: call.id, name, result });
+        chatMessages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
+        continue;
+      }
       if (!isSafe) {
-        if (autoApprove) {
+        if (autoApprove || headless) {
           sender.send("agent:permission-request", { id: call.id, name, args, autoApproved: true, ...permissionPreview(name, args) });
         } else {
           approved = await requestPermission(sender, call.id, { name, args, ...permissionPreview(name, args) });
@@ -3735,4 +4640,198 @@ ipcMain.on("agent:stop", () => {
   pendingPermissions.clear();
   for (const resolve of pendingBrowserActions.values()) resolve({ ok: false, error: "Stopped" });
   pendingBrowserActions.clear();
+});
+
+// ---------- Autonomous layer: workers, swarm, self-healing, today ----------
+// Everything below runs the same agent loop as the chat, with nobody at the keyboard: events are
+// collected instead of rendered, browser actions are routed to the real window's panel (the only
+// browser there is), and the promise resolves with the final assistant text.
+const { WorkerScheduler, describeSchedule } = require("./agents/workers");
+const { Swarm } = require("./agents/swarm");
+const { Healer } = require("./agents/healer");
+const { Today } = require("./agents/today");
+
+async function headlessBackend(model) {
+  const s = await refreshSettingsCache();
+  const backend = await activeBackend({ baseUrl: s.baseUrl, apiKey: s.apiKey, nutaanKey: s.nutaanKey, customProviders: s.customProviders, modelProviderId: s.modelProviderId });
+  if (!backend.apiKey) throw new Error("Nutaan Code is not activated — add your nutaan.com API key in Settings first.");
+  return { ...backend, model: model || s.model || FALLBACK_MODEL, imageModel: s.imageModel };
+}
+
+async function runHeadless({ root, model, systemPrompt, userPrompt, messages, allowedTools, readOnly, maxIterations, controller, onEvent, hooks }) {
+  let backend;
+  try { backend = await headlessBackend(model); } catch (err) { return { ok: false, error: err.message, text: "", toolsUsed: [] }; }
+  const chatMessages = messages || [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }];
+  const toolsUsed = [];
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (r) => { if (!settled) { settled = true; resolve(r); } };
+    const sender = {
+      hooks: hooks || null,
+      send(channel, data) {
+        try { onEvent?.(channel, data); } catch {}
+        if (channel === "agent:browser-action") {
+          if (win && !win.isDestroyed()) win.webContents.send(channel, data);
+          else {
+            const r = pendingBrowserActions.get(data.id);
+            pendingBrowserActions.delete(data.id);
+            r?.({ ok: false, error: "No browser window is open" });
+          }
+        } else if (channel === "agent:tool-start") {
+          toolsUsed.push({ name: data.name });
+        } else if (channel === "agent:done") {
+          const msgs = data.messages || [];
+          const last = [...msgs].reverse().find((m) => m.role === "assistant" && typeof m.content === "string" && m.content.trim());
+          finish({ ok: !data.aborted, aborted: !!data.aborted, text: last ? last.content : "", messages: msgs, toolsUsed });
+        } else if (channel === "agent:error") {
+          finish({ ok: false, error: data.message, text: "", toolsUsed });
+        }
+      },
+    };
+    runAgentLoop(sender, {
+      root: root || os.homedir(),
+      ...backend,
+      messages: chatMessages,
+      autoApprove: true,
+      headless: true,
+      controller,
+      allowedTools,
+      readOnly,
+      maxIterations,
+    }).catch((err) => finish({ ok: false, error: err.message, text: "", toolsUsed }));
+  });
+}
+
+// One plain completion, no tools, no streaming — for planning JSON, merging reports, and the
+// "today" suggestion pass.
+async function complete({ system, user, model, maxTokens = 2000 }) {
+  const backend = await headlessBackend(model);
+  const res = await fetch(buildEndpointUrl(backend.baseUrl, "/chat/completions"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...buildAuthHeaders(backend.baseUrl, backend.apiKey) },
+    body: JSON.stringify({
+      model: backend.model,
+      messages: [{ role: "system", content: system }, { role: "user", content: user }],
+      max_tokens: maxTokens,
+      stream: false,
+    }),
+  });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json())?.error?.message || detail; } catch {}
+    throw new Error(detail);
+  }
+  const json = await res.json();
+  return String(json?.choices?.[0]?.message?.content || "");
+}
+
+function notifyDesktop({ title, body }) {
+  try {
+    const { Notification } = require("electron");
+    if (!Notification.isSupported()) return;
+    const n = new Notification({ title: String(title).slice(0, 80), body: String(body || "").slice(0, 200), icon: path.join(__dirname, "assets", "logo.png") });
+    n.on("click", () => { try { win?.show(); win?.focus(); } catch {} });
+    n.show();
+  } catch {}
+}
+
+function emitToWindow(channel, data) {
+  try { if (win && !win.isDestroyed()) win.webContents.send(channel, data); } catch {}
+}
+
+const userDataDir = app.getPath("userData");
+const workers = new WorkerScheduler({ userDataDir, runHeadless, notify: notifyDesktop, emit: emitToWindow, log: (m) => console.log("[workers]", m) });
+const swarm = new Swarm({ userDataDir, runHeadless, complete, emit: emitToWindow, log: (m) => console.log("[swarm]", m) });
+const healer = new Healer({
+  userDataDir,
+  runHeadless,
+  notify: notifyDesktop,
+  emit: emitToWindow,
+  bgTasks: { list: () => [...backgroundTasks.values()].map((t) => ({ id: t.id, command: t.command, cwd: t.cwd, status: t.status })), view: (id) => bgTaskView(id, 200), stop: stopBgTask },
+  postUpdate: (u) => {
+    const update = { id: "up" + Date.now().toString(36), workerId: null, workerName: u.workerName, icon: u.icon, at: Date.now(), status: u.status, headline: u.headline, body: u.body, unread: true, reason: "healer" };
+    workers.updates.unshift(update);
+    workers.saveUpdates().catch(() => {});
+    emitToWindow("workers:update", update);
+  },
+  log: (m) => console.log("[healer]", m),
+});
+const today = new Today({ userDataDir, complete, log: (m) => console.log("[today]", m) });
+
+// Background-task output feeds the healer: a crash line in the dev server is an incident.
+bgTaskListeners.push({
+  output: (task, stream, line) => healer.onBgOutput(task, stream, line),
+  exit: (task) => healer.onBgExit(task),
+});
+
+app.whenReady().then(async () => {
+  await Promise.all([workers.load(), swarm.load(), healer.load()]).catch(() => {});
+  workers.start();
+  // Waking from sleep is exactly when a 07:30 briefing is most wanted — tick right away.
+  try {
+    const { powerMonitor } = require("electron");
+    powerMonitor.on("resume", () => workers.tick("resume").catch(() => {}));
+    powerMonitor.on("unlock-screen", () => workers.tick("unlock").catch(() => {}));
+  } catch {}
+});
+app.on("before-quit", () => { workers.stop(); healer.shutdown(); });
+
+function workerScheduleFromArgs(args) {
+  const type = args.schedule_type || "daily";
+  if (type === "interval") return { type, everyMinutes: Number(args.every_minutes) || 60 };
+  if (type === "once") return { type, at: args.at || new Date(Date.now() + 3600_000).toISOString() };
+  if (type === "daily") return { type, time: args.time || "08:00", days: Array.isArray(args.days) ? args.days : [] };
+  return { type };
+}
+
+function summariseWorker(w) {
+  return { id: w.id, name: w.name, icon: w.icon, enabled: w.enabled, schedule: describeSchedule(w.schedule), root: w.root, readOnly: w.readOnly, lastRunAt: w.lastRunAt ? new Date(w.lastRunAt).toLocaleString() : null, lastStatus: w.lastStatus, lastHeadline: w.lastHeadline, nextRunAt: w.nextRunAt ? new Date(w.nextRunAt).toLocaleString() : null };
+}
+
+// ---- IPC: workers ----
+ipcMain.handle("workers:list", () => ({ workers: workers.list(), templates: workers.templates(), unread: workers.unreadCount() }));
+ipcMain.handle("workers:create", (_e, spec) => workers.create(spec));
+ipcMain.handle("workers:update", (_e, id, patch) => workers.update(id, patch));
+ipcMain.handle("workers:remove", (_e, id) => workers.remove(id));
+ipcMain.handle("workers:run-now", (_e, id) => workers.runNow(id));
+ipcMain.handle("workers:stop", (_e, id) => workers.stopRun(id));
+ipcMain.handle("workers:updates", (_e, limit) => ({ updates: workers.listUpdates(limit || 100), unread: workers.unreadCount() }));
+ipcMain.handle("workers:mark-read", (_e, ids) => workers.markRead(ids));
+ipcMain.handle("workers:clear-updates", () => workers.clearUpdates());
+
+// ---- IPC: swarm ----
+ipcMain.handle("swarm:start", (_e, { goal, root, model }) => swarm.start({ goal, root, model: model || settingsCache.model }));
+ipcMain.handle("swarm:stop", (_e, runId) => swarm.stop(runId));
+ipcMain.handle("swarm:list", () => ({ runs: swarm.list(), roles: swarm.roles() }));
+ipcMain.handle("swarm:get", (_e, runId) => swarm.get(runId));
+
+// ---- IPC: healer ----
+ipcMain.handle("healer:view", (_e, root) => healer.view(root));
+ipcMain.handle("healer:set-mode", (_e, mode) => healer.setMode(mode));
+ipcMain.handle("healer:configure", (_e, root, patch) => healer.configureProject(root, patch));
+ipcMain.handle("healer:scan", (_e, root) => healer.scan(root));
+ipcMain.handle("healer:repair", (_e, id) => healer.repair(id).then((inc) => ({ ok: true, status: inc.status })).catch((e) => ({ ok: false, error: e.message })));
+ipcMain.handle("healer:stop-repair", (_e, id) => healer.stopRepair(id));
+ipcMain.handle("healer:ignore", (_e, id) => healer.ignore(id));
+ipcMain.handle("healer:clear", () => healer.clear());
+// The renderer's browser panel reports console errors and failed loads here.
+ipcMain.on("healer:signal", (_e, sig) => { healer.signal(sig || {}).catch(() => {}); });
+
+// ---- IPC: today + project lifecycle ----
+ipcMain.handle("today:build", async (_e, { root, lastChat, force }) => {
+  const view = healer.view(root);
+  const list = workers.list();
+  const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
+  const extra = {
+    incidents: view.incidents.filter((i) => i.status === "detected" || i.status === "needs-human"),
+    workers: list.filter((w) => w.enabled && w.nextRunAt && w.nextRunAt - Date.now() < 86_400_000).map((w) => ({ id: w.id, name: w.name, icon: w.icon, time: new Date(w.nextRunAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), dueToday: true, lastHeadline: w.lastHeadline })),
+    updatesToday: workers.listUpdates(50).filter((u) => u.at >= startOfDay.getTime()),
+    lastChat,
+  };
+  return today.build(root, extra, { force: !!force, useModel: !!settingsCache.nutaanKey || !!settingsCache.apiKey });
+});
+ipcMain.on("project:opened", (_e, root) => {
+  if (!root) return;
+  healer.projectOpened(root);
+  workers.projectOpened(root).catch(() => {});
 });

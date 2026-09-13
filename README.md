@@ -127,6 +127,46 @@ sources per conversation from **Add Context → Knowledge**.
 
 Text is embedded through nutaan.com; **the vectors stay on your machine.**
 
+### Today
+
+Open a project and the landing screen shows what it actually needs right now — worked out from
+the repo itself, not a canned list: uncommitted files, commits to push, TODO/FIXME comments with
+their locations, a missing test setup, a stale lockfile, `.env` keys that `.env.example` declares,
+open incidents from the workspace monitor, and the unfinished checklist from your last chat. Every
+card shows the evidence it came from. Click one and the instruction lands in the composer.
+
+### Workers
+
+Jobs Nutaan runs on its own. Set one up from **Workers** in the sidebar, pick a template, or just
+say it in chat — *"every morning at 8, check whether any new RERA project was registered"* — and
+the agent creates it. Each run is a real agent turn with the web, the browser panel and the OS
+tools; the result lands in the **Updates** feed with a desktop notification. Daily at a time,
+every N minutes, once, when the project opens, or when the app starts. A worker that slept through
+its 07:30 slot still runs when the machine wakes that morning.
+
+Templates: morning briefing, new RERA projects today, stock prices, weather, site uptime, project
+digest, competitor watch. Workers are read-only unless you tick *Allow it to edit files and run
+commands*.
+
+### Outcome mode and Nutaan Swarm
+
+Flip the composer to **Outcome** and name the result instead of the steps — *Launch my SaaS*,
+*Fix production*, *Research competitors*, *Deploy this*. A Planner reads the project and splits
+the goal across a team — Developer, Browser QA, Researcher, Reviewer, DevOps — that runs in
+parallel waves, shares findings on a board, and merges one report into the chat. Each role only
+has the tools its job needs. From normal chat, an outcome-sized ask is handed to the swarm
+automatically.
+
+### Self-Healing Workspace
+
+**Health** in the sidebar. Nutaan watches the dev server and other background tasks for crash and
+compile errors, the browser panel for console errors and failed loads on localhost, an optional
+health URL, and (optionally) re-runs your test command when files change. Anything it sees becomes
+an incident. In *Watch* mode it tells you; in *Auto-heal* it hands the incident to a repair agent
+that walks **Detect → Reproduce → Diagnose → Patch → Test → Deploy → Verify**, shows each stage
+live, and only marks *Verify* done with evidence — the page opened in the browser, or the tests
+green. The same problem is retried at most twice before it is flagged for a human.
+
 ### Commit and push
 
 ![Commit and push](docs/screenshots/03-git.png)

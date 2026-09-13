@@ -3,6 +3,8 @@ name: performance-review
 description: Find and fix performance problems in code. Use when the user says something is slow, asks to optimize, or wants a performance review.
 ---
 
+If what feels slow is the **computer** rather than the code — the whole machine lagging, a fan spinning up, the app itself stuttering — that is the `system-health` skill instead: measure it with `os_system_stats` before looking at a single line of source.
+
 Measure before guessing where possible — if there's a way to profile or time the slow path (via run_command), do that first rather than optimizing blind.
 
 Common real culprits, roughly in order of impact:

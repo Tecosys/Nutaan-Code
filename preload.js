@@ -26,6 +26,22 @@ contextBridge.exposeInMainWorld("nutaan", {
     get: (id) => ipcRenderer.invoke("bgtask:get", id),
     stop: (id) => ipcRenderer.invoke("bgtask:stop", id),
   },
+  tools: {
+    status: () => ipcRenderer.invoke("tools:status"),
+    catalog: () => ipcRenderer.invoke("tools:catalog"),
+    setEnabled: (id, enabled) => ipcRenderer.invoke("tools:set-enabled", id, enabled),
+    saveConfig: (id, config) => ipcRenderer.invoke("tools:save-config", id, config),
+    connect: (id) => ipcRenderer.invoke("tools:connect", id),
+    authorize: (id) => ipcRenderer.invoke("tools:authorize", id),
+    signOut: (id) => ipcRenderer.invoke("tools:sign-out", id),
+    addCustom: (spec) => ipcRenderer.invoke("tools:add-custom", spec),
+    removeCustom: (id) => ipcRenderer.invoke("tools:remove-custom", id),
+    onStatus: (callback) => {
+      const listener = (_e, data) => callback(data);
+      ipcRenderer.on("tools:status", listener);
+      return () => ipcRenderer.removeListener("tools:status", listener);
+    },
+  },
   osSearch: (payload) => ipcRenderer.invoke("os:search", payload),
   osOpen: (target) => ipcRenderer.invoke("os:open", target),
   osRead: (payload) => ipcRenderer.invoke("os:read", payload),
@@ -54,6 +70,45 @@ contextBridge.exposeInMainWorld("nutaan", {
     const listener = (_e, data) => callback(data);
     ipcRenderer.on("app:update-status", listener);
     return () => ipcRenderer.removeListener("app:update-status", listener);
+  },
+
+  // ---- autonomous layer ----
+  workers: {
+    list: () => ipcRenderer.invoke("workers:list"),
+    create: (spec) => ipcRenderer.invoke("workers:create", spec),
+    update: (id, patch) => ipcRenderer.invoke("workers:update", id, patch),
+    remove: (id) => ipcRenderer.invoke("workers:remove", id),
+    runNow: (id) => ipcRenderer.invoke("workers:run-now", id),
+    stop: (id) => ipcRenderer.invoke("workers:stop", id),
+    updates: (limit) => ipcRenderer.invoke("workers:updates", limit),
+    markRead: (ids) => ipcRenderer.invoke("workers:mark-read", ids),
+    clearUpdates: () => ipcRenderer.invoke("workers:clear-updates"),
+  },
+  swarm: {
+    start: (payload) => ipcRenderer.invoke("swarm:start", payload),
+    stop: (runId) => ipcRenderer.invoke("swarm:stop", runId),
+    list: () => ipcRenderer.invoke("swarm:list"),
+    get: (runId) => ipcRenderer.invoke("swarm:get", runId),
+  },
+  healer: {
+    view: (root) => ipcRenderer.invoke("healer:view", root),
+    setMode: (mode) => ipcRenderer.invoke("healer:set-mode", mode),
+    configure: (root, patch) => ipcRenderer.invoke("healer:configure", root, patch),
+    scan: (root) => ipcRenderer.invoke("healer:scan", root),
+    repair: (id) => ipcRenderer.invoke("healer:repair", id),
+    stopRepair: (id) => ipcRenderer.invoke("healer:stop-repair", id),
+    ignore: (id) => ipcRenderer.invoke("healer:ignore", id),
+    clear: () => ipcRenderer.invoke("healer:clear"),
+    signal: (sig) => ipcRenderer.send("healer:signal", sig),
+  },
+  today: (payload) => ipcRenderer.invoke("today:build", payload),
+  projectOpened: (root) => ipcRenderer.send("project:opened", root),
+  onAutonomousEvent: (channel, callback) => {
+    const valid = ["workers:changed", "workers:update", "workers:run", "swarm:event", "swarm:launched", "healer:changed", "healer:incident", "healer:activity", "healer:health", "healer:repair-done"];
+    if (!valid.includes(channel)) return () => {};
+    const listener = (_e, data) => callback(data);
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
   },
 
   sendAgentMessage: (payload) => ipcRenderer.send("agent:send", payload),

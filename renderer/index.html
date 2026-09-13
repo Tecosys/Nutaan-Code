@@ -111,8 +111,24 @@
         <div class="thread" id="thread">
           <div class="empty-state" id="emptyState">
             <img class="empty-mark" src="../assets/logo.png" alt="" />
-            <h1>Build anything with <span class="grad-text">Nutaan Code</span></h1>
-            <p class="empty-sub">Your AI coding agent that understands your entire project.</p>
+            <h1 id="emptyTitle">Build anything with <span class="grad-text">Nutaan Code</span></h1>
+            <p class="empty-sub" id="emptySub">Your AI coding agent that understands your entire project.</p>
+
+            <!-- Outcome mode: the user names the result, Nutaan Swarm picks the team and the workflow. -->
+            <div class="outcome-chips" id="outcomeChips" hidden></div>
+
+            <!-- Today: worked out from the project itself (git, TODOs, tests, incidents, workers), never canned. -->
+            <div class="today" id="todaySection" hidden>
+              <div class="today-head">
+                <span class="today-date" id="todayDate"></span>
+                <span class="today-headline" id="todayHeadline"></span>
+                <button class="icon-btn tiny" id="todayRefresh" title="Recompute from the project">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4.5V10h-5.4"/></svg>
+                </button>
+              </div>
+              <div class="today-grid" id="todayGrid"></div>
+            </div>
+
             <div class="quick-grid" id="quickGrid"></div>
             <button class="open-project-link" id="openProjectLink">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M3 7a2 2 0 0 1 2-2h3.6l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
@@ -164,6 +180,82 @@
         </div>
       </div>
 
+      <!-- Workers: scheduled jobs and the Updates feed they post to -->
+      <div class="page" id="workersPage" hidden>
+        <div class="page-inner">
+          <div class="page-head">
+            <div>
+              <h1>Workers</h1>
+              <p class="page-sub">Jobs Nutaan runs on its own — a morning briefing, "did a new RERA project come today", a stock price every hour, the weather. Each run does the real lookup and posts here, with a desktop notification.</p>
+            </div>
+            <button class="btn-primary" id="newWorkerBtn" type="button">+ New worker</button>
+          </div>
+          <div class="page-cols">
+            <section class="page-col">
+              <div class="page-col-title">Scheduled <span class="count" id="workerCount"></span></div>
+              <div class="worker-list" id="workerList"></div>
+              <div class="page-col-title" style="margin-top:18px">Start from a template</div>
+              <div class="template-grid" id="workerTemplates"></div>
+            </section>
+            <section class="page-col wide">
+              <div class="page-col-title">Updates <span class="count" id="updateCount"></span>
+                <span class="spacer"></span>
+                <button class="link-btn" id="markAllReadBtn" type="button">Mark all read</button>
+                <button class="link-btn" id="clearUpdatesBtn" type="button">Clear</button>
+              </div>
+              <div class="update-feed" id="updateFeed"></div>
+            </section>
+          </div>
+        </div>
+      </div>
+
+      <!-- Health: the self-healing workspace -->
+      <div class="page" id="healthPage" hidden>
+        <div class="page-inner">
+          <div class="page-head">
+            <div>
+              <h1>Self-Healing Workspace</h1>
+              <p class="page-sub">Nutaan watches the dev server, the browser panel, the tests and a health URL. When something breaks it runs Detect → Reproduce → Diagnose → Patch → Test → Deploy → Verify.</p>
+            </div>
+            <div class="mode-seg" id="healMode">
+              <button type="button" data-mode="off">Off</button>
+              <button type="button" data-mode="watch">Watch</button>
+              <button type="button" data-mode="auto">Auto-heal</button>
+            </div>
+          </div>
+          <div class="page-cols">
+            <section class="page-col">
+              <div class="page-col-title">This project</div>
+              <div class="health-config" id="healthConfig">
+                <label>Health URL <input type="text" id="healthUrl" placeholder="http://localhost:3000" /></label>
+                <label>Test command <input type="text" id="healthTest" placeholder="npm test" /></label>
+                <label>Deploy / restart command <input type="text" id="healthDeploy" placeholder="npm run build (optional)" /></label>
+                <label class="check"><input type="checkbox" id="healthWatchTests" /> Re-run tests when files change</label>
+                <div class="health-actions">
+                  <button class="btn-secondary" id="healthSave" type="button">Save</button>
+                  <button class="btn-secondary" id="healthScan" type="button">Check now</button>
+                </div>
+                <div class="health-status" id="healthStatus"></div>
+              </div>
+              <div class="page-col-title" style="margin-top:18px">Watching</div>
+              <div class="watch-list">
+                <div class="watch-item"><span class="dot"></span>Background tasks — crash, compile and unhandled-error lines</div>
+                <div class="watch-item"><span class="dot"></span>Browser panel — console errors and failed loads on localhost</div>
+                <div class="watch-item"><span class="dot"></span>Health URL — healthy → unhealthy transitions</div>
+                <div class="watch-item"><span class="dot"></span>Tests — a red suite after a file change</div>
+              </div>
+            </section>
+            <section class="page-col wide">
+              <div class="page-col-title">Incidents <span class="count" id="incidentCount"></span>
+                <span class="spacer"></span>
+                <button class="link-btn" id="clearIncidentsBtn" type="button">Clear resolved</button>
+              </div>
+              <div class="incident-list" id="incidentList"></div>
+            </section>
+          </div>
+        </div>
+      </div>
+
       <div class="composer-wrap">
         <div class="composer-inner">
           <div class="task-panel" id="taskPanel" hidden>
@@ -207,6 +299,14 @@
                   <span class="label-text">Commands</span>
                 </button>
                 <div class="pop-menu left" id="slashMenu" hidden></div>
+              </div>
+
+              <div class="mode-toggle" id="modeToggle" title="Chat: one agent, step by step. Outcome: name the result, a team of agents plans and delivers it.">
+                <button type="button" class="mode-opt active" data-mode="chat">Chat</button>
+                <button type="button" class="mode-opt" data-mode="outcome">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1"/></svg>
+                  Outcome
+                </button>
               </div>
 
               <div class="composer-spacer"></div>
@@ -420,6 +520,74 @@
   </div>
 </div>
 
+<div class="overlay" id="workerOverlay" hidden>
+  <div class="modal worker-modal">
+    <h3 id="workerModalTitle">New worker</h3>
+    <p class="note" style="margin:-12px 0 16px;">Write it the way you'd brief a person who'll do this without you: what to look up, where, and what to report. It runs with the web, the browser panel and your files.</p>
+
+    <div class="field-row">
+      <div class="field" style="flex:0 0 64px">
+        <label for="wkIcon">Icon</label>
+        <input type="text" id="wkIcon" placeholder="🤖" maxlength="4" />
+      </div>
+      <div class="field" style="flex:1">
+        <label for="wkName">Name</label>
+        <input type="text" id="wkName" placeholder="Morning briefing" />
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="wkPrompt">What should it do?</label>
+      <textarea id="wkPrompt" rows="6" placeholder="Check the West Bengal RERA portal for projects registered today. For each: name, promoter, district, registration number, link. If none, say so and list the latest 3."></textarea>
+    </div>
+
+    <div class="field-row">
+      <div class="field" style="flex:1">
+        <label for="wkType">When</label>
+        <select id="wkType">
+          <option value="daily">Every day at a time</option>
+          <option value="interval">Every N minutes</option>
+          <option value="once">Once, at a date and time</option>
+          <option value="project-open">When this project opens</option>
+          <option value="app-start">When Nutaan Code starts</option>
+        </select>
+      </div>
+      <div class="field" id="wkTimeField" style="flex:0 0 110px">
+        <label for="wkTime">Time</label>
+        <input type="time" id="wkTime" value="07:30" />
+      </div>
+      <div class="field" id="wkEveryField" style="flex:0 0 130px" hidden>
+        <label for="wkEvery">Every (min)</label>
+        <input type="number" id="wkEvery" value="60" min="5" max="1440" />
+      </div>
+      <div class="field" id="wkAtField" style="flex:0 0 200px" hidden>
+        <label for="wkAt">At</label>
+        <input type="datetime-local" id="wkAt" />
+      </div>
+    </div>
+
+    <div class="field" id="wkDaysField">
+      <label>Days</label>
+      <div class="day-picker" id="wkDays">
+        <button type="button" data-day="1">Mon</button><button type="button" data-day="2">Tue</button><button type="button" data-day="3">Wed</button><button type="button" data-day="4">Thu</button><button type="button" data-day="5">Fri</button><button type="button" data-day="6">Sat</button><button type="button" data-day="0">Sun</button>
+      </div>
+    </div>
+
+    <div class="field checks">
+      <label class="check"><input type="checkbox" id="wkProject" /> Run inside the open project <span class="hint" id="wkProjectHint"></span></label>
+      <label class="check"><input type="checkbox" id="wkChanges" /> Allow it to edit files and run commands</label>
+      <label class="check"><input type="checkbox" id="wkNotify" checked /> Desktop notification when it posts</label>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn-secondary" id="wkDelete" hidden>Delete</button>
+      <span class="spacer"></span>
+      <button class="btn-secondary" id="wkCancel">Cancel</button>
+      <button class="btn-primary" id="wkSave">Save worker</button>
+    </div>
+  </div>
+</div>
+
 <div class="overlay" id="settingsOverlay" hidden>
   <div class="modal modal-lg settings-modal">
     <div class="settings-head">
@@ -507,6 +675,25 @@
         <input type="text" id="baseUrlInput" hidden />
         <input type="password" id="apiKeyInput" hidden />
         <button id="useBuiltInBtn" type="button" hidden></button>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-title">Tools</div>
+        <div class="note">Switch on the apps and services the agent can use. Each one becomes tools it can call — an MCP server's tools, a task handed to another coding agent, or a signed-in web app it can drive.</div>
+        <div class="provider-list tool-list" id="toolList"></div>
+        <button class="btn-secondary add-provider-btn" id="addToolBtn" type="button">+ Add a custom MCP server</button>
+        <div class="provider-editor tool-editor" id="toolEditor" hidden>
+          <div class="pe-head">
+            <span id="teTitle">Add MCP server</span>
+            <button class="icon-btn tiny" id="teClose" title="Close" type="button">✕</button>
+          </div>
+          <div id="teFields"></div>
+          <div class="note tool-editor-error" id="teError" hidden></div>
+          <div class="pe-actions">
+            <button class="btn-secondary" id="teCancel" type="button">Cancel</button>
+            <button class="btn-primary" id="teSave" type="button">Save</button>
+          </div>
+        </div>
       </section>
 
       <details class="advanced" id="advancedDetails">
