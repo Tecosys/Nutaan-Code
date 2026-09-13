@@ -3091,7 +3091,9 @@
       "browser_scroll", "browser_screenshot", "browser_resize",
       "osint_search_tools", "osint_dns_recon", "osint_ip_lookup", "osint_subdomain_enum",
       "osint_http_recon", "osint_dork_generator", "vuln_static_scan",
-      "run_background", "check_background_task", "list_background_tasks", "stop_background_task",
+      // run_background / stop_background_task go through the approval card (like run_command), so
+      // they are NOT here — listing them too made a second, never-resolving spinner card.
+      "check_background_task", "list_background_tasks",
     ];
     if (visibleTools.includes(name)) appendToolCard(id, name, args);
     runActivity.textContent = toolLabel(name, args).replace(/<[^>]+>/g, "");
