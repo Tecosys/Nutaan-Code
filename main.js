@@ -782,6 +782,172 @@ const TEXTUAL_EXT = new Set([
   "html", "css", "scss", "sh", "bat", "ps1", "sql", "env",
 ]);
 
+// ---------- Document extraction (Excel / Word / PowerPoint / PDF), dependency-free ----------
+// Office files are ZIP archives; read the central directory and inflate entries with the built-in
+// zlib so the co-worker can actually read a spreadsheet or document instead of showing binary.
+const zlib = require("node:zlib");
+
+function unzip(buffer) {
+  const files = new Map();
+  // Locate the End of Central Directory record (scan back from the end).
+  let eocd = -1;
+  for (let i = buffer.length - 22; i >= 0 && i > buffer.length - 65558; i--) {
+    if (buffer.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) return files;
+  const count = buffer.readUInt16LE(eocd + 10);
+  let off = buffer.readUInt32LE(eocd + 16);
+  for (let n = 0; n < count && off + 46 <= buffer.length; n++) {
+    if (buffer.readUInt32LE(off) !== 0x02014b50) break;
+    const method = buffer.readUInt16LE(off + 10);
+    const compSize = buffer.readUInt32LE(off + 20);
+    const fnLen = buffer.readUInt16LE(off + 28);
+    const extraLen = buffer.readUInt16LE(off + 30);
+    const commentLen = buffer.readUInt16LE(off + 32);
+    const localOff = buffer.readUInt32LE(off + 42);
+    const name = buffer.toString("utf8", off + 46, off + 46 + fnLen);
+    // Jump to the local header to find where the data actually starts.
+    if (buffer.readUInt32LE(localOff) === 0x04034b50) {
+      const lfn = buffer.readUInt16LE(localOff + 26);
+      const lex = buffer.readUInt16LE(localOff + 28);
+      const dataStart = localOff + 30 + lfn + lex;
+      const raw = buffer.subarray(dataStart, dataStart + compSize);
+      try {
+        files.set(name, method === 0 ? Buffer.from(raw) : zlib.inflateRawSync(raw));
+      } catch { /* skip an entry that won't inflate */ }
+    }
+    off += 46 + fnLen + extraLen + commentLen;
+  }
+  return files;
+}
+
+function decodeXmlEntities(s) {
+  return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'").replace(/&#(\d+);/g, (_, d) => String.fromCharCode(+d)).replace(/&amp;/g, "&");
+}
+
+function extractDocx(buf) {
+  const doc = unzip(buf).get("word/document.xml");
+  if (!doc) return "";
+  const xml = doc.toString("utf8");
+  // Walk the document in order: emit text nodes (<w:t>), a newline per paragraph end / <w:br>,
+  // a tab per <w:tab/>, and ignore everything else (table properties, styles, etc.).
+  const re = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<\/w:p>|<w:tab\b[^>]*\/?>|<w:br\b[^>]*\/?>/g;
+  let m, out = "";
+  while ((m = re.exec(xml))) {
+    if (m[1] != null) out += decodeXmlEntities(m[1]);
+    else if (m[0] === "</w:p>") out += "\n";
+    else if (/tab/.test(m[0])) out += "\t";
+    else out += "\n";
+  }
+  return out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function extractXlsx(buf) {
+  const zip = unzip(buf);
+  // Shared strings table.
+  const shared = [];
+  const ss = zip.get("xl/sharedStrings.xml");
+  if (ss) {
+    const sx = ss.toString("utf8");
+    const sre = /<si>([\s\S]*?)<\/si>/g;
+    let m;
+    while ((m = sre.exec(sx))) {
+      const tre = /<t[^>]*>([\s\S]*?)<\/t>/g;
+      let t, s = "";
+      while ((t = tre.exec(m[1]))) s += decodeXmlEntities(t[1]);
+      shared.push(s);
+    }
+  }
+  const sheets = [...zip.keys()].filter((k) => /^xl\/worksheets\/sheet\d+\.xml$/.test(k)).sort();
+  const parts = [];
+  for (const key of sheets) {
+    const sx = zip.get(key).toString("utf8");
+    const rows = [];
+    const rre = /<row[^>]*>([\s\S]*?)<\/row>/g;
+    let rm;
+    while ((rm = rre.exec(sx))) {
+      const cells = [];
+      const cre = /<c\b([^>]*)>([\s\S]*?)<\/c>|<c\b([^>]*)\/>/g;
+      let cm;
+      while ((cm = cre.exec(rm[1]))) {
+        const attrs = cm[1] != null ? cm[1] : cm[3] || "";
+        const inner = cm[2] || "";
+        const tm = /\bt="([^"]+)"/.exec(attrs);
+        const type = tm ? tm[1] : "";
+        let val = "";
+        if (type === "s") {
+          const v = /<v>(\d+)<\/v>/.exec(inner);
+          val = v ? shared[+v[1]] || "" : "";
+        } else if (type === "inlineStr" || type === "str") {
+          const t = /<t[^>]*>([\s\S]*?)<\/t>/.exec(inner);
+          if (t) val = decodeXmlEntities(t[1]);
+          else { const v = /<v>([\s\S]*?)<\/v>/.exec(inner); val = v ? decodeXmlEntities(v[1]) : ""; }
+        } else {
+          const v = /<v>([\s\S]*?)<\/v>/.exec(inner);
+          val = v ? decodeXmlEntities(v[1]) : "";
+        }
+        cells.push(val);
+      }
+      rows.push(cells.join("\t"));
+    }
+    if (rows.length) parts.push((sheets.length > 1 ? `# ${key.split("/").pop()}\n` : "") + rows.join("\n"));
+  }
+  return parts.join("\n\n").trim();
+}
+
+function extractPptx(buf) {
+  const zip = unzip(buf);
+  const slides = [...zip.keys()].filter((k) => /^ppt\/slides\/slide\d+\.xml$/.test(k))
+    .sort((a, b) => (+a.match(/(\d+)/)[1]) - (+b.match(/(\d+)/)[1]));
+  const parts = [];
+  slides.forEach((key, i) => {
+    const sx = zip.get(key).toString("utf8");
+    const tre = /<a:t>([\s\S]*?)<\/a:t>/g;
+    let m, txt = [];
+    while ((m = tre.exec(sx))) txt.push(decodeXmlEntities(m[1]));
+    if (txt.length) parts.push(`--- Slide ${i + 1} ---\n` + txt.join("\n"));
+  });
+  return parts.join("\n\n").trim();
+}
+
+function extractPdf(buf) {
+  // Best-effort text: inflate content streams and pull the strings drawn by Tj/TJ operators.
+  // Works for normal (text-based) PDFs; scanned/image PDFs have no text to extract.
+  let text = "";
+  const re = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let m;
+  const grab = (s) => {
+    let out = "";
+    const tj = /\(((?:[^()\\]|\\.)*)\)\s*Tj|\[((?:[^\]]|\\.)*)\]\s*TJ/g;
+    let t;
+    while ((t = tj.exec(s))) {
+      const body = t[1] != null ? t[1] : (t[2] || "").replace(/\(((?:[^()\\]|\\.)*)\)/g, "$1").replace(/-?\d+(\.\d+)?/g, "");
+      out += body.replace(/\\[nrt]/g, " ").replace(/\\([()\\])/g, "$1");
+    }
+    return out;
+  };
+  while ((m = re.exec(buf.toString("latin1")))) {
+    const raw = Buffer.from(m[1], "latin1");
+    let s = null;
+    try { s = zlib.inflateSync(raw).toString("latin1"); } catch { s = raw.toString("latin1"); }
+    if (/BT|Tj|TJ/.test(s)) text += grab(s) + "\n";
+  }
+  // Drop hex-glyph tokens from subset-font runs we can't decode without the font map, so the
+  // readable (standard-encoded) text isn't buried in <F><CD>… noise.
+  return text.replace(/<[0-9A-Fa-f]{0,8}>/g, "").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function extractDocument(buffer, ext) {
+  if (ext === "docx") return extractDocx(buffer);
+  if (ext === "xlsx" || ext === "xlsm") return extractXlsx(buffer);
+  if (ext === "pptx") return extractPptx(buffer);
+  if (ext === "pdf") return extractPdf(buffer);
+  return "";
+}
+
+const DOC_EXT = new Set(["docx", "xlsx", "xlsm", "pptx", "pdf"]);
+
 async function coWorkerRead(p, limit = 600) {
   const target = resolveUserPath(p);
   const st = await fs.stat(target);
@@ -797,6 +963,31 @@ async function coWorkerRead(p, limit = 600) {
   if (IMAGE_MIME[ext]) {
     const buffer = await fs.readFile(target);
     return { kind: "image", path: target, dataUrl: `data:${IMAGE_MIME[ext]};base64,${buffer.toString("base64")}` };
+  }
+  if (DOC_EXT.has(ext)) {
+    if (st.size > 40_000_000) throw new Error("Document is too large to read (>40MB)");
+    const buffer = await fs.readFile(target);
+    let text = "";
+    try { text = extractDocument(buffer, ext); } catch { text = ""; }
+    if (text && text.trim()) {
+      const lines = text.split("\n");
+      return {
+        kind: "document",
+        path: target,
+        format: ext,
+        totalLines: lines.length,
+        content: lines.slice(0, Math.max(limit, 2000)).join("\n"),
+        hasMore: lines.length > Math.max(limit, 2000),
+      };
+    }
+    return {
+      kind: "binary",
+      path: target,
+      size: st.size,
+      note: ext === "pdf"
+        ? "This PDF appears to be scanned/image-only (no extractable text). Use os_open to view it, or ask for OCR."
+        : `Couldn't extract text from this .${ext}. Use os_open to open it in its own application.`,
+    };
   }
   if (!TEXTUAL_EXT.has(ext)) {
     return { kind: "binary", path: target, size: st.size, note: `Not a text or image file (.${ext}). Use os_open to open it in its own application.` };
@@ -1627,7 +1818,7 @@ const TOOLS = [
     function: {
       name: "os_read",
       description:
-        "Read any file on this computer by absolute path, ~-path, or a home-relative path like 'Downloads/notes.txt'. Text files come back as text, images come back viewable, folders list their contents. For a file type that is neither, use os_open instead.",
+        "Read any file on this computer by absolute path, ~-path, or a home-relative path like 'Downloads/notes.txt'. Text files come back as text; Word (.docx), Excel (.xlsx), PowerPoint (.pptx) and PDF documents have their text/data extracted so you can read them directly (a spreadsheet comes back as tab-separated rows); images come back viewable; folders list their contents. Use this to read the user's real documents and data. For a type that can't be read, use os_open instead.",
       parameters: {
         type: "object",
         properties: {
