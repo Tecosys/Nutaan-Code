@@ -2352,6 +2352,21 @@ body.resizing webview { pointer-events: none; }
   color: var(--text-dim);
   padding: 8px 10px 4px;
 }
+.model-item { display: flex; align-items: center; gap: 9px; }
+.model-item-logo {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  object-fit: contain;
+  background: #f4f4f7;
+  padding: 2px;
+  flex-shrink: 0;
+}
+.model-item .name { overflow: hidden; text-overflow: ellipsis; }
+/* logo preview next to the provider type select in the editor */
+.pe-type-row { display: flex; align-items: center; gap: 10px; }
+.pe-type-logo { width: 26px; height: 26px; border-radius: 7px; object-fit: contain; background: #f4f4f7; padding: 3px; flex-shrink: 0; }
+.pe-type-row select { flex: 1; }
 
 .field { margin-bottom: 16px; }
 .field label {

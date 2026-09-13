@@ -1390,6 +1390,22 @@
       });
     });
 
+    // Native alert()/confirm()/prompt() are OS-level modals the agent can't see in the DOM, so a
+    // page that pops "Invalid username or password" would block the webview and the agent would
+    // loop retrying the same thing forever. Override them to capture the message (surfaced in
+    // browser_read_page) and never block. Re-injected on every load since a navigation resets it.
+    view.addEventListener("dom-ready", () => {
+      view.executeJavaScript(`(function(){
+        if (window.__nutaanDialogHook) return;
+        window.__nutaanDialogHook = true;
+        window.__nutaanDialogs = [];
+        var rec = function(type, msg){ try { window.__nutaanDialogs.push({type:type, message:String(msg)}); if(window.__nutaanDialogs.length>12) window.__nutaanDialogs.shift(); } catch(e){} };
+        window.alert = function(m){ rec('alert', m); };
+        window.confirm = function(m){ rec('confirm', m); return false; };
+        window.prompt = function(m){ rec('prompt', m); return null; };
+      })();`).catch(() => {});
+    });
+
     view.addEventListener("did-start-loading", () => {
       tab.loading = true;
       if (tab.id === activeBrowserTabId) startLoadbar();
@@ -2121,9 +2137,9 @@
   // and repaint the settings picker. Each entry carries its providerId so selection can route.
   function rebuildModels() {
     aggregatedModels = [];
-    for (const id of nutaanModels) aggregatedModels.push({ id, providerId: "", providerName: "Nutaan" });
+    for (const id of nutaanModels) aggregatedModels.push({ id, providerId: "", providerName: "Nutaan", providerType: "nutaan" });
     for (const p of settings.customProviders || []) {
-      for (const id of p.models || []) aggregatedModels.push({ id, providerId: p.id, providerName: p.name });
+      for (const id of p.models || []) aggregatedModels.push({ id, providerId: p.id, providerName: p.name, providerType: p.type });
     }
     if (!modelSelectSettings) return;
     modelSelectSettings.innerHTML = "";
@@ -2182,8 +2198,18 @@
           }
           const active = m.id === settings.model && (m.providerId || "") === (settings.modelProviderId || "");
           const item = document.createElement("div");
-          item.className = "menu-item mono" + (active ? " active" : "");
-          item.innerHTML = `<div class="name" title="${escapeHtml(m.id)}">${escapeHtml(m.id)}</div>`;
+          item.className = "menu-item mono model-item" + (active ? " active" : "");
+          const mlogo = document.createElement("img");
+          mlogo.className = "model-item-logo";
+          mlogo.src = "providers/" + (m.providerType || "nutaan") + ".png";
+          mlogo.alt = "";
+          mlogo.onerror = () => { mlogo.style.visibility = "hidden"; };
+          const mname = document.createElement("div");
+          mname.className = "name";
+          mname.title = m.id;
+          mname.textContent = m.id;
+          item.appendChild(mlogo);
+          item.appendChild(mname);
           item.addEventListener("click", () => selectModel(m.id, m.providerId));
           modelMenu.appendChild(item);
         }
@@ -3445,10 +3471,12 @@
               } catch (e) {}
               els.push({ tag: n.tagName.toLowerCase(), type: n.getAttribute('type') || '', label: label, selector: sel });
             }
-            return { text: text, elements: els, url: location.href, title: document.title };
+            var dialogs = (window.__nutaanDialogs || []).slice();
+            window.__nutaanDialogs = [];
+            return { text: text, elements: els, url: location.href, title: document.title, dialogs: dialogs };
           })()
         `);
-        window.nutaan.respondToBrowserAction(req.id, { ok: true, url: data.url || (view.getURL ? view.getURL() : ""), title: data.title, text: data.text, elements: data.elements });
+        window.nutaan.respondToBrowserAction(req.id, { ok: true, url: data.url || (view.getURL ? view.getURL() : ""), title: data.title, text: data.text, elements: data.elements, dialogs: data.dialogs });
       } else if (req.action === "click") {
         const result = await view.executeJavaScript(`
           (function() {
@@ -3675,6 +3703,7 @@
       const preset = presetFor(sel.value);
       el("peName").value = preset.name; el("peBaseUrl").value = preset.baseUrl; el("peKey").value = ""; editorModels = [];
     }
+    const lg = el("peTypeLogo"); if (lg) lg.src = "providers/" + (el("peType").value || "openai") + ".png";
     renderEditorModels();
     editor.hidden = false;
     editor.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -3742,6 +3771,7 @@
       const preset = presetFor(el("peType").value);
       el("peName").value = preset.name;
       el("peBaseUrl").value = preset.baseUrl;
+      const lg = el("peTypeLogo"); if (lg) lg.src = "providers/" + preset.type + ".png";
     });
   })();
 
