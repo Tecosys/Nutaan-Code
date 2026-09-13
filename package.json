@@ -1,7 +1,7 @@
 {
   "name": "nutaan-code",
-  "version": "0.1.17",
-  "description": "Nutaan Code \u2014 a personal AI coding agent desktop app",
+  "version": "0.1.18",
+  "description": "Nutaan Code — a personal AI coding agent desktop app",
   "main": "main.js",
   "private": true,
   "author": "Tecosys",
