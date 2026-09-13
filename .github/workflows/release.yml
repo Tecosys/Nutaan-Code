@@ -22,7 +22,45 @@ permissions:
   contents: write
 
 jobs:
+  # electron-builder queues every asset upload behind one "create the release" call, so three
+  # build jobs starting at once all see "release doesn't exist" and race to create it. The losers
+  # get an empty-bodied response from GitHub, which JSON.parse throws on, and that one error fails
+  # every upload they had queued. Creating the draft once, up front, leaves them nothing to race.
+  prepare:
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the release tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+          else
+            tag="v$(node -p "require('./package.json').version")"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Create the draft release if it is missing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists — reusing it."
+          else
+            gh release create "$tag" --draft --title "$tag" --generate-notes
+          fi
+
   build:
+    needs: prepare
+    # prepare is skipped on PRs and branch builds, which must still build installers.
+    if: always() && !cancelled() && needs.prepare.result != 'failure'
+
     # Each installer has to be produced on its own OS: electron-builder needs macOS tooling to
     # make a .dmg and Linux tooling for .deb/.rpm, so a single Windows runner cannot ship all
     # three. Running them in parallel keeps a full release at the speed of the slowest one.
@@ -81,3 +119,17 @@ jobs:
             dist/*.AppImage
             dist/*.deb
             dist/*.rpm
+
+  # electron-builder publishes as a draft, which is invisible to everyone but the maintainers —
+  # that is why a green release run still showed no new version. Flipping it once every platform
+  # has uploaded means the release appears complete, rather than Windows-only for ten minutes.
+  publish:
+    needs: [prepare, build]
+    if: needs.prepare.result == 'success' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "${{ needs.prepare.outputs.tag }}" --draft=false --latest
