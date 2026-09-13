@@ -2312,10 +2312,46 @@ body.resizing webview { pointer-events: none; }
 .provider-badge.byo { background: var(--bg-hover); color: var(--text-dim); }
 .provider-active { font-size: 10.5px; font-weight: 700; color: #c084fc; margin-left: 8px; }
 
-.byo { border: 1px dashed var(--border-strong); border-radius: 12px; padding: 14px; }
-.byo.locked { opacity: 0.55; }
-.byo-head { font-size: 12.5px; font-weight: 700; color: var(--text-2); margin-bottom: 12px; }
 .byo-sub { font-weight: 500; color: var(--text-dim); font-size: 11.5px; margin-left: 4px; }
+.provider-remove { color: var(--text-dim); font-size: 12px; margin-left: 6px; }
+.provider-remove:hover { color: var(--red, #ef4444); }
+.add-provider-btn { width: 100%; margin-top: 10px; justify-content: center; }
+
+.provider-editor {
+  margin-top: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  padding: 16px;
+  background: var(--bg-code);
+}
+.pe-head { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 12px; }
+.pe-model-add { display: flex; gap: 8px; }
+.pe-model-add input { flex: 1; }
+.pe-model-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 10px;
+  border-radius: 8px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-card);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.model-chip button { border: none; background: transparent; color: var(--text-dim); cursor: pointer; font-size: 12px; padding: 0 2px; }
+.model-chip button:hover { color: var(--red, #ef4444); }
+.pe-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
+
+.menu-group {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 8px 10px 4px;
+}
 
 .field { margin-bottom: 16px; }
 .field label {

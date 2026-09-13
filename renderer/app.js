@@ -125,16 +125,20 @@
     baseUrl: "",
     apiKey: "",
     model: "",
+    modelProviderId: "",
     imageModel: "",
     autoApprove: false,
     nutaanKey: "",
     nutaanEmail: "",
+    customProviders: [], // [{ id, type, name, baseUrl, apiKey, models: [id,...] }]
   };
   let projects = [];
   let activePath = null;
   let running = false;
   let sidebarView = "files"; // files | chats | recent
-  let availableModels = [];
+  let availableModels = []; // nutaan catalog ids (legacy checks)
+  let nutaanModels = [];
+  let aggregatedModels = []; // [{ id, providerId, providerName }] nutaan + user-managed
   let openFiles = []; // [{ path, content }]
   let activeFilePath = null;
   let browserTabs = [];
@@ -2098,25 +2102,48 @@
     }
     setStatus(true, "Ready");
     availableModels = res.models;
+    nutaanModels = res.models;
 
-    modelSelectSettings.innerHTML = "";
-    for (const id of res.models) {
-      const opt = document.createElement("option");
-      opt.value = id;
-      opt.textContent = id;
-      modelSelectSettings.appendChild(opt);
-    }
-
-    if (!res.models.includes(settings.model)) {
-      // The saved model isn't in the live catalog (first run, or the backend retired it) — move to
-      // the backend's own default rather than silently sending a dead model id on every request.
+    // If the saved model is a Nutaan one that's no longer in the catalog, fall back — but leave a
+    // user-managed model (modelProviderId set) alone, it lives in the user's own provider.
+    if (!settings.modelProviderId && !res.models.includes(settings.model)) {
       const fallback = res.defaultModel && res.models.includes(res.defaultModel) ? res.defaultModel : res.models[0];
       if (fallback) {
         settings.model = fallback;
+        settings.modelProviderId = "";
         await window.nutaan.setSettings(settings);
       }
     }
-    modelSelectSettings.value = settings.model;
+    rebuildModels();
+  }
+
+  // Combine the Nutaan catalog with every user-managed provider's models into one grouped list,
+  // and repaint the settings picker. Each entry carries its providerId so selection can route.
+  function rebuildModels() {
+    aggregatedModels = [];
+    for (const id of nutaanModels) aggregatedModels.push({ id, providerId: "", providerName: "Nutaan" });
+    for (const p of settings.customProviders || []) {
+      for (const id of p.models || []) aggregatedModels.push({ id, providerId: p.id, providerName: p.name });
+    }
+    if (!modelSelectSettings) return;
+    modelSelectSettings.innerHTML = "";
+    const groups = new Map();
+    for (const m of aggregatedModels) {
+      if (!groups.has(m.providerName)) groups.set(m.providerName, []);
+      groups.get(m.providerName).push(m);
+    }
+    for (const [gname, items] of groups) {
+      const og = document.createElement("optgroup");
+      og.label = gname;
+      for (const m of items) {
+        const opt = document.createElement("option");
+        opt.value = m.providerId + "::" + m.id;
+        opt.textContent = m.id;
+        og.appendChild(opt);
+      }
+      modelSelectSettings.appendChild(og);
+    }
+    modelSelectSettings.value = (settings.modelProviderId || "") + "::" + settings.model;
     updateModelBadge();
   }
 
@@ -2125,11 +2152,14 @@
     modelBadge.title = settings.model || "No model set";
   }
 
-  async function selectModel(id) {
+  async function selectModel(id, providerId = "") {
     settings.model = id;
+    settings.modelProviderId = providerId || "";
     updateModelBadge();
     modelMenu.hidden = true;
     await window.nutaan.setSettings(settings);
+    if (settingsOverlay && !settingsOverlay.hidden) renderProviders();
+    if (modelSelectSettings) modelSelectSettings.value = (settings.modelProviderId || "") + "::" + settings.model;
   }
 
   modelBadge.addEventListener("click", (e) => {
@@ -2138,14 +2168,23 @@
     closeAllMenus(modelMenu);
     if (willOpen) {
       modelMenu.innerHTML = "";
-      if (!availableModels.length) {
+      if (!aggregatedModels.length) {
         modelMenu.innerHTML = `<div class="menu-empty">No models loaded yet.</div>`;
       } else {
-        for (const id of availableModels) {
+        let lastGroup = null;
+        for (const m of aggregatedModels) {
+          if (m.providerName !== lastGroup) {
+            lastGroup = m.providerName;
+            const h = document.createElement("div");
+            h.className = "menu-group";
+            h.textContent = m.providerName;
+            modelMenu.appendChild(h);
+          }
+          const active = m.id === settings.model && (m.providerId || "") === (settings.modelProviderId || "");
           const item = document.createElement("div");
-          item.className = "menu-item mono" + (id === settings.model ? " active" : "");
-          item.innerHTML = `<div class="name" title="${escapeHtml(id)}">${escapeHtml(id)}</div>`;
-          item.addEventListener("click", () => selectModel(id));
+          item.className = "menu-item mono" + (active ? " active" : "");
+          item.innerHTML = `<div class="name" title="${escapeHtml(m.id)}">${escapeHtml(m.id)}</div>`;
+          item.addEventListener("click", () => selectModel(m.id, m.providerId));
           modelMenu.appendChild(item);
         }
       }
@@ -2994,6 +3033,8 @@
       baseUrl: settings.baseUrl,
       apiKey: settings.apiKey,
       nutaanKey: settings.nutaanKey,
+      customProviders: settings.customProviders,
+      modelProviderId: settings.modelProviderId,
       model: settings.model,
       imageModel: settings.imageModel,
       autoApprove: settings.autoApprove,
@@ -3508,8 +3549,9 @@
     baseUrlInput.value = settings.baseUrl || "";
     apiKeyInput.value = settings.apiKey || "";
     imageModelInput.value = settings.imageModel || "";
-    if ([...modelSelectSettings.options].some((o) => o.value === settings.model)) {
-      modelSelectSettings.value = settings.model;
+    const composite = (settings.modelProviderId || "") + "::" + settings.model;
+    if ([...modelSelectSettings.options].some((o) => o.value === composite)) {
+      modelSelectSettings.value = composite;
     }
     renderAccountRow();
     renderUsagePanel();
@@ -3535,110 +3577,173 @@
     set("usageReq", fmtNum(settings.usageRequests || 0));
   }
 
-  // Informational provider list — shows what's Nutaan-managed vs needs your own key. Bring-your-
-  // own-key is gated behind the nutaan.com key (mandatory), per the account model.
-  const PROVIDERS = [
-    { id: "nutaan", name: "Nutaan (managed)", color: "#a855f7", mark: "N", managed: true },
-    { id: "openai", name: "OpenAI", color: "#10a37f", mark: "AI" },
-    { id: "anthropic", name: "Anthropic", color: "#d97757", mark: "A" },
-    { id: "azure", name: "Azure OpenAI", color: "#0a84ff", mark: "Az" },
-    { id: "bedrock", name: "AWS Bedrock", color: "#ff9900", mark: "aws" },
-    { id: "google", name: "Google Gemini", color: "#4285f4", mark: "G" },
+  // User-managed provider presets. Any OpenAI-compatible endpoint works; "custom" covers the rest.
+  const PROVIDER_PRESETS = [
+    { type: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", color: "#10a37f", mark: "AI" },
+    { type: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", color: "#6467f2", mark: "OR" },
+    { type: "together", name: "Together AI", baseUrl: "https://api.together.xyz/v1", color: "#0f6fff", mark: "T" },
+    { type: "nvidia", name: "NVIDIA NIM", baseUrl: "https://integrate.api.nvidia.com/v1", color: "#76b900", mark: "NV" },
+    { type: "google", name: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", color: "#4285f4", mark: "G" },
+    { type: "azure", name: "Azure OpenAI", baseUrl: "", color: "#0a84ff", mark: "Az" },
+    { type: "groq", name: "Groq", baseUrl: "https://api.groq.com/openai/v1", color: "#f55036", mark: "gq" },
+    { type: "mistral", name: "Mistral", baseUrl: "https://api.mistral.ai/v1", color: "#fa5310", mark: "M" },
+    { type: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", color: "#4d6bfe", mark: "DS" },
+    { type: "xai", name: "xAI (Grok)", baseUrl: "https://api.x.ai/v1", color: "#111827", mark: "x" },
+    { type: "anthropic", name: "Anthropic", baseUrl: "https://api.anthropic.com/v1", color: "#d97757", mark: "A" },
+    { type: "custom", name: "Custom (OpenAI-compatible)", baseUrl: "", color: "#6b7280", mark: "•" },
   ];
+  const presetFor = (type) => PROVIDER_PRESETS.find((p) => p.type === type) || PROVIDER_PRESETS.find((p) => p.type === "custom");
 
-  function detectProviderFromUrl(url) {
-    const u = String(url || "").toLowerCase();
-    if (/azure/.test(u)) return "azure";
-    if (/bedrock|amazonaws/.test(u)) return "bedrock";
-    if (/openai\.com/.test(u)) return "openai";
-    if (/anthropic/.test(u)) return "anthropic";
-    if (/googleapis|generativelanguage/.test(u)) return "google";
-    return "custom";
+  function providerLogoEl(type, mark, color) {
+    const logo = document.createElement("span");
+    logo.className = "provider-logo";
+    const img = document.createElement("img");
+    img.src = "providers/" + type + ".png";
+    img.alt = "";
+    img.onerror = () => { logo.textContent = mark || "•"; logo.style.background = color || "#6b7280"; logo.style.color = "#fff"; };
+    logo.appendChild(img);
+    return logo;
   }
-
-  const PROVIDER_HINTS = {
-    openai: "https://api.openai.com/v1",
-    anthropic: "https://api.anthropic.com/v1",
-    azure: "https://<resource>.openai.azure.com/openai/deployments/<deployment>",
-    bedrock: "https://bedrock-runtime.<region>.amazonaws.com",
-    google: "https://generativelanguage.googleapis.com/v1beta/openai",
-  };
 
   function renderProviders() {
     const list = el("providerList");
     if (!list) return;
     const hasNutaan = !!(settings.nutaanKey && settings.nutaanKey.trim());
-    const usingCustom = !!(settings.baseUrl && settings.baseUrl.trim());
-    const activeCustom = usingCustom ? detectProviderFromUrl(settings.baseUrl) : null;
     list.innerHTML = "";
-    for (const p of PROVIDERS) {
-      const active = p.managed ? !usingCustom : usingCustom && p.id === activeCustom;
+
+    // Managed Nutaan row (active when no user-managed model is selected).
+    {
+      const active = !settings.modelProviderId;
       const row = document.createElement("div");
       row.className = "provider-row" + (active ? " active" : "");
-
-      // Real favicon; if it fails to load, fall back to a coloured monogram chip.
-      const logo = document.createElement("span");
-      logo.className = "provider-logo";
-      const img = document.createElement("img");
-      img.src = "providers/" + p.id + ".png";
-      img.alt = "";
-      img.onerror = () => { logo.textContent = p.mark; logo.style.background = p.color; logo.style.color = "#fff"; };
-      logo.appendChild(img);
-
-      const name = document.createElement("span");
-      name.className = "provider-name";
-      name.textContent = p.name;
-
-      const spacer = document.createElement("span");
-      spacer.className = "settings-spacer";
-
-      row.appendChild(logo);
-      row.appendChild(name);
-      row.appendChild(spacer);
-
-      if (p.managed) {
-        const badge = document.createElement("span");
-        badge.className = "provider-badge managed";
-        badge.textContent = "Nutaan-managed";
-        row.appendChild(badge);
-        if (active) {
-          const a = document.createElement("span");
-          a.className = "provider-active";
-          a.textContent = "active";
-          row.appendChild(a);
-        }
-      } else {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "btn-secondary provider-connect" + (active ? " connected" : "");
-        btn.textContent = active ? "Connected" : "Connect";
-        btn.disabled = !hasNutaan;
-        btn.addEventListener("click", () => onConnectProvider(p.id));
-        row.appendChild(btn);
-      }
+      row.appendChild(providerLogoEl("nutaan", "N", "#a855f7"));
+      const name = document.createElement("span"); name.className = "provider-name"; name.textContent = "Nutaan (managed)";
+      const sp = document.createElement("span"); sp.className = "settings-spacer";
+      row.appendChild(name); row.appendChild(sp);
+      const badge = document.createElement("span"); badge.className = "provider-badge managed"; badge.textContent = "Nutaan-managed";
+      row.appendChild(badge);
+      if (active) { const a = document.createElement("span"); a.className = "provider-active"; a.textContent = "active"; row.appendChild(a); }
       list.appendChild(row);
     }
-    const byo = el("byoBlock");
+
+    // Configured user-managed providers.
+    for (const p of settings.customProviders || []) {
+      const preset = presetFor(p.type);
+      const row = document.createElement("div"); row.className = "provider-row";
+      row.appendChild(providerLogoEl(p.type, preset.mark, preset.color));
+      const name = document.createElement("span"); name.className = "provider-name"; name.textContent = p.name || preset.name;
+      const sp = document.createElement("span"); sp.className = "settings-spacer";
+      row.appendChild(name); row.appendChild(sp);
+      const n = (p.models || []).length;
+      const cnt = document.createElement("span"); cnt.className = "provider-badge managed"; cnt.textContent = n + " model" + (n === 1 ? "" : "s");
+      row.appendChild(cnt);
+      const edit = document.createElement("button"); edit.type = "button"; edit.className = "btn-secondary provider-connect"; edit.textContent = "Edit";
+      edit.addEventListener("click", () => openProviderEditor(p.id)); row.appendChild(edit);
+      const rm = document.createElement("button"); rm.type = "button"; rm.className = "icon-btn tiny provider-remove"; rm.title = "Remove"; rm.textContent = "✕";
+      rm.addEventListener("click", () => removeProvider(p.id)); row.appendChild(rm);
+      list.appendChild(row);
+    }
+
     const gate = el("byoGateNote");
-    if (byo) byo.classList.toggle("locked", !hasNutaan);
-    baseUrlInput.disabled = !hasNutaan;
-    apiKeyInput.disabled = !hasNutaan;
-    if (gate) gate.textContent = hasNutaan ? "(optional — routes to your own provider)" : "— add your nutaan.com key first";
+    if (gate) gate.textContent = hasNutaan ? "" : "— add your nutaan.com API key first (required for bring-your-own-key)";
+    const addBtn = el("addProviderBtn");
+    if (addBtn) addBtn.disabled = !hasNutaan;
   }
 
-  function onConnectProvider(pid) {
-    const hasNutaan = !!(settings.nutaanKey && settings.nutaanKey.trim());
-    const gate = el("byoGateNote");
-    if (!hasNutaan) {
-      if (gate) gate.textContent = "— add your nutaan.com key first (required)";
-      el("changeKeyBtn")?.focus();
-      return;
+  // ---------- Provider editor (add / edit a user-managed provider with its own key + models) ----------
+  let editingProviderId = null;
+  let editorModels = [];
+
+  function openProviderEditor(id) {
+    const editor = el("providerEditor");
+    if (!editor) return;
+    const sel = el("peType");
+    sel.innerHTML = "";
+    for (const p of PROVIDER_PRESETS) { const o = document.createElement("option"); o.value = p.type; o.textContent = p.name; sel.appendChild(o); }
+    if (id) {
+      const p = (settings.customProviders || []).find((x) => x.id === id);
+      editingProviderId = id;
+      el("peTitle").textContent = "Edit provider";
+      sel.value = p.type || "custom";
+      el("peName").value = p.name || "";
+      el("peBaseUrl").value = p.baseUrl || "";
+      el("peKey").value = p.apiKey || "";
+      editorModels = [...(p.models || [])];
+    } else {
+      editingProviderId = null;
+      el("peTitle").textContent = "Add provider";
+      const preset = presetFor(sel.value);
+      el("peName").value = preset.name; el("peBaseUrl").value = preset.baseUrl; el("peKey").value = ""; editorModels = [];
     }
-    const byo = el("byoBlock");
-    if (byo) byo.scrollIntoView({ behavior: "smooth", block: "center" });
-    if (PROVIDER_HINTS[pid]) baseUrlInput.placeholder = PROVIDER_HINTS[pid];
-    baseUrlInput.focus();
+    renderEditorModels();
+    editor.hidden = false;
+    editor.scrollIntoView({ behavior: "smooth", block: "center" });
   }
+
+  function renderEditorModels() {
+    const box = el("peModelList");
+    box.innerHTML = "";
+    if (!editorModels.length) { box.innerHTML = `<span class="byo-sub">No models yet — add at least one id.</span>`; return; }
+    editorModels.forEach((m, i) => {
+      const chip = document.createElement("span"); chip.className = "model-chip";
+      const label = document.createElement("span"); label.textContent = m; chip.appendChild(label);
+      const x = document.createElement("button"); x.type = "button"; x.textContent = "✕";
+      x.addEventListener("click", () => { editorModels.splice(i, 1); renderEditorModels(); });
+      chip.appendChild(x); box.appendChild(chip);
+    });
+  }
+
+  function addEditorModel() {
+    const inp = el("peModelInput");
+    const v = (inp.value || "").trim();
+    if (!v) return;
+    // support pasting several ids (comma/space/newline separated)
+    for (const id of v.split(/[\s,]+/).filter(Boolean)) { if (!editorModels.includes(id)) editorModels.push(id); }
+    inp.value = "";
+    renderEditorModels();
+  }
+
+  function saveProviderEditor() {
+    const type = el("peType").value;
+    const baseUrl = (el("peBaseUrl").value || "").trim();
+    const apiKey = (el("peKey").value || "").trim();
+    const name = (el("peName").value || "").trim() || presetFor(type).name;
+    if (!baseUrl) { el("peBaseUrl").focus(); return; }
+    if (!editorModels.length) { el("peModelInput").focus(); return; }
+    settings.customProviders = settings.customProviders || [];
+    if (editingProviderId) {
+      const p = settings.customProviders.find((x) => x.id === editingProviderId);
+      if (p) { p.type = type; p.name = name; p.baseUrl = baseUrl; p.apiKey = apiKey; p.models = [...editorModels]; }
+    } else {
+      settings.customProviders.push({ id: "prov_" + Date.now().toString(36), type, name, baseUrl, apiKey, models: [...editorModels] });
+    }
+    window.nutaan.setSettings(settings);
+    el("providerEditor").hidden = true;
+    renderProviders();
+    rebuildModels();
+  }
+
+  function removeProvider(id) {
+    settings.customProviders = (settings.customProviders || []).filter((p) => p.id !== id);
+    if (settings.modelProviderId === id) { settings.modelProviderId = ""; }
+    window.nutaan.setSettings(settings);
+    renderProviders();
+    rebuildModels();
+  }
+
+  (function wireProviderEditor() {
+    el("addProviderBtn")?.addEventListener("click", () => openProviderEditor(null));
+    el("peClose")?.addEventListener("click", () => { el("providerEditor").hidden = true; });
+    el("peCancel")?.addEventListener("click", () => { el("providerEditor").hidden = true; });
+    el("peSave")?.addEventListener("click", saveProviderEditor);
+    el("peModelAdd")?.addEventListener("click", addEditorModel);
+    el("peModelInput")?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addEditorModel(); } });
+    el("peType")?.addEventListener("change", () => {
+      const preset = presetFor(el("peType").value);
+      el("peName").value = preset.name;
+      el("peBaseUrl").value = preset.baseUrl;
+    });
+  })();
 
   el("useBuiltInBtn").addEventListener("click", async () => {
     baseUrlInput.value = "";
@@ -3658,7 +3763,12 @@
   settingsSave.addEventListener("click", async () => {
     settings.baseUrl = baseUrlInput.value.trim();
     settings.apiKey = apiKeyInput.value.trim();
-    settings.model = modelSelectSettings.value || settings.model;
+    const sel = modelSelectSettings.value || "";
+    if (sel.includes("::")) {
+      const i = sel.indexOf("::");
+      settings.modelProviderId = sel.slice(0, i);
+      settings.model = sel.slice(i + 2) || settings.model;
+    }
     settings.imageModel = imageModelInput.value.trim();
     await window.nutaan.setSettings(settings);
     settingsOverlay.hidden = true;
@@ -3732,6 +3842,7 @@
 
     renderAutoApprove();
     updateModelBadge();
+    rebuildModels();
     renderQuickActions();
     renderBookmarks();
     renderBrowserTabs();

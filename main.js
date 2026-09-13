@@ -57,7 +57,16 @@ const FALLBACK_MODEL = "nvidia/nemotron-3-super-120b-a12b";
 // Requests go to nutaan.com authenticated with the user's own API key, and the provider keys
 // live server-side. A user who wants to bring their own endpoint can still set Server URL in
 // Settings, in which case their key for that endpoint is used instead.
-async function activeBackend({ baseUrl, apiKey, nutaanKey }) {
+async function activeBackend({ baseUrl, apiKey, nutaanKey, customProviders, modelProviderId }) {
+  // A user-managed provider selected for this specific model wins: route straight to its own
+  // OpenAI-compatible endpoint with its own key. This is what lets one account mix Nutaan-managed
+  // models with the user's own OpenAI / OpenRouter / Together / NVIDIA / Azure / … keys.
+  if (modelProviderId && Array.isArray(customProviders)) {
+    const prov = customProviders.find((p) => p && p.id === modelProviderId);
+    if (prov && String(prov.baseUrl || "").trim()) {
+      return { baseUrl: String(prov.baseUrl).trim(), apiKey: String(prov.apiKey || "").trim() };
+    }
+  }
   const custom = String(baseUrl || "").trim();
   if (custom) return { baseUrl: custom, apiKey: String(apiKey || "").trim() };
   return { baseUrl: NUTAAN_LLM_BASE, apiKey: String(nutaanKey || "").trim() };

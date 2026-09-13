@@ -419,18 +419,49 @@
       <section class="settings-section">
         <div class="settings-section-title">Model providers</div>
         <div class="provider-list" id="providerList"></div>
-        <div class="byo" id="byoBlock">
-          <div class="byo-head">Bring your own key <span class="byo-sub" id="byoGateNote"></span></div>
-          <div class="field">
-            <label for="baseUrlInput">Provider endpoint (OpenAI-compatible / Azure)</label>
-            <input type="text" id="baseUrlInput" placeholder="Built-in Nutaan-managed backend" />
+        <div class="byo-sub" id="byoGateNote"></div>
+        <button class="btn-secondary add-provider-btn" id="addProviderBtn" type="button">+ Bring your own provider &amp; models</button>
+
+        <!-- Provider editor (add / edit a user-managed provider) -->
+        <div class="provider-editor" id="providerEditor" hidden>
+          <div class="pe-head">
+            <span id="peTitle">Add provider</span>
+            <button class="icon-btn tiny" id="peClose" title="Close">✕</button>
           </div>
           <div class="field">
-            <label for="apiKeyInput">Provider API key</label>
-            <input type="password" id="apiKeyInput" placeholder="Your own provider key" autocomplete="off" />
+            <label for="peType">Provider</label>
+            <select id="peType"></select>
           </div>
-          <button class="btn-secondary" id="useBuiltInBtn" type="button">Use the built-in (Nutaan-managed) backend</button>
+          <div class="field">
+            <label for="peName">Display name</label>
+            <input type="text" id="peName" placeholder="e.g. OpenRouter" />
+          </div>
+          <div class="field">
+            <label for="peBaseUrl">Endpoint (OpenAI-compatible)</label>
+            <input type="text" id="peBaseUrl" placeholder="https://…/v1" />
+          </div>
+          <div class="field">
+            <label for="peKey">API key</label>
+            <input type="password" id="peKey" placeholder="Your provider API key" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>Models <span class="byo-sub">add as many model ids as you like</span></label>
+            <div class="pe-model-add">
+              <input type="text" id="peModelInput" placeholder="model id, e.g. openai/gpt-4o" />
+              <button class="btn-secondary" id="peModelAdd" type="button">Add</button>
+            </div>
+            <div class="pe-model-list" id="peModelList"></div>
+          </div>
+          <div class="pe-actions">
+            <button class="btn-secondary" id="peCancel" type="button">Cancel</button>
+            <button class="btn-primary" id="peSave" type="button">Save provider</button>
+          </div>
         </div>
+
+        <!-- legacy single-endpoint inputs kept hidden so older code paths keep working -->
+        <input type="text" id="baseUrlInput" hidden />
+        <input type="password" id="apiKeyInput" hidden />
+        <button id="useBuiltInBtn" type="button" hidden></button>
       </section>
 
       <details class="advanced" id="advancedDetails">
