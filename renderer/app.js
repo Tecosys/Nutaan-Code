@@ -1376,6 +1376,9 @@
     const view = document.createElement("webview");
     view.setAttribute("src", normalizeUrl(url) || "about:blank");
     view.setAttribute("allowpopups", "");
+    // Persist cookies/logins across restarts so a one-time sign-in (e.g. Gmail/Outlook for the
+    // co-worker to read email, or any app under test) is remembered instead of asked every time.
+    view.setAttribute("partition", "persist:nutaan-browser");
     view.style.display = "none";
     browserViewport.appendChild(view);
 
