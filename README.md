@@ -195,3 +195,22 @@ memory and chat history are stored locally:
 | Linux | `~/.config/Nutaan Code` |
 
 Knowledge base and memory live in `~/.nutaan/`.
+
+---
+
+## Contributing
+
+The two easiest things to add are a **skill** (a Markdown file telling the agent how to handle one
+kind of task) and a **tool** in the 753-entry arsenal catalogue — neither needs you to touch the
+Electron app. [CONTRIBUTING.md](CONTRIBUTING.md) has the format for both, plus how to run from
+source and what a good pull request looks like.
+
+Security problems go to [SECURITY.md](SECURITY.md), not a public issue.
+
+## Licence
+
+[GNU AGPL v3](LICENSE). You can use, modify and redistribute it; if you run a modified version as a
+network service, you have to offer that version's source to its users too.
+
+Built on Electron and other people's work — [CREDITS.md](CREDITS.md) lists what ships inside, and the
+arsenal catalogue credits each of the 753 tools it indexes to their own authors.

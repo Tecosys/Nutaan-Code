@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
 const path = require("node:path");
 const os = require("node:os");
 const fs = require("node:fs/promises");
-const { exec, spawn } = require("node:child_process");
+const { exec, spawn, spawnSync } = require("node:child_process");
 const { autoUpdater } = require("electron-updater");
 const arsenal = require("./arsenal");
 
@@ -1522,12 +1522,24 @@ function listBgTasks() {
   }));
 }
 
+// Tasks run under `shell: true`, so the child is a cmd.exe or sh wrapper and killing it leaves the
+// real command — a dev server, a watcher — running. Windows compounds that by not killing children
+// when their parent exits, so those survivors kept the install directory locked and an update could
+// not replace the previous version.
+function killTree(child) {
+  if (!child?.pid) return;
+  try {
+    if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true });
+    else child.kill();
+  } catch {}
+}
+
 function stopBgTask(id) {
   const t = backgroundTasks.get(id);
   if (!t) return { ok: false, error: "No task with id " + id };
   if (!t.child) return { ok: false, error: "Task " + id + " already " + t.status };
   try {
-    t.child.kill();
+    killTree(t.child);
     t.status = "stopped";
     t.endedAt = Date.now();
     return { ok: true, id, status: "stopped" };
@@ -1535,6 +1547,12 @@ function stopBgTask(id) {
     return { ok: false, error: e.message };
   }
 }
+
+// quitAndInstall quits the app and hands over to the installer, so this is the last chance to clear
+// away anything still holding files open.
+app.on("before-quit", () => {
+  for (const t of backgroundTasks.values()) if (t.child) killTree(t.child);
+});
 
 ipcMain.handle("bgtask:list", () => listBgTasks());
 ipcMain.handle("bgtask:get", (_e, id) => bgTaskView(id, 300));

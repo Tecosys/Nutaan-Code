@@ -1,10 +1,19 @@
 {
   "name": "nutaan-code",
-  "version": "0.1.17",
-  "description": "Nutaan Code \u2014 a personal AI coding agent desktop app",
+  "version": "0.1.22",
+  "description": "Nutaan Code — a personal AI coding agent desktop app",
   "main": "main.js",
   "private": true,
   "author": "Tecosys",
+  "license": "AGPL-3.0-only",
+  "homepage": "https://github.com/Tecosys/Nutaan-Code",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Tecosys/Nutaan-Code.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Tecosys/Nutaan-Code/issues"
+  },
   "scripts": {
     "start": "node bin/nutaan-code.js",
     "build:icon": "node scripts/build-icon.js",
@@ -37,6 +46,7 @@
       "bin/**/*",
       "main.js",
       "preload.js",
+      "arsenal/**/*",
       "renderer/**/*",
       "skills/**/*",
       "assets/**/*",
@@ -131,6 +141,12 @@
       "desktop": {
         "StartupWMClass": "Nutaan Code"
       }
+    },
+    "deb": {
+      "afterRemove": "build/linux-after-remove.sh"
+    },
+    "rpm": {
+      "afterRemove": "build/linux-after-remove.sh"
     },
     "publish": {
       "provider": "github",

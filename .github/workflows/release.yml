@@ -22,7 +22,56 @@ permissions:
   contents: write
 
 jobs:
+  # electron-builder queues every asset upload behind one "create the release" call, so three
+  # build jobs starting at once all see "release doesn't exist" and race to create it. The losers
+  # get an empty-bodied response from GitHub, which JSON.parse throws on, and that one error fails
+  # every upload they had queued. Creating the draft once, up front, leaves them nothing to race.
+  prepare:
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the release tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+          else
+            tag="v$(node -p "require('./package.json').version")"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      # This endpoint returns a 502 often enough to have broken the last two releases, so retry it.
+      # The existence check runs before every attempt because a 502 can come back from a request
+      # that actually succeeded — retrying blindly would then fail on a release that is already there.
+      - name: Create the draft release if it is missing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          for attempt in 1 2 3 4 5; do
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "Release $tag is present."
+              exit 0
+            fi
+            if gh release create "$tag" --draft --title "$tag" --generate-notes; then
+              exit 0
+            fi
+            echo "Attempt $attempt did not land; retrying in $((attempt * 10))s."
+            sleep $((attempt * 10))
+          done
+          echo "Could not create release $tag after 5 attempts."
+          exit 1
+
   build:
+    needs: prepare
+    # prepare is skipped on PRs and branch builds, which must still build installers.
+    if: always() && !cancelled() && needs.prepare.result != 'failure'
+
     # Each installer has to be produced on its own OS: electron-builder needs macOS tooling to
     # make a .dmg and Linux tooling for .deb/.rpm, so a single Windows runner cannot ship all
     # three. Running them in parallel keeps a full release at the speed of the slowest one.
@@ -59,12 +108,31 @@ jobs:
 
       # Publishing is gated on an actual version tag (or an explicit manual request), not on
       # "was this a push" — otherwise every branch commit would create a GitHub release.
+      #
+      # GitHub's asset-upload endpoint answers some large uploads with a 500, and electron-builder
+      # retries only 502/503/504 itself, so a publishing build gets three attempts. A rerun
+      # overwrites whatever the earlier attempt already uploaded, so it is safe to repeat. A
+      # build-only run fails deterministically and gets one attempt.
       - name: Build ${{ matrix.platform }}
-        run: npx electron-builder --${{ matrix.platform }} ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.publish) && '--publish always' || '--publish never' }}
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLISH: ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.publish) && 'always' || 'never' }}
           # Unsigned builds otherwise fail the notarization step on macOS runners.
           CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: |
+          attempts=1
+          if [[ "$PUBLISH" == always ]]; then attempts=3; fi
+          for ((attempt = 1; attempt <= attempts; attempt++)); do
+            if npx electron-builder --${{ matrix.platform }} --publish "$PUBLISH"; then
+              exit 0
+            fi
+            if (( attempt < attempts )); then
+              echo "Attempt $attempt failed; retrying in $((attempt * 30))s."
+              sleep $((attempt * 30))
+            fi
+          done
+          exit 1
 
       # Named per run so branch builds don't collide, and downloadable straight from the run
       # summary — that is how you get installers without publishing a release.
@@ -81,3 +149,27 @@ jobs:
             dist/*.AppImage
             dist/*.deb
             dist/*.rpm
+
+  # electron-builder publishes as a draft, which is invisible to everyone but the maintainers —
+  # that is why a green release run still showed no new version. Flipping it once every platform
+  # has uploaded means the release appears complete, rather than Windows-only for ten minutes.
+  publish:
+    needs: [prepare, build]
+    if: needs.prepare.result == 'success' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="${{ needs.prepare.outputs.tag }}"
+          for attempt in 1 2 3 4 5; do
+            if gh release edit "$tag" --draft=false --latest; then
+              exit 0
+            fi
+            echo "Attempt $attempt did not land; retrying in $((attempt * 10))s."
+            sleep $((attempt * 10))
+          done
+          echo "Built every installer but could not publish $tag — flip it by hand."
+          exit 1
