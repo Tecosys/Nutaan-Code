@@ -1057,6 +1057,75 @@ async function buildMemoryContext() {
   );
 }
 
+// A trip's route on real roads, from free OpenStreetMap services — Nominatim to turn each place
+// name into a coordinate, OSRM to draw the driving route and measure it. No API key, so it works
+// out of the box. The renderer draws the returned geometry on a Leaflet map; the leg distances are
+// the honest numbers a costed itinerary is built on.
+const geocodeCache = new Map();
+async function geocodePlace(name) {
+  const key = String(name).trim().toLowerCase();
+  if (geocodeCache.has(key)) return geocodeCache.get(key);
+  const res = await fetch(
+    "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(name),
+    { headers: { "User-Agent": "NutaanCode/1.0 (itinerary planner)" }, signal: AbortSignal.timeout(15_000) }
+  );
+  if (!res.ok) throw new Error(`Geocoding failed for "${name}" (HTTP ${res.status})`);
+  const j = await res.json();
+  if (!j[0]) { geocodeCache.set(key, null); return null; }
+  const out = { name: j[0].display_name.split(",").slice(0, 2).join(",").trim(), lat: +j[0].lat, lon: +j[0].lon };
+  geocodeCache.set(key, out);
+  return out;
+}
+
+function decimate(points, max = 800) {
+  if (points.length <= max) return points;
+  const step = Math.ceil(points.length / max);
+  const out = [];
+  for (let i = 0; i < points.length; i += step) out.push(points[i]);
+  if (out[out.length - 1] !== points[points.length - 1]) out.push(points[points.length - 1]);
+  return out;
+}
+
+async function mapRoute(stops) {
+  const names = stops.map((s) => String(s || "").trim()).filter(Boolean);
+  if (names.length < 2) return { error: "Give at least two stops, in travel order." };
+  // Geocode in series so Nominatim's one-request-a-second limit is respected.
+  const points = [];
+  for (const n of names) {
+    let p;
+    try { p = await geocodePlace(n); } catch (e) { return { error: e.message }; }
+    if (!p) return { error: `Couldn't find "${n}" on the map. Try a more specific name (add the state or country).` };
+    points.push({ query: n, ...p });
+    await new Promise((r) => setTimeout(r, 1100));
+  }
+  const coordStr = points.map((p) => `${p.lon},${p.lat}`).join(";");
+  let route;
+  try {
+    const res = await fetch(
+      `https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=full&geometries=geojson`,
+      { signal: AbortSignal.timeout(25_000) }
+    );
+    if (!res.ok) throw new Error(`Routing failed (HTTP ${res.status})`);
+    const j = await res.json();
+    route = j.routes && j.routes[0];
+    if (!route) throw new Error(j.message || "No drivable route between these stops.");
+  } catch (e) {
+    return { error: e.message };
+  }
+  const legs = (route.legs || []).map((l, i) => ({
+    from: points[i].name, to: points[i + 1].name,
+    km: Math.round(l.distance / 1000), hours: +(l.duration / 3600).toFixed(1),
+  }));
+  return {
+    ok: true,
+    stops: points.map((p) => ({ name: p.name, query: p.query, lat: p.lat, lon: p.lon })),
+    geometry: decimate(route.geometry.coordinates), // [lng,lat] pairs for the polyline
+    totalKm: Math.round(route.distance / 1000),
+    totalHours: +(route.duration / 3600).toFixed(1),
+    legs,
+  };
+}
+
 async function webFetch(url) {
   if (!/^https?:\/\//i.test(url)) throw new Error("web_fetch needs a full http(s):// URL");
   const res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(15_000) });
@@ -2731,6 +2800,22 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "map_route",
+      description:
+        "Get the real driving route between places and show it on a map. Give the stops in order (e.g. [\"Mumbai\", \"Puri\", \"Gangasagar\"]) and it geocodes each, draws the route on a map for the user, and returns the total distance and time plus the distance and time of each leg. Use it for any trip or itinerary so the distances are real, not guessed. Free — no key needed.",
+      parameters: {
+        type: "object",
+        properties: {
+          stops: { type: "array", items: { type: "string" }, description: "Place names in travel order, at least two" },
+          mode: { type: "string", enum: ["driving"], description: "Only driving is supported for now" },
+        },
+        required: ["stops"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "task_write",
       description:
         "Record your plan as a checklist and keep it updated as you work. Use it for any request with more than about three steps, or any long instruction with several distinct parts — it is how the user sees what you intend to do and what is left. Send the WHOLE list every time, with each item's current status. Mark exactly one item in_progress while you work on it, and flip it to completed the moment it is genuinely done rather than batching updates at the end.",
@@ -3177,6 +3262,7 @@ const PARALLEL_TOOLS = new Set([
   "memory_read",
   "web_fetch",
   "web_search",
+  "map_route",
   "os_search",
   "os_read",
   "os_system_stats",
@@ -3404,6 +3490,8 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
     }
     case "web_search":
       return webSearch(args.query, args.sources, args.limit || 5);
+    case "map_route":
+      return mapRoute(Array.isArray(args.stops) ? args.stops : []);
     case "task_write": {
       const allowed = new Set(["pending", "in_progress", "completed"]);
       const tasks = (Array.isArray(args.tasks) ? args.tasks : [])
@@ -4653,19 +4741,37 @@ const { Today } = require("./agents/today");
 
 async function headlessBackend(model) {
   const s = await refreshSettingsCache();
+  // Honour the user's provider choice first, exactly like the interactive chat — their own valid
+  // key works here too. But autonomous work runs unattended, so a custom provider whose key is
+  // wrong or expired (a 401 that would silently kill every background agent) must not be a dead
+  // end: when a Nutaan account key exists, carry it as a managed fallback the caller drops to on an
+  // auth failure. `managedFallback` is null when the primary already IS the managed backend.
   const backend = await activeBackend({ baseUrl: s.baseUrl, apiKey: s.apiKey, nutaanKey: s.nutaanKey, customProviders: s.customProviders, modelProviderId: s.modelProviderId });
   if (!backend.apiKey) throw new Error("Nutaan Code is not activated — add your nutaan.com API key in Settings first.");
-  return { ...backend, model: model || s.model || FALLBACK_MODEL, imageModel: s.imageModel };
+  const nutaanKey = String(s.nutaanKey || "").trim();
+  const onManaged = backend.baseUrl === NUTAAN_LLM_BASE;
+  const managedFallback = !onManaged && nutaanKey
+    ? { baseUrl: NUTAAN_LLM_BASE, apiKey: nutaanKey, model: FALLBACK_MODEL }
+    : null;
+  return { ...backend, model: model || s.model || FALLBACK_MODEL, imageModel: s.imageModel, managedFallback };
+}
+
+// True when a failure looks like the backend rejecting the credentials — the case where dropping to
+// the managed Nutaan backend is the right move rather than retrying the same rejected key.
+function isAuthFailure(status, message) {
+  if (status === 401 || status === 403) return true;
+  return /\b401\b|\b403\b|invalid api key|unauthorized|forbidden|invalid.*token|authentication/i.test(String(message || ""));
 }
 
 async function runHeadless({ root, model, systemPrompt, userPrompt, messages, allowedTools, readOnly, maxIterations, controller, onEvent, hooks }) {
   let backend;
   try { backend = await headlessBackend(model); } catch (err) { return { ok: false, error: err.message, text: "", toolsUsed: [] }; }
   const chatMessages = messages || [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }];
-  const toolsUsed = [];
-  return new Promise((resolve) => {
+
+  const runOnce = (b) => new Promise((resolve) => {
+    const toolsUsed = [];
     let settled = false;
-    const finish = (r) => { if (!settled) { settled = true; resolve(r); } };
+    const finish = (r) => { if (!settled) { settled = true; resolve({ ...r, toolsUsed }); } };
     const sender = {
       hooks: hooks || null,
       send(channel, data) {
@@ -4682,15 +4788,15 @@ async function runHeadless({ root, model, systemPrompt, userPrompt, messages, al
         } else if (channel === "agent:done") {
           const msgs = data.messages || [];
           const last = [...msgs].reverse().find((m) => m.role === "assistant" && typeof m.content === "string" && m.content.trim());
-          finish({ ok: !data.aborted, aborted: !!data.aborted, text: last ? last.content : "", messages: msgs, toolsUsed });
+          finish({ ok: !data.aborted, aborted: !!data.aborted, text: last ? last.content : "", messages: msgs });
         } else if (channel === "agent:error") {
-          finish({ ok: false, error: data.message, text: "", toolsUsed });
+          finish({ ok: false, error: data.message, text: "" });
         }
       },
     };
     runAgentLoop(sender, {
       root: root || os.homedir(),
-      ...backend,
+      ...b,
       messages: chatMessages,
       autoApprove: true,
       headless: true,
@@ -4698,31 +4804,47 @@ async function runHeadless({ root, model, systemPrompt, userPrompt, messages, al
       allowedTools,
       readOnly,
       maxIterations,
-    }).catch((err) => finish({ ok: false, error: err.message, text: "", toolsUsed }));
+    }).catch((err) => finish({ ok: false, error: err.message, text: "" }));
   });
+
+  const result = await runOnce(backend);
+  // A custom provider that rejects the key kills the whole role otherwise; the account's managed
+  // backend is the reliable fallback, so retry the role there once before giving up.
+  if (!result.ok && !result.aborted && backend.managedFallback && isAuthFailure(null, result.error)) {
+    return await runOnce({ ...backend.managedFallback, imageModel: backend.imageModel });
+  }
+  return result;
 }
 
 // One plain completion, no tools, no streaming — for planning JSON, merging reports, and the
 // "today" suggestion pass.
 async function complete({ system, user, model, maxTokens = 2000 }) {
   const backend = await headlessBackend(model);
-  const res = await fetch(buildEndpointUrl(backend.baseUrl, "/chat/completions"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...buildAuthHeaders(backend.baseUrl, backend.apiKey) },
-    body: JSON.stringify({
-      model: backend.model,
-      messages: [{ role: "system", content: system }, { role: "user", content: user }],
-      max_tokens: maxTokens,
-      stream: false,
-    }),
-  });
-  if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
-    try { detail = (await res.json())?.error?.message || detail; } catch {}
-    throw new Error(detail);
+  const messages = [{ role: "system", content: system }, { role: "user", content: user }];
+  const attempt = async (b) => {
+    const res = await fetch(buildEndpointUrl(b.baseUrl, "/chat/completions"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...buildAuthHeaders(b.baseUrl, b.apiKey) },
+      body: JSON.stringify({ model: b.model, messages, max_tokens: maxTokens, stream: false }),
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try { detail = (await res.json())?.error?.message || detail; } catch {}
+      const err = new Error(detail); err.status = res.status; throw err;
+    }
+    const json = await res.json();
+    return String(json?.choices?.[0]?.message?.content || "");
+  };
+  try {
+    return await attempt(backend);
+  } catch (err) {
+    // A custom provider that rejects the credentials (a bad or client-restricted key) must not kill
+    // the run when the account's own managed backend is available — drop to it and carry on.
+    if (backend.managedFallback && isAuthFailure(err.status, err.message)) {
+      return await attempt(backend.managedFallback);
+    }
+    throw err;
   }
-  const json = await res.json();
-  return String(json?.choices?.[0]?.message?.content || "");
 }
 
 function notifyDesktop({ title, body }) {

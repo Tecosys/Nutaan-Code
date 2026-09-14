@@ -1847,6 +1847,7 @@
   }
 
   function toolLabel(name, args) {
+    if (name === "map_route") return `Mapping the route through <code>${escapeHtml((Array.isArray(args.stops) ? args.stops : []).join(" → ") || "your stops")}</code>`;
     if (name === "list_dir") return `Listing <code>${escapeHtml(args.path || ".")}</code>`;
     if (name === "read_file") return `Reading <code>${escapeHtml(args.path || "")}</code>`;
     if (name === "search_files") return `Searching for <code>${escapeHtml(args.pattern || "")}</code>`;
@@ -2285,6 +2286,8 @@
       renderCanvaResult(cardEl, detail, name, result);
     } else if (name === "mcp__nutaan__nutaan_list_agents") {
       renderNutaanAgents(cardEl, detail, result);
+    } else if (name === "map_route" && result.ok && result.geometry) {
+      renderMapRoute(cardEl, detail, result);
     } else if (name.startsWith("mcp__")) {
       // Any other MCP tool: show its text so the transcript isn't blank.
       const text = mcpResultText(result);
@@ -2304,6 +2307,70 @@
     if (result.result != null) return JSON.stringify(result.result, null, 2);
     if (result.data != null) return JSON.stringify(result.data, null, 2);
     return "";
+  }
+
+  // Leaflet is loaded on demand the first time a route needs a map — no reason to pay for it on
+  // every launch. Both files come from the pinned cdnjs build the rest of the app already trusts.
+  let leafletPromise = null;
+  function ensureLeaflet() {
+    if (window.L) return Promise.resolve(window.L);
+    if (leafletPromise) return leafletPromise;
+    // Bundled locally so it loads under the app's own strict CSP, with no network dependency for
+    // the library itself — only the map tiles come from the network.
+    leafletPromise = new Promise((resolve, reject) => {
+      const css = document.createElement("link");
+      css.rel = "stylesheet";
+      css.href = "vendor/leaflet/leaflet.min.css";
+      document.head.appendChild(css);
+      const js = document.createElement("script");
+      js.src = "vendor/leaflet/leaflet.min.js";
+      js.onload = () => {
+        // Leaflet resolves its marker images relative to the CSS by default; point it at the local
+        // copies so the pins actually appear.
+        try { window.L.Icon.Default.imagePath = "vendor/leaflet/images/"; } catch {}
+        resolve(window.L);
+      };
+      js.onerror = () => reject(new Error("Could not load the map library."));
+      document.head.appendChild(js);
+    });
+    return leafletPromise;
+  }
+
+  // A route result becomes a real map: the driving line, a numbered pin per stop, and a strip of
+  // per-leg distances and times under it. This is the itinerary's backbone — the honest distances
+  // the costs hang off — shown the way the user asked, not as a wall of text.
+  function renderMapRoute(cardEl, detail, result) {
+    setToolStat(cardEl, `${result.totalKm.toLocaleString()} km · ${result.totalHours} h`);
+    const wrap = document.createElement("div");
+    wrap.className = "map-route";
+    const mapEl = document.createElement("div");
+    mapEl.className = "map-canvas";
+    wrap.appendChild(mapEl);
+
+    const legsBar = document.createElement("div");
+    legsBar.className = "map-legs";
+    legsBar.innerHTML =
+      `<div class="map-leg total"><b>${escapeHtml(result.stops[0].name)} → ${escapeHtml(result.stops[result.stops.length - 1].name)}</b><span>${result.totalKm.toLocaleString()} km · ${result.totalHours} h driving</span></div>` +
+      (result.legs || []).map((l) => `<div class="map-leg"><b>${escapeHtml(l.from)} → ${escapeHtml(l.to)}</b><span>${l.km.toLocaleString()} km · ${l.hours} h</span></div>`).join("");
+    wrap.appendChild(legsBar);
+    detail.appendChild(wrap);
+    expandCard(cardEl);
+
+    ensureLeaflet().then((L) => {
+      const latlngs = result.geometry.map(([lng, lat]) => [lat, lng]);
+      const map = L.map(mapEl, { scrollWheelZoom: false, attributionControl: true });
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18, attribution: "© OpenStreetMap" }).addTo(map);
+      const line = L.polyline(latlngs, { color: "#a855f7", weight: 4, opacity: 0.9 }).addTo(map);
+      result.stops.forEach((s, i) => {
+        L.marker([s.lat, s.lon]).addTo(map).bindPopup(`<b>${i + 1}. ${s.name}</b>`);
+      });
+      map.fitBounds(line.getBounds(), { padding: [24, 24] });
+      // The card starts collapsed sometimes; Leaflet needs a size recalc once it is visible.
+      setTimeout(() => map.invalidateSize(), 200);
+    }).catch((e) => {
+      const note = document.createElement("div"); note.className = "note err"; note.textContent = e.message;
+      wrap.insertBefore(note, legsBar);
+    });
   }
 
   // nutaan_list_agents comes back as a bullet list of text, one agent per block. Parse it into a
@@ -5154,12 +5221,37 @@
     for (const t of run.tasks) {
       const row = document.createElement("div");
       row.className = `sw-agent ${t.status}`;
-      row.innerHTML =
+      const steps = t.steps || [];
+      // The steps trail expands like Claude Code's side panel: the header line summarises, and the
+      // list under it shows every step this agent took. Auto-open while running so the user watches
+      // it work; collapsible once done so a finished run stays tidy.
+      const stateLabel = t.status === "running"
+        ? `<span class="wk-spark"></span>${escapeHtml(t.currentTool || "working")}${t.toolCount ? ` · ${t.toolCount}` : ""}`
+        : t.status === "done" ? `✓${t.toolCount ? ` ${t.toolCount} steps` : ""}`
+        : t.status === "pending" ? (t.dependsOn?.length ? "waiting" : "queued") : t.status;
+      const head =
+        `<div class="sw-agent-head">` +
         `<span class="sw-role" style="--role:${t.color || "#9ba0ab"}">${escapeHtml(t.icon)} ${escapeHtml(t.roleName)}</span>` +
         `<span class="sw-task">${escapeHtml(t.title)}</span>` +
-        `<span class="sw-state">${t.status === "running" ? `<span class="wk-spark"></span>${escapeHtml(t.currentTool || "working")}${t.toolCount ? ` · ${t.toolCount}` : ""}` : t.status === "done" ? `✓${t.toolCount ? ` ${t.toolCount} tools` : ""}` : t.status === "pending" ? (t.dependsOn?.length ? "waiting" : "queued") : t.status}</span>` +
+        `<span class="sw-state">${stateLabel}</span>` +
+        (steps.length ? `<span class="sw-chev">${t.status === "running" ? "▾" : "▸"}</span>` : "") +
+        `</div>`;
+      const stepList = steps.length
+        ? `<div class="sw-steps"${t.status === "running" ? "" : " hidden"}>` +
+          steps.map((s) => `<div class="sw-step">${escapeHtml(s)}</div>`).join("") +
+          `</div>`
+        : "";
+      row.innerHTML =
+        head + stepList +
         (t.findings && t.status === "done" ? `<details class="sw-findings"><summary>Findings</summary>${renderMarkdownLite(t.findings)}</details>` : "") +
         (t.error ? `<div class="sw-err">${escapeHtml(t.error)}</div>` : "");
+      if (steps.length) {
+        const h = row.querySelector(".sw-agent-head");
+        const list = row.querySelector(".sw-steps");
+        const chev = row.querySelector(".sw-chev");
+        h.style.cursor = "pointer";
+        h.addEventListener("click", () => { list.hidden = !list.hidden; if (chev) chev.textContent = list.hidden ? "▸" : "▾"; });
+      }
       team.appendChild(row);
     }
     if ((run.status === "done" || run.status === "stopped" || run.status === "failed") && !entry.reported) {

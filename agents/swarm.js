@@ -21,7 +21,7 @@ const READ_TOOLS = ["list_dir", "read_file", "search_files", "list_skills", "use
 const BROWSER_TOOLS = ["browser_navigate", "browser_read_page", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_resize", "browser_execute_script"];
 const SHELL_TOOLS = ["run_command", "run_background", "check_background_task", "list_background_tasks", "stop_background_task"];
 const WRITE_TOOLS = ["write_file", "edit_file"];
-const WEB_TOOLS = ["web_search", "web_fetch"];
+const WEB_TOOLS = ["web_search", "web_fetch", "map_route"];
 
 const ROLES = {
   planner: {
@@ -78,10 +78,38 @@ const OUTCOME_PLAYBOOKS = {
   "research competitors": "One Researcher per competitor (pricing, features, positioning, recent news, weaknesses) in parallel. Reviewer: merge into a comparison table + where we win.",
   "set up crm": "Researcher: fit-for-purpose options (HubSpot, Twenty, Attio, self-hosted) with pricing. Developer: schema/contacts model + import script + integration stubs. Browser QA: walk through the configured CRM in the browser.",
   "deploy application": "DevOps: build, env, deploy command/config for the target (Vercel/Netlify/Docker/VPS). Browser QA: open the live URL and verify. Reviewer: secrets/config exposure check.",
+  "plan a trip": "One Researcher per leg of the cost. Researcher A (travel): shortest route and total distance via maps, plus the actual trains for each leg — train name and number, class fares, current availability/waitlist and confirmation chance — with the source URL. Researcher B (local transport): car rental and cab fares between and within the destinations from InDrive/Ola/Uber, per km and estimated totals. Researcher C (stay): hotels at each stop with real per-night prices and review scores, a budget and a comfortable pick each. Researcher D (food): realistic daily food cost per person at each stop. Reviewer: merge every leg into one itinerary with a clear day-by-day plan and a costed table (low-cost total and comfortable total), every figure carrying its source. Open the promising pages in the browser and read the real numbers — never invent a fare, a train number or a price.",
 };
 
 function genId(prefix) {
   return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+// One short human line for a tool call — "Searched X", "Read Y", "Ran Z", "Opened <url>" — the
+// step trail the UI shows under each agent. Kept generic so any tool renders as something readable.
+function stepLabel(name, args = {}) {
+  const a = args || {};
+  const first = (v) => (typeof v === "string" ? v : "");
+  switch (name) {
+    case "search_files": return `Searched ${first(a.query || a.pattern) || "files"}`;
+    case "read_file": return `Read ${first(a.path) || "a file"}`;
+    case "list_dir": return `Listed ${first(a.path) || "a folder"}`;
+    case "write_file": return `Wrote ${first(a.path) || "a file"}`;
+    case "edit_file": return `Edited ${first(a.path) || "a file"}`;
+    case "run_command": case "run_background": return `Ran ${first(a.command).slice(0, 60) || "a command"}`;
+    case "web_search": return `Searched the web: ${first(a.query).slice(0, 60)}`;
+    case "web_fetch": return `Fetched ${first(a.url).slice(0, 60)}`;
+    case "browser_navigate": return `Opened ${first(a.url).slice(0, 60)}`;
+    case "browser_read_page": return "Read the page";
+    case "browser_click": return `Clicked ${first(a.selector || a.text).slice(0, 40)}`;
+    case "browser_screenshot": return "Took a screenshot";
+    case "kb_search": return `Searched the knowledge base: ${first(a.query).slice(0, 50)}`;
+    case "vuln_static_scan": return "Ran the vulnerability scan";
+    default: {
+      if (name && name.startsWith("mcp__")) return name.replace(/^mcp__/, "").replace(/__/g, " · ").replace(/-/g, " ");
+      return String(name || "worked").replace(/_/g, " ");
+    }
+  }
 }
 
 function extractJson(text) {
@@ -108,6 +136,7 @@ function playbookFor(goal) {
   if (/\b(competitor|competition|compare|vs\.?)\b/.test(g)) return OUTCOME_PLAYBOOKS["research competitors"];
   if (/\bcrm\b/.test(g)) return OUTCOME_PLAYBOOKS["set up crm"];
   if (/\b(deploy|ship|release|host)\b/.test(g)) return OUTCOME_PLAYBOOKS["deploy application"];
+  if (/\b(trip|travel|itinerary|tour|vacation|holiday|yatra|ghumne|jana hai|kharcha|budget)\b/.test(g) || /\b(se|to|from)\b.*\b(jana|reach|route|distance)\b/.test(g)) return OUTCOME_PLAYBOOKS["plan a trip"];
   return null;
 }
 
@@ -160,7 +189,7 @@ class Swarm {
       startedAt: run.startedAt,
       endedAt: run.endedAt || null,
       plan: run.plan ? { summary: run.plan.summary, tasks: run.plan.tasks.map((t) => ({ id: t.id, role: t.role, title: t.title, dependsOn: t.dependsOn })) } : null,
-      tasks: run.tasks.map((t) => ({ id: t.id, role: t.role, roleName: ROLES[t.role]?.name || t.role, icon: ROLES[t.role]?.icon || "🤖", color: ROLES[t.role]?.color, title: t.title, status: t.status, currentTool: t.currentTool || null, toolCount: t.toolCount || 0, startedAt: t.startedAt || null, endedAt: t.endedAt || null, findings: t.findings || null, error: t.error || null })),
+      tasks: run.tasks.map((t) => ({ id: t.id, role: t.role, roleName: ROLES[t.role]?.name || t.role, icon: ROLES[t.role]?.icon || "🤖", color: ROLES[t.role]?.color, title: t.title, status: t.status, currentTool: t.currentTool || null, toolCount: t.toolCount || 0, steps: t.steps || [], startedAt: t.startedAt || null, endedAt: t.endedAt || null, findings: t.findings || null, error: t.error || null })),
       report: run.report || null,
       error: run.error || null,
     };
@@ -229,7 +258,12 @@ class Swarm {
       plan = extractJson(fixed);
     }
     if (!plan || !Array.isArray(plan.tasks) || !plan.tasks.length) {
-      plan = { summary: "Single developer pass (the planner produced no usable plan).", tasks: [{ id: "t1", role: "developer", title: run.goal.slice(0, 80), instructions: run.goal, dependsOn: [] }] };
+      // No usable plan. Fall back to a single agent — a Researcher for a real-world/research goal
+      // (a trip, a market question), a Developer for a codebase goal — so a non-code goal is never
+      // handed to a Developer that has no way to do it.
+      const research = playbookFor(run.goal) === OUTCOME_PLAYBOOKS["plan a trip"] || playbookFor(run.goal) === OUTCOME_PLAYBOOKS["research competitors"] || /\b(trip|travel|itinerary|research|find out|compare|kharcha|budget|price|cost)\b/i.test(run.goal);
+      const role = research ? "researcher" : "developer";
+      plan = { summary: `Single ${role} pass (the planner produced no usable plan).`, tasks: [{ id: "t1", role, title: run.goal.slice(0, 80), instructions: run.goal, dependsOn: [] }] };
     }
     plan.tasks = plan.tasks.slice(0, MAX_TASKS).map((t, i) => ({
       id: String(t.id || "t" + (i + 1)),
@@ -317,6 +351,12 @@ class Swarm {
         if (channel === "agent:tool-start") {
           task.currentTool = data.name;
           task.toolCount = (task.toolCount || 0) + 1;
+          // Keep a running list of what this agent actually did, one readable line per tool call,
+          // so the UI can show the same expandable step trail Claude Code does. Capped so a long
+          // task cannot grow the run snapshot without bound.
+          if (!task.steps) task.steps = [];
+          task.steps.push(stepLabel(data.name, data.args));
+          if (task.steps.length > 60) task.steps.splice(0, task.steps.length - 60);
           this._event(run, "task-tool", { taskId: task.id, tool: data.name, args: data.args });
         }
         if (channel === "agent:tool-result") task.currentTool = null;
@@ -366,8 +406,8 @@ function plannerPrompt(run) {
       ROLES.planner.brief,
       projectLine(run),
       `Now: ${new Date().toLocaleString()}.`,
-      "First look at the project (list_dir, read the README/package.json/entry files, search for the relevant code) so the plan reflects what is actually there — never plan blind.",
-      playbook ? `A team shape that usually delivers this kind of outcome:\n${playbook}\nAdapt it to this project; drop roles that add nothing here.` : "",
+      "If the goal is about this codebase, first look at the project (list_dir, read the README/package.json/entry files, search the relevant code) so the plan reflects what is actually there. If the goal is NOT about the code — a trip, a research question, a market study, a report, a real-world plan — do NOT explore the repo at all; plan the work directly. Never force a real-world goal into a codebase.",
+      playbook ? `A team shape that usually delivers this kind of outcome:\n${playbook}\nAdapt it to the goal; drop roles that add nothing.` : "",
       `Then reply with ONLY a JSON object, in a \`\`\`json fence, of the form {"summary": "<2-3 sentences: what will be built/changed and how it will be verified>", "tasks": [{"id": "t1", "role": "developer|qa|researcher|reviewer|devops", "title": "<short>", "instructions": "<specific, self-contained instructions naming files, commands, URLs>", "dependsOn": ["t0"]}]}.`,
       `Rules: 2 to ${MAX_TASKS} tasks. Tasks with no dependency between them run in parallel, so split independent work. Verification (qa or reviewer) must depend on the work it verifies. Every task's instructions must be actionable without reading the others. Do not include a planner task.`,
     ].filter(Boolean).join("\n"),

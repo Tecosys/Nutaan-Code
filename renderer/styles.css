@@ -1349,6 +1349,16 @@ button, input, textarea, select { font-family: inherit; }
 /* Once its card is shown, the inline link is just a quiet reference, not the main action. */
 .inline-service-link { color: var(--text-dim); }
 
+/* Itinerary map — the driving route on a real map, with a per-leg distance strip under it. */
+.map-route { display: flex; flex-direction: column; gap: 10px; margin: 6px 0; }
+.map-canvas { height: 300px; width: 100%; border-radius: 12px; overflow: hidden; border: 1px solid var(--border-card); background: var(--bg-code); z-index: 0; }
+.map-canvas .leaflet-container { height: 100%; width: 100%; font: inherit; }
+.map-legs { display: flex; flex-wrap: wrap; gap: 8px; }
+.map-leg { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border-radius: 10px; background: var(--bg-code); border: 1px solid var(--border-card); font-size: 12px; }
+.map-leg b { color: var(--text); font-weight: 600; }
+.map-leg span { color: var(--text-dim); font-size: 11.5px; }
+.map-leg.total { background: linear-gradient(135deg, rgba(168,85,247,0.14), rgba(236,72,153,0.10)); border-color: rgba(168,85,247,0.4); }
+
 .diff { white-space: pre-wrap; }
 .diff-line {
   white-space: pre-wrap;
@@ -3278,15 +3288,21 @@ label.check .hint { color: var(--text-faded); font-size: 12px; }
 .sw-status.failed, .sw-status.stopped { background: rgba(248, 113, 113, 0.14); color: #f87171; }
 .sw-plan { margin-top: 10px; font-size: 12.5px; line-height: 1.55; color: var(--text-3); border-left: 2px solid var(--border-strong); padding-left: 10px; }
 .sw-team { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
-.sw-agent { display: grid; grid-template-columns: 118px 1fr auto; gap: 10px; align-items: center; font-size: 12.5px; padding: 7px 10px; border-radius: 9px; background: var(--bg-elev); }
+.sw-agent { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; padding: 7px 10px; border-radius: 9px; background: var(--bg-elev); }
+.sw-agent-head { display: grid; grid-template-columns: 118px 1fr auto auto; gap: 10px; align-items: center; }
 .sw-agent.running { background: rgba(168, 85, 247, 0.08); }
 .sw-agent.pending { opacity: 0.6; }
 .sw-agent.failed, .sw-agent.skipped { opacity: 0.75; }
 .sw-role { font-weight: 700; color: var(--role); white-space: nowrap; }
 .sw-task { color: var(--text-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sw-state { font-size: 11px; color: var(--text-faded); font-family: var(--mono); white-space: nowrap; }
+.sw-chev { font-size: 10px; color: var(--text-faded); }
 .sw-agent.done .sw-state { color: #4ade80; }
-.sw-findings { grid-column: 1 / -1; font-size: 12.5px; line-height: 1.55; color: var(--text-3); }
+/* The expandable step trail under each agent — one line per tool it ran, on a spine like Claude's. */
+.sw-steps { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 2px 10px; padding-left: 12px; border-left: 1.5px solid var(--border-soft); }
+.sw-step { font-size: 11px; color: var(--text-dim); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sw-step:last-child { color: var(--text-2); }
+.sw-findings { font-size: 12.5px; line-height: 1.55; color: var(--text-3); }
 .sw-findings summary { cursor: pointer; color: var(--text-dim); font-size: 11.5px; }
 .sw-findings p { margin: 4px 0; }
-.sw-err { grid-column: 1 / -1; font-size: 11.5px; color: #f87171; }
+.sw-err { font-size: 11.5px; color: #f87171; }
