@@ -31,8 +31,11 @@
       </div>
 
       <div class="branch-chip" id="branchChip" hidden>
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#8b92a0" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="8" r="2.4"/><path d="M6 8.4v7.2M8.4 6H14a4 4 0 0 1 4 4v0"/></svg>
-        <span class="branch-name" id="branchName">main</span>
+        <button class="branch-switch" id="branchSwitch" type="button" title="Switch branch">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#8b92a0" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="8" r="2.4"/><path d="M6 8.4v7.2M8.4 6H14a4 4 0 0 1 4 4v0"/></svg>
+          <span class="branch-name" id="branchName">main</span>
+          <svg class="branch-chev" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#8b92a0" stroke-width="2.6" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
         <span class="branch-sep"></span>
         <span class="sync-dot" id="syncDot"></span>
         <span class="sync-label" id="syncLabel">Clean</span>
@@ -40,6 +43,7 @@
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V5M6 11l6-6 6 6"/></svg>
           <span id="pushLabel">Push</span>
         </button>
+        <div class="branch-menu" id="branchMenu" hidden></div>
       </div>
     </div>
 

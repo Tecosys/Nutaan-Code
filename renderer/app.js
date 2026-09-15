@@ -776,6 +776,49 @@
       escapeHtml(st.branch);
   }
 
+  // ---------- Branch switcher ----------
+  const branchSwitch = el("branchSwitch");
+  const branchMenu = el("branchMenu");
+
+  async function openBranchMenu() {
+    if (!activePath || !branchMenu) return;
+    if (!branchMenu.hidden) { branchMenu.hidden = true; return; }
+    branchMenu.innerHTML = `<div class="branch-menu-loading">Loading branches…</div>`;
+    branchMenu.hidden = false;
+    let res;
+    try { res = await window.nutaan.gitBranches(activePath); } catch { res = null; }
+    if (!res || !res.repo || !res.branches.length) {
+      branchMenu.innerHTML = `<div class="branch-menu-loading">No branches found.</div>`;
+      return;
+    }
+    branchMenu.innerHTML = "";
+    for (const b of res.branches) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "branch-menu-item" + (b.current ? " current" : "");
+      item.innerHTML = `<span class="bm-tick">${b.current ? "✓" : ""}</span><span class="bm-name">${escapeHtml(b.name)}</span>`;
+      if (!b.current) item.addEventListener("click", () => switchBranch(b.name));
+      branchMenu.appendChild(item);
+    }
+  }
+
+  async function switchBranch(name) {
+    branchMenu.hidden = true;
+    let res;
+    try { res = await window.nutaan.gitSwitchBranch(activePath, name); } catch (e) { res = { ok: false, error: e.message }; }
+    if (!res.ok) {
+      appendBubble("error", `Couldn't switch to "${name}": ${res.error}`);
+      return;
+    }
+    await refreshGit();
+    refreshTree();
+    contextFiles = null;
+    appendBubble("assistant", `Switched to branch **${name}**.`);
+  }
+
+  branchSwitch?.addEventListener("click", (e) => { e.stopPropagation(); openBranchMenu(); });
+  document.addEventListener("click", (e) => { if (branchMenu && !branchMenu.hidden && !e.target.closest(".branch-chip")) branchMenu.hidden = true; });
+
   // ---------- Git commit & push ----------
   const gitOverlay = el("gitOverlay");
   const gitBranchLabel = el("gitBranchLabel");

@@ -407,7 +407,10 @@ class WorkerScheduler {
     this.emit("workers:update", update);
     this.emit("workers:run", { id: worker.id, status: "done", ok });
     this._changed();
-    if (worker.notify && reason !== "manual") {
+    // Notify on every finish, manual runs included — a worker run is async and the user often
+    // switches away while it works, so the desktop toast is how they learn it's done. (On Windows a
+    // toast only appears once the app has set its AppUserModelId, which it now does at startup.)
+    if (worker.notify) {
       try { this.notify({ title: `${worker.icon} ${worker.name}`, body: update.headline }); } catch {}
     }
     this._drain();

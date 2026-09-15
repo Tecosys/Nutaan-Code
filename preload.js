@@ -60,6 +60,8 @@ contextBridge.exposeInMainWorld("nutaan", {
     return () => ipcRenderer.removeListener("kb:progress", listener);
   },
   gitStatus: (root) => ipcRenderer.invoke("git:status", root),
+  gitBranches: (root) => ipcRenderer.invoke("git:branches", root),
+  gitSwitchBranch: (root, name) => ipcRenderer.invoke("git:switch-branch", root, name),
   gitDiffFile: (root, relPath) => ipcRenderer.invoke("git:diff-file", root, relPath),
   gitPush: (root) => ipcRenderer.invoke("git:push", root),
   gitChanges: (root) => ipcRenderer.invoke("git:changes", root),

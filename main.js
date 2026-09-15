@@ -2383,6 +2383,34 @@ ipcMain.handle("git:status", async (_e, root) => {
   return { repo: true, branch: branch.stdout.trim(), dirty, ahead, behind, hasUpstream: counts.exitCode === 0 };
 });
 
+// Local branches, current one flagged — for the branch switcher. Uses plain `git branch` rather
+// than a --format string: on Windows cmd.exe eats the % in a --format=%(...) placeholder and the
+// command comes back empty. The plain output ("* current", "  other") parses the same everywhere.
+ipcMain.handle("git:branches", async (_e, root) => {
+  const res = await runCommand(root, "git branch --no-color");
+  if (res.exitCode !== 0) return { repo: false, branches: [] };
+  const branches = res.stdout.split("\n").map((l) => l.trim()).filter(Boolean)
+    // A detached HEAD shows as "(HEAD detached at …)" — skip that pseudo-branch.
+    .filter((l) => !/^\*?\s*\(/.test(l))
+    .map((l) => ({ name: l.replace(/^\*\s*/, "").trim(), current: l.startsWith("*") }));
+  return { repo: true, branches, current: (branches.find((b) => b.current) || {}).name || null };
+});
+
+// Switch branches. A dirty tree makes git refuse when the change would be clobbered, so surface
+// that plainly rather than forcing it — the user's uncommitted work is never discarded here.
+ipcMain.handle("git:switch-branch", async (_e, root, name) => {
+  if (!name) return { ok: false, error: "No branch given" };
+  const res = await runCommand(root, `git checkout ${shellQuote(name)}`);
+  if (res.exitCode !== 0) {
+    const detail = (res.stderr || res.stdout || "Could not switch branch").trim();
+    if (/local changes|would be overwritten|commit your changes or stash/i.test(detail)) {
+      return { ok: false, error: "You have uncommitted changes that would be lost. Commit or stash them first, then switch.", dirty: true };
+    }
+    return { ok: false, error: detail.slice(0, 300) };
+  }
+  return { ok: true, branch: name };
+});
+
 // Porcelain's two status columns are index-then-worktree, so a file can be partly staged.
 const GIT_STATUS_LABEL = {
   M: "modified", A: "added", D: "deleted", R: "renamed", C: "copied", U: "conflicted", "?": "untracked",
