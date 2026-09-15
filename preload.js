@@ -23,9 +23,26 @@ contextBridge.exposeInMainWorld("nutaan", {
     quickRecon: (target, type) => ipcRenderer.invoke("arsenal:quick-recon", target, type),
   },
   bgTasks: {
+    start: (root, command) => ipcRenderer.invoke("bgtask:start", root, command),
     list: () => ipcRenderer.invoke("bgtask:list"),
     get: (id) => ipcRenderer.invoke("bgtask:get", id),
     stop: (id) => ipcRenderer.invoke("bgtask:stop", id),
+  },
+  tools: {
+    status: () => ipcRenderer.invoke("tools:status"),
+    catalog: () => ipcRenderer.invoke("tools:catalog"),
+    setEnabled: (id, enabled) => ipcRenderer.invoke("tools:set-enabled", id, enabled),
+    saveConfig: (id, config) => ipcRenderer.invoke("tools:save-config", id, config),
+    connect: (id) => ipcRenderer.invoke("tools:connect", id),
+    authorize: (id) => ipcRenderer.invoke("tools:authorize", id),
+    signOut: (id) => ipcRenderer.invoke("tools:sign-out", id),
+    addCustom: (spec) => ipcRenderer.invoke("tools:add-custom", spec),
+    removeCustom: (id) => ipcRenderer.invoke("tools:remove-custom", id),
+    onStatus: (callback) => {
+      const listener = (_e, data) => callback(data);
+      ipcRenderer.on("tools:status", listener);
+      return () => ipcRenderer.removeListener("tools:status", listener);
+    },
   },
   osSearch: (payload) => ipcRenderer.invoke("os:search", payload),
   osOpen: (target) => ipcRenderer.invoke("os:open", target),
@@ -45,6 +62,8 @@ contextBridge.exposeInMainWorld("nutaan", {
     return () => ipcRenderer.removeListener("kb:progress", listener);
   },
   gitStatus: (root) => ipcRenderer.invoke("git:status", root),
+  gitBranches: (root) => ipcRenderer.invoke("git:branches", root),
+  gitSwitchBranch: (root, name) => ipcRenderer.invoke("git:switch-branch", root, name),
   gitDiffFile: (root, relPath) => ipcRenderer.invoke("git:diff-file", root, relPath),
   gitPush: (root) => ipcRenderer.invoke("git:push", root),
   gitChanges: (root) => ipcRenderer.invoke("git:changes", root),
@@ -72,6 +91,80 @@ contextBridge.exposeInMainWorld("nutaan", {
     stop: () => ipcRenderer.invoke("gateway:stop"),
     getModels: () => ipcRenderer.invoke("gateway:get-models"),
     saveConfig: (cfg) => ipcRenderer.invoke("gateway:save-config", cfg),
+  },
+
+  // ---- autonomous layer ----
+  workers: {
+    list: () => ipcRenderer.invoke("workers:list"),
+    create: (spec) => ipcRenderer.invoke("workers:create", spec),
+    update: (id, patch) => ipcRenderer.invoke("workers:update", id, patch),
+    remove: (id) => ipcRenderer.invoke("workers:remove", id),
+    runNow: (id) => ipcRenderer.invoke("workers:run-now", id),
+    stop: (id) => ipcRenderer.invoke("workers:stop", id),
+    updates: (limit) => ipcRenderer.invoke("workers:updates", limit),
+    markRead: (ids) => ipcRenderer.invoke("workers:mark-read", ids),
+    clearUpdates: () => ipcRenderer.invoke("workers:clear-updates"),
+  },
+  swarm: {
+    start: (payload) => ipcRenderer.invoke("swarm:start", payload),
+    stop: (runId) => ipcRenderer.invoke("swarm:stop", runId),
+    list: () => ipcRenderer.invoke("swarm:list"),
+    get: (runId) => ipcRenderer.invoke("swarm:get", runId),
+  },
+  healer: {
+    view: (root) => ipcRenderer.invoke("healer:view", root),
+    setMode: (mode) => ipcRenderer.invoke("healer:set-mode", mode),
+    configure: (root, patch) => ipcRenderer.invoke("healer:configure", root, patch),
+    scan: (root) => ipcRenderer.invoke("healer:scan", root),
+    repair: (id) => ipcRenderer.invoke("healer:repair", id),
+    stopRepair: (id) => ipcRenderer.invoke("healer:stop-repair", id),
+    ignore: (id) => ipcRenderer.invoke("healer:ignore", id),
+    clear: () => ipcRenderer.invoke("healer:clear"),
+    signal: (sig) => ipcRenderer.send("healer:signal", sig),
+  },
+  monitor: {
+    view: (opts) => ipcRenderer.invoke("monitor:view", opts),
+    addSite: (payload) => ipcRenderer.invoke("monitor:add-site", payload),
+    removeSite: (id) => ipcRenderer.invoke("monitor:remove-site", id),
+    updateSite: (id, patch) => ipcRenderer.invoke("monitor:update-site", id, patch),
+    checkSite: (id) => ipcRenderer.invoke("monitor:check-site", id),
+    scanNow: () => ipcRenderer.invoke("monitor:scan-now"),
+    setEnabled: (on) => ipcRenderer.invoke("monitor:set-enabled", on),
+    markRead: () => ipcRenderer.invoke("monitor:mark-read"),
+    clearEvents: () => ipcRenderer.invoke("monitor:clear-events"),
+    cleanup: (opts) => ipcRenderer.invoke("storage:cleanup", opts),
+  },
+  today: (payload) => ipcRenderer.invoke("today:build", payload),
+  projectOpened: (root) => ipcRenderer.send("project:opened", root),
+  onAutonomousEvent: (channel, callback) => {
+    const valid = ["workers:changed", "workers:update", "workers:run", "swarm:event", "swarm:launched", "healer:changed", "healer:incident", "healer:activity", "healer:health", "healer:repair-done", "monitor:changed"];
+    if (!valid.includes(channel)) return () => {};
+    const listener = (_e, data) => callback(data);
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
+  },
+
+  // ---- Demo Studio ----
+  studio: {
+    sources: () => ipcRenderer.invoke("studio:sources"),
+    cursorStart: (payload) => ipcRenderer.invoke("studio:cursor-start", payload),
+    cursorStop: (session) => ipcRenderer.invoke("studio:cursor-stop", session),
+    hotkeys: (on) => ipcRenderer.invoke("studio:hotkeys", on),
+    window: (action) => ipcRenderer.invoke("studio:window", action),
+    recBar: (show) => ipcRenderer.invoke("studio:recbar", { show }),
+    recBarState: (state) => ipcRenderer.send("studio:recbar-state", state),
+    saveTake: (payload) => ipcRenderer.invoke("studio:save-take", payload),
+    saveProject: (project) => ipcRenderer.invoke("studio:save-project", project),
+    listProjects: () => ipcRenderer.invoke("studio:list-projects"),
+    loadProject: (id) => ipcRenderer.invoke("studio:load-project", id),
+    deleteProject: (id) => ipcRenderer.invoke("studio:delete-project", id),
+    export: (payload) => ipcRenderer.invoke("studio:export", payload),
+    reveal: (target) => ipcRenderer.invoke("studio:reveal", target),
+    onHotkey: (callback) => {
+      const listener = (_e, data) => callback(data);
+      ipcRenderer.on("studio:hotkey", listener);
+      return () => ipcRenderer.removeListener("studio:hotkey", listener);
+    },
   },
 
   sendAgentMessage: (payload) => ipcRenderer.send("agent:send", payload),

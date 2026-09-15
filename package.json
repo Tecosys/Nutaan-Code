@@ -1,6 +1,6 @@
 {
   "name": "nutaan-code",
-  "version": "0.1.22",
+  "version": "0.1.31",
   "description": "Nutaan Code — a personal AI coding agent desktop app",
   "main": "main.js",
   "private": true,
@@ -47,6 +47,8 @@
       "main.js",
       "preload.js",
       "arsenal/**/*",
+      "agents/**/*",
+      "tools/**/*",
       "renderer/**/*",
       "skills/**/*",
       "assets/**/*",

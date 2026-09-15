@@ -2,9 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob: https://*.tile.openstreetmap.org; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
 <title>Nutaan Code</title>
 <link rel="stylesheet" href="styles.css" />
+<link rel="stylesheet" href="studio.css" />
 </head>
 <body>
 
@@ -30,8 +31,11 @@
       </div>
 
       <div class="branch-chip" id="branchChip" hidden>
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#8b92a0" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="8" r="2.4"/><path d="M6 8.4v7.2M8.4 6H14a4 4 0 0 1 4 4v0"/></svg>
-        <span class="branch-name" id="branchName">main</span>
+        <button class="branch-switch" id="branchSwitch" type="button" title="Switch branch">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#8b92a0" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="8" r="2.4"/><path d="M6 8.4v7.2M8.4 6H14a4 4 0 0 1 4 4v0"/></svg>
+          <span class="branch-name" id="branchName">main</span>
+          <svg class="branch-chev" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#8b92a0" stroke-width="2.6" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
         <span class="branch-sep"></span>
         <span class="sync-dot" id="syncDot"></span>
         <span class="sync-label" id="syncLabel">Clean</span>
@@ -39,6 +43,7 @@
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V5M6 11l6-6 6 6"/></svg>
           <span id="pushLabel">Push</span>
         </button>
+        <div class="branch-menu" id="branchMenu" hidden></div>
       </div>
     </div>
 
@@ -46,6 +51,28 @@
       <span class="switch-track"><span class="switch-knob"></span></span>
       <span class="label">Auto-approve</span>
     </button>
+
+    <div class="health-chip-wrap">
+      <button class="health-chip" id="healthChip" title="Device and web-app health">
+        <span class="hc-dot" id="hcDot"></span>
+        <span class="hc-label" id="hcLabel">Checking…</span>
+        <span class="hc-badge" id="hcBadge" hidden>0</span>
+      </button>
+      <div class="health-pop" id="healthPop" hidden>
+        <div class="hp-head">
+          <span>This device</span>
+          <span class="spacer"></span>
+          <button class="link-btn" id="hpRefresh" type="button">Refresh</button>
+        </div>
+        <div class="hp-checks" id="hpChecks"></div>
+        <div class="hp-head" style="margin-top:12px"><span>Web apps</span><span class="spacer"></span><span class="hp-scan" id="hpNextScan"></span></div>
+        <div class="hp-sites" id="hpSites"></div>
+        <div class="hp-foot">
+          <button class="btn-secondary sm" id="hpOpen" type="button">Open Health</button>
+          <button class="btn-secondary sm" id="hpScan" type="button">Scan now</button>
+        </div>
+      </div>
+    </div>
 
     <div class="topbar-actions">
       <button class="icon-btn" id="panelToggleBtn" title="Toggle side panel">
@@ -101,8 +128,10 @@
         <span class="status-dot" id="statusDot"></span>
         <span class="status-text" id="statusText">Not connected</span>
         <div style="flex:1"></div>
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="1.9" stroke-linecap="round"><path d="M7 18h10a3.6 3.6 0 0 0 .3-7.2A5.4 5.4 0 0 0 6.6 11 3.5 3.5 0 0 0 7 18z"/></svg>
-        <span class="cloud-label">Nutaan Cloud</span>
+        <button class="cloud-chip" id="cloudChip" type="button" title="Models run through nutaan.com — click to open your dashboard">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M7 18h10a3.6 3.6 0 0 0 .3-7.2A5.4 5.4 0 0 0 6.6 11 3.5 3.5 0 0 0 7 18z"/></svg>
+          <span class="cloud-label" id="cloudLabel">Nutaan Cloud</span>
+        </button>
       </div>
     </aside>
 
@@ -111,8 +140,24 @@
         <div class="thread" id="thread">
           <div class="empty-state" id="emptyState">
             <img class="empty-mark" src="../assets/logo.png" alt="" />
-            <h1>Build anything with <span class="grad-text">Nutaan Code</span></h1>
-            <p class="empty-sub">Your AI coding agent that understands your entire project.</p>
+            <h1 id="emptyTitle">Build anything with <span class="grad-text">Nutaan Code</span></h1>
+            <p class="empty-sub" id="emptySub">Your AI coding agent that understands your entire project.</p>
+
+            <!-- Outcome mode: the user names the result, Nutaan Swarm picks the team and the workflow. -->
+            <div class="outcome-chips" id="outcomeChips" hidden></div>
+
+            <!-- Today: worked out from the project itself (git, TODOs, tests, incidents, workers), never canned. -->
+            <div class="today" id="todaySection" hidden>
+              <div class="today-head">
+                <span class="today-date" id="todayDate"></span>
+                <span class="today-headline" id="todayHeadline"></span>
+                <button class="icon-btn tiny" id="todayRefresh" title="Recompute from the project">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4.5V10h-5.4"/></svg>
+                </button>
+              </div>
+              <div class="today-grid" id="todayGrid"></div>
+            </div>
+
             <div class="quick-grid" id="quickGrid"></div>
             <button class="open-project-link" id="openProjectLink">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M3 7a2 2 0 0 1 2-2h3.6l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
@@ -164,6 +209,349 @@
         </div>
       </div>
 
+      <!-- Workers: scheduled jobs and the Updates feed they post to -->
+      <div class="page" id="workersPage" hidden>
+        <div class="page-inner">
+          <div class="page-head">
+            <div>
+              <h1>Workers</h1>
+              <p class="page-sub">Jobs Nutaan runs on its own — a morning briefing, "did a new RERA project come today", a stock price every hour, the weather. Each run does the real lookup and posts here, with a desktop notification.</p>
+            </div>
+            <button class="btn-primary" id="newWorkerBtn" type="button">+ New worker</button>
+          </div>
+          <div class="page-cols">
+            <section class="page-col">
+              <div class="page-col-title">Scheduled <span class="count" id="workerCount"></span></div>
+              <div class="worker-list" id="workerList"></div>
+              <div class="page-col-title" style="margin-top:18px">Start from a template</div>
+              <div class="template-grid" id="workerTemplates"></div>
+            </section>
+            <section class="page-col wide">
+              <div class="page-col-title">Updates <span class="count" id="updateCount"></span>
+                <span class="spacer"></span>
+                <button class="link-btn" id="markAllReadBtn" type="button">Mark all read</button>
+                <button class="link-btn" id="clearUpdatesBtn" type="button">Clear</button>
+              </div>
+              <div class="update-feed" id="updateFeed"></div>
+            </section>
+          </div>
+        </div>
+      </div>
+
+      <!-- Health: the self-healing workspace -->
+      <div class="page" id="healthPage" hidden>
+        <div class="page-inner">
+          <div class="page-head">
+            <div>
+              <h1>Self-Healing Workspace</h1>
+              <p class="page-sub">Nutaan watches the dev server, the browser panel, the tests and a health URL. When something breaks it runs Detect → Reproduce → Diagnose → Patch → Test → Deploy → Verify.</p>
+            </div>
+            <div class="mode-seg" id="healMode">
+              <button type="button" data-mode="off">Off</button>
+              <button type="button" data-mode="watch">Watch</button>
+              <button type="button" data-mode="auto">Auto-heal</button>
+            </div>
+          </div>
+          <div class="page-col-title">This device
+            <span class="spacer"></span>
+            <span class="mon-when" id="monDeviceWhen"></span>
+            <button class="link-btn" id="monRefresh" type="button">Refresh</button>
+          </div>
+          <div class="mon-checks" id="monChecks"></div>
+
+          <div class="mon-clean" id="monClean">
+            <div class="mcl-head">
+              <span class="mcl-title">Reclaimable space</span>
+              <span class="mcl-sum" id="mclSum">Checking what is safe to delete…</span>
+              <span class="spacer"></span>
+              <button class="link-btn" id="mclRescan" type="button">Re-check</button>
+              <button class="btn-primary sm" id="mclClean" type="button" disabled>Clean up</button>
+            </div>
+            <div class="mcl-items" id="mclItems"></div>
+            <div class="st-note">Only caches, stale update downloads and week-old temp files — never settings, chats, the knowledge base, memory, or browser logins.</div>
+          </div>
+
+          <div class="page-col-title" style="margin-top:22px">Web apps
+            <span class="count" id="monSiteCount"></span>
+            <span class="spacer"></span>
+            <span class="mon-when" id="monScanWhen"></span>
+            <button class="link-btn" id="monScanNow" type="button">Scan now</button>
+          </div>
+          <form class="mon-add" id="monAddForm">
+            <input type="text" id="monUrl" placeholder="https://your-app.com  — any web app, staging or production" spellcheck="false" />
+            <select class="st-select" id="monEvery">
+              <option value="1">every minute</option>
+              <option value="5" selected>every 5 min</option>
+              <option value="15">every 15 min</option>
+              <option value="60">hourly</option>
+            </select>
+            <button class="btn-primary sm" type="submit">Watch it</button>
+          </form>
+          <div class="mon-sites" id="monSites"></div>
+
+          <div class="page-col-title" style="margin-top:22px">What happened
+            <span class="count" id="monEventCount"></span>
+            <span class="spacer"></span>
+            <button class="link-btn" id="monMarkRead" type="button">Mark read</button>
+            <button class="link-btn" id="monClearEvents" type="button">Clear</button>
+          </div>
+          <div class="mon-events" id="monEvents"></div>
+
+          <div class="page-col-title" style="margin-top:22px">This project</div>
+          <div class="page-cols">
+            <section class="page-col">
+              <div class="health-config" id="healthConfig">
+                <label>Health URL <input type="text" id="healthUrl" placeholder="http://localhost:3000" /></label>
+                <label>Test command <input type="text" id="healthTest" placeholder="npm test" /></label>
+                <label>Deploy / restart command <input type="text" id="healthDeploy" placeholder="npm run build (optional)" /></label>
+                <label class="check"><input type="checkbox" id="healthWatchTests" /> Re-run tests when files change</label>
+                <div class="health-actions">
+                  <button class="btn-secondary" id="healthSave" type="button">Save</button>
+                  <button class="btn-secondary" id="healthScan" type="button">Check now</button>
+                </div>
+                <div class="health-status" id="healthStatus"></div>
+              </div>
+              <div class="page-col-title" style="margin-top:18px">Watching this project</div>
+              <div class="watch-list">
+                <div class="watch-item"><span class="dot"></span>Background tasks — crash, compile and unhandled-error lines</div>
+                <div class="watch-item"><span class="dot"></span>Browser panel — console errors and failed loads on localhost</div>
+                <div class="watch-item"><span class="dot"></span>Health URL — healthy → unhealthy transitions</div>
+                <div class="watch-item"><span class="dot"></span>Tests — a red suite after a file change</div>
+              </div>
+            </section>
+            <section class="page-col wide">
+              <div class="page-col-title">Incidents <span class="count" id="incidentCount"></span>
+                <span class="spacer"></span>
+                <button class="link-btn" id="clearIncidentsBtn" type="button">Clear resolved</button>
+              </div>
+              <div class="incident-list" id="incidentList"></div>
+            </section>
+          </div>
+        </div>
+      </div>
+
+      <!-- Demo Studio: record the screen, turn the take into a product demo, export it. -->
+      <div class="page studio-page" id="studioPage" hidden>
+
+        <!-- Capture + library -->
+        <div class="studio-capture" id="studioCapture">
+          <div class="page-inner">
+            <div class="page-head">
+              <div>
+                <h1>Demo Studio</h1>
+                <p class="page-sub">Record your screen and Nutaan turns the take into a product demo — zooms that follow where your pointer actually went, a smoothed cursor, a background, a webcam bubble. Export MP4, WebM or a looping GIF.</p>
+              </div>
+              <button class="btn-primary st-record-btn" id="stRecordBtn" type="button" disabled>
+                <span class="st-rec-dot"></span><span id="stRecordLabel">Pick a screen first</span>
+              </button>
+            </div>
+
+            <div class="st-setup">
+              <section class="st-col">
+                <div class="page-col-title">
+                  What to record <span class="count" id="stSourceCount"></span>
+                  <span class="spacer"></span>
+                  <button class="link-btn" id="stRefreshSources" type="button">Refresh</button>
+                </div>
+                <div class="st-source-grid" id="stSourceGrid"></div>
+                <div class="st-source-empty" id="stSourceEmpty" hidden>No capturable screens or windows came back. Refresh, or check the app's screen-recording permission.</div>
+              </section>
+
+              <aside class="st-col st-options">
+                <div class="page-col-title">Capture</div>
+                <div class="st-opt-card">
+                  <label class="st-switch"><input type="checkbox" id="stOptMic" /><span class="st-track"><span class="st-knob"></span></span><span class="st-switch-label">Microphone</span></label>
+                  <select class="st-select" id="stMicDevice"></select>
+
+                  <label class="st-switch"><input type="checkbox" id="stOptSystem" /><span class="st-track"><span class="st-knob"></span></span><span class="st-switch-label">System audio</span></label>
+                  <div class="st-note" id="stSystemNote">Records what the machine plays. Windows only — macOS gives no loopback device.</div>
+
+                  <label class="st-switch"><input type="checkbox" id="stOptCamera" /><span class="st-track"><span class="st-knob"></span></span><span class="st-switch-label">Webcam bubble</span></label>
+                  <select class="st-select" id="stCamDevice"></select>
+
+                  <div class="st-divider"></div>
+
+                  <label class="st-switch"><input type="checkbox" id="stOptAutoZoom" checked /><span class="st-track"><span class="st-knob"></span></span><span class="st-switch-label">Auto-zoom on pointer</span></label>
+                  <label class="st-switch"><input type="checkbox" id="stOptMinimize" checked /><span class="st-track"><span class="st-knob"></span></span><span class="st-switch-label">Hide Nutaan while recording</span></label>
+
+                  <div class="st-row2">
+                    <label class="st-field"><span>Frame rate</span>
+                      <select class="st-select" id="stOptFps"><option value="30">30 fps</option><option value="60">60 fps</option></select>
+                    </label>
+                    <label class="st-field"><span>Countdown</span>
+                      <select class="st-select" id="stOptCountdown"><option value="0">None</option><option value="3" selected>3s</option><option value="5">5s</option></select>
+                    </label>
+                  </div>
+                  <label class="st-field"><span>Stop automatically after</span>
+                    <select class="st-select" id="stOptLimit">
+                      <option value="0">When I say stop</option>
+                      <option value="15">15 seconds</option>
+                      <option value="30">30 seconds</option>
+                      <option value="60">1 minute</option>
+                      <option value="120">2 minutes</option>
+                      <option value="300">5 minutes</option>
+                      <option value="600">10 minutes</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div class="st-keys" id="stKeys">
+                  <div class="st-keys-title">While recording</div>
+                  <div class="st-key"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>F9</kbd><span>Stop</span></div>
+                  <div class="st-key"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>F10</kbd><span>Pause / resume</span></div>
+                  <div class="st-key"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>F8</kbd><span>Mark a zoom here</span></div>
+                </div>
+              </aside>
+            </div>
+
+            <div class="page-col-title st-lib-title">Your demos <span class="count" id="stLibCount"></span></div>
+            <div class="st-library" id="stLibrary"></div>
+          </div>
+        </div>
+
+        <!-- Editor -->
+        <div class="studio-editor" id="studioEditor" hidden>
+          <div class="st-ed-top">
+            <button class="st-back" id="stBackBtn" type="button" title="Back to capture">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+            </button>
+            <input class="st-name" id="stName" type="text" spellcheck="false" />
+            <span class="st-meta" id="stMeta"></span>
+            <span class="spacer"></span>
+            <span class="st-saved" id="stSaved"></span>
+            <button class="btn-secondary sm" id="stSaveBtn" type="button">Save</button>
+            <button class="btn-primary sm" id="stExportBtn" type="button">Export</button>
+          </div>
+
+          <div class="st-ed-body">
+            <div class="st-stage" id="stStage">
+              <canvas id="stCanvas"></canvas>
+              <div class="st-stage-badge" id="stStageBadge" hidden></div>
+            </div>
+
+            <aside class="st-inspector">
+              <div class="st-tabs" id="stTabs">
+                <button type="button" class="active" data-tab="bg">Backdrop</button>
+                <button type="button" data-tab="cursor">Cursor</button>
+                <button type="button" data-tab="zoom">Zoom</button>
+                <button type="button" data-tab="camera">Camera</button>
+              </div>
+
+              <div class="st-tabpane" data-pane="bg">
+                <div class="st-label">Backdrop</div>
+                <div class="st-swatches" id="stBgPresets"></div>
+                <div class="st-custom-bg">
+                  <span class="st-custom-label">Your own gradient</span>
+                  <input type="color" id="stBgFrom" value="#a855f7" title="From" />
+                  <input type="color" id="stBgTo" value="#ec4899" title="To" />
+                  <input type="range" id="stBgAngle" min="0" max="360" value="135" title="Angle" />
+                </div>
+                <div class="st-row2" style="margin-bottom:12px">
+                  <button class="btn-secondary sm" id="stStylePolish" type="button" title="Padded, rounded, gradient backdrop">Polished</button>
+                  <button class="btn-secondary sm" id="stStyleBleed" type="button" title="No backdrop, no padding — the raw screen">Full bleed</button>
+                </div>
+                <label class="st-slider"><span>Padding<b id="stPadVal">8%</b></span><input type="range" id="stPad" min="0" max="26" value="8" /></label>
+                <label class="st-slider"><span>Corner radius<b id="stRadiusVal">14</b></span><input type="range" id="stRadius" min="0" max="48" value="14" /></label>
+                <label class="st-slider"><span>Shadow<b id="stShadowVal">45</b></span><input type="range" id="stShadow" min="0" max="100" value="45" /></label>
+                <div class="st-label">Window frame</div>
+                <div class="st-seg" id="stFrameStyle">
+                  <button type="button" data-frame="none">None</button>
+                  <button type="button" class="active" data-frame="mac">Dark</button>
+                  <button type="button" data-frame="macLight">Light</button>
+                </div>
+                <label class="st-switch"><input type="checkbox" id="stFrameTitle" checked /><span class="st-track"><span class="st-knob"></span></span><span class="st-switch-label">Title in the bar</span></label>
+
+                <div class="st-label">Aspect ratio</div>
+                <div class="st-seg" id="stAspect">
+                  <button type="button" class="active" data-ar="auto">Auto</button>
+                  <button type="button" data-ar="16:9">16:9</button>
+                  <button type="button" data-ar="1:1">1:1</button>
+                  <button type="button" data-ar="9:16">9:16</button>
+                  <button type="button" data-ar="4:3">4:3</button>
+                </div>
+              </div>
+
+              <div class="st-tabpane" data-pane="cursor" hidden>
+                <label class="st-switch"><input type="checkbox" id="stCurShow" checked /><span class="st-track"><span class="st-knob"></span></span><span class="st-switch-label">Show cursor</span></label>
+                <div class="st-cursors" id="stCurStyles"></div>
+                <label class="st-slider"><span>Cursor size<b id="stCurSizeVal">1.3×</b></span><input type="range" id="stCurSize" min="50" max="320" value="130" /></label>
+                <label class="st-slider"><span>Smoothing<b id="stCurSmoothVal">60</b></span><input type="range" id="stCurSmooth" min="0" max="100" value="60" /></label>
+                <label class="st-slider"><span>Motion blur<b id="stCurBlurVal">35</b></span><input type="range" id="stCurBlur" min="0" max="100" value="35" /></label>
+                <label class="st-slider"><span>Click bounce<b id="stCurBounceVal">40</b></span><input type="range" id="stCurBounce" min="0" max="100" value="40" /></label>
+                <label class="st-switch"><input type="checkbox" id="stCurBurst" checked /><span class="st-track"><span class="st-knob"></span></span><span class="st-switch-label">Click burst</span></label>
+                <div class="st-divider"></div>
+                <label class="st-switch"><input type="checkbox" id="stCurHalo" checked /><span class="st-track"><span class="st-knob"></span></span><span class="st-switch-label">Spotlight around it</span></label>
+                <label class="st-switch"><input type="checkbox" id="stCurRing" checked /><span class="st-track"><span class="st-knob"></span></span><span class="st-switch-label">Ring where it settles</span></label>
+                <label class="st-switch"><input type="checkbox" id="stCurHideIdle" /><span class="st-track"><span class="st-knob"></span></span><span class="st-switch-label">Fade out when idle</span></label>
+                <div class="st-note" id="stCursorNote"></div>
+              </div>
+
+              <div class="st-tabpane" data-pane="zoom" hidden>
+                <div class="st-label">Automatic</div>
+                <label class="st-slider"><span>Sensitivity<b id="stZoomSensVal">55</b></span><input type="range" id="stZoomSens" min="0" max="100" value="55" /></label>
+                <label class="st-slider"><span>Zoom level<b id="stZoomScaleVal">1.8×</b></span><input type="range" id="stZoomScale" min="110" max="320" value="180" /></label>
+                <div class="st-row2">
+                  <button class="btn-secondary sm" id="stZoomRedetect" type="button">Re-detect</button>
+                  <button class="btn-secondary sm" id="stZoomClear" type="button">Clear all</button>
+                </div>
+                <div class="st-divider"></div>
+                <div class="st-label">Selected zoom</div>
+                <div class="st-selected" id="stZoomSelected">
+                  <div class="st-note">Nothing selected. Click a zoom block on the timeline, or press <b>+ Zoom</b> to add one at the playhead.</div>
+                </div>
+              </div>
+
+              <div class="st-tabpane" data-pane="camera" hidden>
+                <div class="st-note" id="stCamNote">No webcam was recorded with this take.</div>
+                <div id="stCamControls" hidden>
+                  <label class="st-switch"><input type="checkbox" id="stCamShow" checked /><span class="st-track"><span class="st-knob"></span></span><span class="st-switch-label">Show the bubble</span></label>
+                  <label class="st-slider"><span>Size<b id="stCamSizeVal">22%</b></span><input type="range" id="stCamSize" min="10" max="45" value="22" /></label>
+                  <div class="st-label">Shape</div>
+                  <div class="st-seg" id="stCamShape">
+                    <button type="button" class="active" data-shape="circle">Circle</button>
+                    <button type="button" data-shape="rounded">Rounded</button>
+                  </div>
+                  <div class="st-label">Corner</div>
+                  <div class="st-seg" id="stCamPos">
+                    <button type="button" data-pos="tl">↖</button>
+                    <button type="button" data-pos="tr">↗</button>
+                    <button type="button" data-pos="bl">↙</button>
+                    <button type="button" class="active" data-pos="br">↘</button>
+                  </div>
+                  <label class="st-switch"><input type="checkbox" id="stCamMirror" checked /><span class="st-track"><span class="st-knob"></span></span><span class="st-switch-label">Mirror</span></label>
+                </div>
+              </div>
+            </aside>
+          </div>
+
+          <div class="st-transport">
+            <button class="st-play" id="stPlayBtn" type="button" title="Play / pause (Space)">
+              <svg id="stPlayIcon" width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>
+            </button>
+            <span class="st-time"><b id="stTimeNow">0:00.0</b> / <span id="stTimeTotal">0:00.0</span></span>
+            <span class="spacer"></span>
+            <button class="btn-secondary sm" id="stAddZoom" type="button">+ Zoom</button>
+            <button class="btn-secondary sm" id="stAddSpeed" type="button">+ Speed</button>
+            <button class="btn-secondary sm" id="stSplitTrimIn" type="button" title="Trim the start to the playhead">Trim in</button>
+            <button class="btn-secondary sm" id="stSplitTrimOut" type="button" title="Trim the end to the playhead">Trim out</button>
+            <button class="btn-secondary sm" id="stResetTrim" type="button">Reset trim</button>
+            <label class="st-mute"><input type="checkbox" id="stMute" /> Mute preview</label>
+          </div>
+
+          <div class="st-timeline" id="stTimeline">
+            <div class="st-ruler" id="stRuler"></div>
+            <div class="st-tl-track st-track-film" id="stFilm">
+              <div class="st-trim st-trim-a" id="stTrimA"></div>
+              <div class="st-trim st-trim-b" id="stTrimB"></div>
+            </div>
+            <div class="st-tl-track st-track-zoom" id="stZoomTrack"><span class="st-track-tag">Zoom</span></div>
+            <div class="st-tl-track st-track-speed" id="stSpeedTrack"><span class="st-track-tag">Speed</span></div>
+            <div class="st-endflag" id="stEndFlag"><span></span></div>
+            <div class="st-playhead" id="stPlayhead"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="composer-wrap">
         <div class="composer-inner">
           <div class="task-panel" id="taskPanel" hidden>
@@ -207,6 +595,14 @@
                   <span class="label-text">Commands</span>
                 </button>
                 <div class="pop-menu left" id="slashMenu" hidden></div>
+              </div>
+
+              <div class="mode-toggle" id="modeToggle" title="Chat: one agent, step by step. Outcome: name the result, a team of agents plans and delivers it.">
+                <button type="button" class="mode-opt active" data-mode="chat">Chat</button>
+                <button type="button" class="mode-opt" data-mode="outcome">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1"/></svg>
+                  Outcome
+                </button>
               </div>
 
               <div class="composer-spacer"></div>
@@ -318,7 +714,12 @@
               <span class="term-spacer"></span>
               <button class="icon-btn tiny" id="termStopBtn" title="Stop this task" hidden>Stop</button>
             </div>
-            <pre class="term-output" id="termOutput"><div class="term-empty" id="termEmpty">No background tasks yet. When the agent (or you) start one with run_background, it shows here live.</div></pre>
+            <form class="term-input-row" id="termForm">
+              <span class="term-prompt">$</span>
+              <input type="text" id="termInput" class="term-input" placeholder="Run a command…  (e.g. npm test, git status, ls)" autocomplete="off" spellcheck="false" />
+              <button type="submit" class="term-run-btn">Run</button>
+            </form>
+            <pre class="term-output" id="termOutput"><div class="term-empty" id="termEmpty">Type a command above to run it here, or the agent starts one with run_background.</div></pre>
           </div>
         </div>
       </div>
@@ -420,6 +821,74 @@
   </div>
 </div>
 
+<div class="overlay" id="workerOverlay" hidden>
+  <div class="modal worker-modal">
+    <h3 id="workerModalTitle">New worker</h3>
+    <p class="note" style="margin:-12px 0 16px;">Write it the way you'd brief a person who'll do this without you: what to look up, where, and what to report. It runs with the web, the browser panel and your files.</p>
+
+    <div class="field-row">
+      <div class="field" style="flex:0 0 64px">
+        <label for="wkIcon">Icon</label>
+        <input type="text" id="wkIcon" placeholder="🤖" maxlength="4" />
+      </div>
+      <div class="field" style="flex:1">
+        <label for="wkName">Name</label>
+        <input type="text" id="wkName" placeholder="Morning briefing" />
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="wkPrompt">What should it do?</label>
+      <textarea id="wkPrompt" rows="6" placeholder="Check the West Bengal RERA portal for projects registered today. For each: name, promoter, district, registration number, link. If none, say so and list the latest 3."></textarea>
+    </div>
+
+    <div class="field-row">
+      <div class="field" style="flex:1">
+        <label for="wkType">When</label>
+        <select id="wkType">
+          <option value="daily">Every day at a time</option>
+          <option value="interval">Every N minutes</option>
+          <option value="once">Once, at a date and time</option>
+          <option value="project-open">When this project opens</option>
+          <option value="app-start">When Nutaan Code starts</option>
+        </select>
+      </div>
+      <div class="field" id="wkTimeField" style="flex:0 0 110px">
+        <label for="wkTime">Time</label>
+        <input type="time" id="wkTime" value="07:30" />
+      </div>
+      <div class="field" id="wkEveryField" style="flex:0 0 130px" hidden>
+        <label for="wkEvery">Every (min)</label>
+        <input type="number" id="wkEvery" value="60" min="5" max="1440" />
+      </div>
+      <div class="field" id="wkAtField" style="flex:0 0 200px" hidden>
+        <label for="wkAt">At</label>
+        <input type="datetime-local" id="wkAt" />
+      </div>
+    </div>
+
+    <div class="field" id="wkDaysField">
+      <label>Days</label>
+      <div class="day-picker" id="wkDays">
+        <button type="button" data-day="1">Mon</button><button type="button" data-day="2">Tue</button><button type="button" data-day="3">Wed</button><button type="button" data-day="4">Thu</button><button type="button" data-day="5">Fri</button><button type="button" data-day="6">Sat</button><button type="button" data-day="0">Sun</button>
+      </div>
+    </div>
+
+    <div class="field checks">
+      <label class="check"><input type="checkbox" id="wkProject" /> Run inside the open project <span class="hint" id="wkProjectHint"></span></label>
+      <label class="check"><input type="checkbox" id="wkChanges" /> Allow it to edit files and run commands</label>
+      <label class="check"><input type="checkbox" id="wkNotify" checked /> Desktop notification when it posts</label>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn-secondary" id="wkDelete" hidden>Delete</button>
+      <span class="spacer"></span>
+      <button class="btn-secondary" id="wkCancel">Cancel</button>
+      <button class="btn-primary" id="wkSave">Save worker</button>
+    </div>
+  </div>
+</div>
+
 <div class="overlay" id="settingsOverlay" hidden>
   <div class="modal modal-lg settings-modal settings-modal-v2">
 
@@ -453,8 +922,6 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
         Advanced
       </button>
-    </div>
-
     <!-- Settings content area -->
     <div class="settings-content">
       <div class="settings-content-head">
@@ -673,6 +1140,25 @@
             <input type="password" id="apiKeyInput" hidden />
             <button id="useBuiltInBtn" type="button" hidden></button>
           </section>
+
+          <section class="settings-section">
+            <div class="settings-section-title">Tools (MCP &amp; Agent Extensions)</div>
+            <div class="note">Switch on the apps and services the agent can use. Each one becomes tools it can call — an MCP server's tools, a task handed to another coding agent, or a signed-in web app it can drive.</div>
+            <div class="provider-list tool-list" id="toolList"></div>
+            <button class="btn-secondary add-provider-btn" id="addToolBtn" type="button">+ Add a custom MCP server</button>
+            <div class="provider-editor tool-editor" id="toolEditor" hidden>
+              <div class="pe-head">
+                <span id="teTitle">Add MCP server</span>
+                <button class="icon-btn tiny" id="teClose" title="Close" type="button">✕</button>
+              </div>
+              <div id="teFields"></div>
+              <div class="note tool-editor-error" id="teError" hidden></div>
+              <div class="pe-actions">
+                <button class="btn-secondary" id="teCancel" type="button">Cancel</button>
+                <button class="btn-primary" id="teSave" type="button">Save</button>
+              </div>
+            </div>
+          </section>
         </div>
 
         <!-- TAB: AGENTBRIDGE -->
@@ -740,6 +1226,67 @@
   </div>
 </div>
 
+<!-- Demo Studio: countdown, the live recording bar, and the export sheet -->
+<div class="st-countdown" id="stCountdown" hidden><div class="st-count-num" id="stCountNum">3</div><div class="st-count-sub">Recording starts…</div></div>
+
+<div class="st-recbar" id="stRecBar" hidden>
+  <span class="st-rec-live"></span>
+  <span class="st-rec-time" id="stRecTime">0:00</span>
+  <span class="st-rec-sep"></span>
+  <span class="st-rec-what" id="stRecWhat"></span>
+  <button class="st-rec-act" id="stRecMark" type="button" title="Mark a zoom (Ctrl+Shift+F8)">Mark zoom</button>
+  <button class="st-rec-act" id="stRecPause" type="button" title="Pause (Ctrl+Shift+F10)">Pause</button>
+  <button class="st-rec-act stop" id="stRecStop" type="button" title="Stop (Ctrl+Shift+F9)">Stop</button>
+</div>
+
+<div class="overlay" id="stExportOverlay" hidden>
+  <div class="modal st-export-modal">
+    <div class="modal-head">
+      <h2>Export demo</h2>
+      <button class="icon-btn" id="stExportClose" type="button">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="st-label">Format</div>
+      <div class="st-seg wide" id="stExFormat">
+        <button type="button" class="active" data-fmt="mp4">MP4</button>
+        <button type="button" data-fmt="webm">WebM</button>
+        <button type="button" data-fmt="gif">GIF</button>
+      </div>
+      <div class="st-note" id="stExFormatNote"></div>
+
+      <div class="st-row2">
+        <label class="st-field"><span>Resolution</span>
+          <select class="st-select" id="stExRes">
+            <option value="source">Source</option>
+            <option value="1080" selected>1080p</option>
+            <option value="720">720p</option>
+            <option value="480">480p</option>
+          </select>
+        </label>
+        <label class="st-field"><span>Frame rate</span>
+          <select class="st-select" id="stExFps"></select>
+        </label>
+      </div>
+
+      <label class="st-switch" id="stExAudioRow"><input type="checkbox" id="stExAudio" checked /><span class="st-track"><span class="st-knob"></span></span><span class="st-switch-label">Include audio</span></label>
+
+      <div class="st-export-progress" id="stExProgress" hidden>
+        <div class="st-bar"><div class="st-bar-fill" id="stExBar"></div></div>
+        <div class="st-note" id="stExStatus"></div>
+      </div>
+      <div class="st-export-done" id="stExDone" hidden></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-secondary" id="stExCancel" type="button">Cancel</button>
+      <button class="btn-primary" id="stExStart" type="button">Export</button>
+    </div>
+  </div>
+</div>
+
 <script src="app.js"></script>
+<script src="monitor.js"></script>
+<script src="studio.js"></script>
 </body>
 </html>

@@ -4,7 +4,10 @@
 
 # Nutaan Code
 
-**An AI coding agent that understands your whole project — and the rest of your computer.**
+**An open-source AI co-worker for your computer.**
+
+Give it a project, a task, or a goal. It understands your files, writes and edits code, uses your
+browser, runs commands, generates assets, remembers your preferences, and works alongside you.
 
 Windows · macOS · Linux
 
@@ -12,18 +15,135 @@ Windows · macOS · Linux
 
 ---
 
-![Nutaan Code](docs/screenshots/01-chat.png)
+![Nutaan Code](docs/screenshots/00-today.png)
 
 ## What it does
 
-Nutaan Code is a desktop app that reads your codebase, writes and edits files, runs commands,
-drives a built-in browser, and keeps a checklist of what it's doing so you can follow along.
+Nutaan Code is a desktop AI coding agent that reads your codebase, writes and edits files, runs
+commands, drives a built-in browser, and keeps a checklist of what it's doing so you can follow
+along. Beyond coding it runs jobs on a schedule, plans a whole outcome across a team of agents,
+heals a broken workspace on its own, connects to Canva/Gmail/Docs and other MCP tools, and reaches
+out to the rest of your machine — one app, your own API key.
 
 - **Works on your real project** — reads, searches, edits and runs, all scoped to the folder you open.
 - **Checks its own work** — opens the page in the built-in browser and looks at it, rather than telling you to go and check.
 - **Remembers** — a knowledge base you fill with docs and notes, plus memory that carries between chats.
 - **Co-worker mode** — finds and opens files anywhere on your machine, not just in the project.
+- **Autonomous** — scheduled Workers, an Outcome Swarm, and a Self-Healing workspace that fixes crashes as they happen.
+- **Connected** — Canva, Codex, Claude Code, Gmail, Outlook, Google Docs/Sheets, NotebookLM and any MCP server.
 - **One key** — models are reached through nutaan.com with your own API key. No provider keys to manage.
+
+---
+
+## Features
+
+### 🏠 Smart landing — Today
+
+![Today](docs/screenshots/00-today.png)
+
+Open a project and the landing screen shows what it actually needs right now — worked out from the
+repo itself, not a canned list: uncommitted files, commits to push, TODO/FIXME comments with their
+locations, a missing test setup, a stale lockfile, `.env` keys that `.env.example` declares, open
+incidents from the workspace monitor, and the unfinished checklist from your last chat. Every card
+shows the evidence it came from. Click one and the instruction lands in the composer.
+
+### 🤖 Chat & tasks
+
+![Chat](docs/screenshots/01-chat.png)
+
+For anything with more than a few steps, the agent writes a checklist first and keeps it updated as
+it works — so you can see what it intends to do and what's left, not just the final answer. The
+status line shows elapsed time, tokens, and how many tools are running in parallel; independent
+reads run at the same time rather than one after another.
+
+### 👥 Co-worker — the machine outside the project
+
+![Co-worker](docs/screenshots/02-coworker.png)
+
+Search your whole home folder by name, filter by type, and open a result straight into the editor.
+Non-text files open in whatever app your system normally uses. The agent has the same tools, so you
+can also just ask: *"organise my Downloads by file type"* or *"find the invoice from last March and
+summarise it"*. It reads Word, Excel, PowerPoint and PDF, and your email straight from `.eml`/`.mbox`
+files or webmail in the browser.
+
+### ⚙️ Workers — jobs that run on their own
+
+![Workers](docs/screenshots/05-workers.png)
+
+Set one up from **Workers**, pick a template, or just say it in chat — *"every morning at 8, check
+whether any new RERA project was registered"* — and the agent creates it. Each run is a real agent
+turn with the web, the browser panel and the OS tools; the result lands in the **Updates** feed with
+a desktop notification. Daily, every N minutes, once, on project open, or on app start. Templates:
+morning briefing, new RERA projects, stock prices, weather, site uptime, project digest, competitor
+watch.
+
+### ◎ Outcome mode & the Nutaan Swarm
+
+Flip the composer to **Outcome** and name the result instead of the steps — *Launch my SaaS*, *Fix
+production*, *Research competitors*, *Plan a trip*. A Planner splits the goal across a team —
+Developer, Browser QA, Researcher, Reviewer, DevOps — that runs in parallel waves, shares findings
+on a board, and merges one report. Each agent shows its live step trail, and each only holds the
+tools its job needs. An outcome-sized ask from normal chat is handed to the swarm automatically.
+
+### 🩺 Self-Healing workspace — Health
+
+Nutaan watches the dev server and background tasks for crash and compile errors, the browser panel
+for console errors and failed loads, an optional health URL, and (optionally) re-runs your tests
+when files change. Anything it sees becomes an incident. In *Watch* mode it tells you; in
+*Auto-heal* it hands the incident to a repair agent that walks **Detect → Reproduce → Diagnose →
+Patch → Test → Deploy → Verify**, shows each stage live, and only marks *Verify* done with evidence.
+
+### 🔌 Tools & integrations
+
+Connect the apps and services you already use, and their tools become the agent's tools:
+
+| Tool | What the agent can do |
+| --- | --- |
+| **Canva** (MCP) | Make a document, carousel or presentation natively — real content and images on every page, exported to PDF/PNG |
+| **Nutaan AI** (MCP) | Voice agents, phone calls, leads and knowledge bases on your Nutaan account |
+| **Claude Code / Codex** | Hand a coding task to another agent and get its answer back |
+| **Antigravity** | Open the project, a folder or a file in the Antigravity editor |
+| **Gmail / Outlook / Google Docs / Sheets / NotebookLM** | Read, search and draft in your own signed-in window |
+| **Any MCP server** | Add a hosted URL or a local command; its tools appear in chat |
+
+Connected agents (Codex, Claude Code) also step in as a fallback when every model is busy.
+
+### 🗺️ Trip planning with real maps
+
+Say *"plan a trip from Mumbai to Puri to Gangasagar"* and it draws the real driving route on a map
+(free OpenStreetMap + OSRM — no key), with the true distance and time per leg, then researches the
+trains, cabs, hotels and food to cost the whole itinerary. Design results — a Canva link, a route,
+a downloadable file — render as proper cards in the thread, not raw links.
+
+### 🎬 Demo Studio
+
+![Demo Studio](docs/screenshots/06-demo-studio.png)
+
+Record your screen and Nutaan turns the take into a product demo — zooms that follow where your
+pointer actually went, a smoothed cursor, a background, a webcam bubble. Export MP4, WebM or a
+looping GIF.
+
+### 🛡️ Security & OSINT arsenal
+
+A 753-tool OSINT/security catalogue the agent can search, plus native tools that act rather than
+lecture: live HTTP/cookie security audits, DNS and subdomain recon, IP intelligence, a zero-GPU
+static vulnerability scanner (SQLi, command injection, hardcoded secrets, path traversal), and
+security-review skills. For authorised testing only — see [SECURITY.md](SECURITY.md).
+
+### 🌿 Commit, push & branch switch
+
+![Commit and push](docs/screenshots/03-git.png)
+
+Click the branch chip to switch branches, or review changed files, write a message, and commit — or
+commit and push in one step. A branch with no upstream gets one set automatically.
+
+### 📚 Knowledge base
+
+![Knowledge base](docs/screenshots/04-knowledge.png)
+
+Point it at a docs page or paste your own notes. It's chunked, embedded once, and recalled by
+meaning in every future chat — so you don't re-explain your stack each time. Text is embedded
+through nutaan.com; **the vectors stay on your machine.**
 
 ---
 
@@ -94,45 +214,6 @@ nutaan.com. You can revoke it any time from the same page, and change it later i
 
 Once activated, **Open a project** and start typing. Turn on **Auto-approve** if you'd rather
 the agent edit files and run commands without asking each time.
-
----
-
-## The interface
-
-### Chat and tasks
-
-For anything with more than a few steps, the agent writes a checklist first and keeps it updated
-as it works — so you can see what it intends to do and what's left, not just the final answer.
-
-The status line under the composer shows elapsed time, tokens generated, and how many tools are
-running in parallel. Independent reads — files, searches, web lookups — run at the same time
-rather than one after another.
-
-### Co-worker
-
-![Co-worker](docs/screenshots/02-coworker.png)
-
-Search your whole home folder by name, filter by type, and open a result straight into the
-editor. Non-text files open in whatever app your system normally uses. The agent has the same
-tools, so you can also just ask: *"organise my Downloads by file type"* or *"find the invoice
-from last March and summarise it"*.
-
-### Knowledge base
-
-![Knowledge base](docs/screenshots/04-knowledge.png)
-
-Point it at a docs page or paste in your own notes. It's chunked, embedded once, and recalled by
-meaning in every future chat — so you don't re-explain your stack each time. Attach or detach
-sources per conversation from **Add Context → Knowledge**.
-
-Text is embedded through nutaan.com; **the vectors stay on your machine.**
-
-### Commit and push
-
-![Commit and push](docs/screenshots/03-git.png)
-
-Click the branch chip to review changed files, write a message, and commit — or commit and push
-in one step. A branch with no upstream gets one set automatically.
 
 ---
 

@@ -147,6 +147,10 @@
   let panelMode = "code";
   let contextFiles = null; // cached flat file list for the Add Context menu
   let contextFilesForPath = null;
+  // Autonomous layer state (workers, swarm, self-healing, today). Declared up here because
+  // renderNav reads the badges.
+  const autonomous = { unread: 0, openIncidents: 0, workers: [], templates: [], updates: [], health: null, swarmRoles: {}, swarmRuns: new Map(), today: null };
+  let composerMode = "chat"; // chat | outcome
 
   const toolCards = new Map();
   const toolArgsById = new Map();
@@ -216,6 +220,9 @@
   // ---------- Markdown ----------
   function inlineFormat(escaped) {
     return escaped
+      // [text](url) → a real link. Runs first so ** and ` inside the label still format. The URL
+      // sat in the text as raw "[Edit design](https://…)" before this existed.
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_m, label, url) => `<a href="${url}" target="_blank" rel="noopener" class="md-link">${label}</a>`)
       .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
       .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>")
       .replace(/`([^`]+)`/g, "<code>$1</code>");
@@ -427,6 +434,9 @@
     clock: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>',
     gear: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="3.2"/><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4L18 18M18 6l-1.6 1.6M7.6 16.4L6 18" stroke-linecap="round"/></svg>',
     coworker: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="17.5" cy="10" r="2.2"/><path d="M15 19a4 4 0 0 1 5.8-3.6"/></svg>',
+    workers: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/><path d="M4 4l2 2M20 4l-2 2"/></svg>',
+    health: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h3l2.5 6 5-13 2.5 7H21"/></svg>',
+    studio: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5.5" width="14" height="13" rx="2.5"/><path d="M16.5 10.5l5-3v9l-5-3z"/></svg>',
   };
 
   function renderNav() {
@@ -436,6 +446,9 @@
       { id: "chats", label: "Chats", icon: "chat", badge: chatCount ? String(chatCount) : "" },
       { id: "files", label: "Projects", icon: "folder", badge: projects.length ? String(projects.length) : "" },
       { id: "coworker", label: "Co-worker", icon: "coworker", badge: "" },
+      { id: "workers", label: "Workers", icon: "workers", badge: autonomous.unread ? String(autonomous.unread) : "", hot: autonomous.unread > 0 },
+      { id: "health", label: "Health", icon: "health", badge: autonomous.openIncidents ? String(autonomous.openIncidents) : "", hot: autonomous.openIncidents > 0, warn: true },
+      { id: "studio", label: "Demo Studio", icon: "studio", badge: "" },
       { id: "settings", label: "Settings", icon: "gear", badge: "" },
     ];
     navList.innerHTML = "";
@@ -445,7 +458,7 @@
       row.innerHTML =
         `<span class="nav-icon">${ICONS[d.icon]}</span>` +
         `<span class="nav-label">${d.label}</span>` +
-        (d.badge ? `<span class="nav-badge">${escapeHtml(d.badge)}</span>` : "");
+        (d.badge ? `<span class="nav-badge${d.hot ? (d.warn ? " warn" : " hot") : ""}">${escapeHtml(d.badge)}</span>` : "");
       row.addEventListener("click", () => {
         if (d.id === "settings") {
           openSettings();
@@ -455,6 +468,8 @@
         renderNav();
         renderExplorer();
         renderEmptyVisibility();
+        if (d.id === "workers") loadWorkers();
+        if (d.id === "health") loadHealth();
       });
       navList.appendChild(row);
     }
@@ -462,11 +477,15 @@
 
   function renderExplorer() {
     const isFiles = sidebarView === "files";
+    const isStudio = sidebarView === "studio";
     filesView.hidden = !isFiles;
-    chatsView.hidden = isFiles;
-    explorerLabel.textContent = isFiles ? "Explorer" : sidebarView === "chats" ? "Chats" : "Co-worker";
+    chatsView.hidden = isFiles || isStudio;
+    explorerLabel.textContent = isFiles ? "Explorer" : sidebarView === "chats" ? "Chats" : sidebarView === "workers" ? "Workers" : sidebarView === "health" ? "Health" : isStudio ? "Demo Studio" : "Co-worker";
     if (sidebarView === "chats") renderChatsView();
     if (sidebarView === "coworker") renderCoWorkerView();
+    if (sidebarView === "workers") renderWorkersSidebar();
+    if (sidebarView === "health") renderHealthSidebar();
+    renderPages();
   }
 
   // Works on the whole machine rather than the open project: find a document, open an app,
@@ -756,6 +775,51 @@
       `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="flex-shrink:0;"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="8" r="2.4"/><path d="M6 8.4v7.2M8.4 6H14a4 4 0 0 1 4 4"/></svg>` +
       escapeHtml(st.branch);
   }
+
+  // ---------- Branch switcher (the top git chip) ----------
+  const branchSwitch = el("branchSwitch");
+  const branchMenu = el("branchMenu");
+
+  async function openBranchMenu(menuEl) {
+    if (!activePath || !menuEl) return;
+    if (!menuEl.hidden) { menuEl.hidden = true; return; }
+    menuEl.innerHTML = `<div class="branch-menu-loading">Loading branches…</div>`;
+    menuEl.hidden = false;
+    let res;
+    try { res = await window.nutaan.gitBranches(activePath); } catch { res = null; }
+    if (!res || !res.repo || !res.branches.length) {
+      menuEl.innerHTML = `<div class="branch-menu-loading">No branches found.</div>`;
+      return;
+    }
+    menuEl.innerHTML = "";
+    for (const b of res.branches) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "branch-menu-item" + (b.current ? " current" : "");
+      item.innerHTML = `<span class="bm-tick">${b.current ? "✓" : ""}</span><span class="bm-name">${escapeHtml(b.name)}</span>`;
+      if (!b.current) item.addEventListener("click", (e) => { e.stopPropagation(); switchBranch(b.name); });
+      menuEl.appendChild(item);
+    }
+  }
+
+  async function switchBranch(name) {
+    if (branchMenu) branchMenu.hidden = true;
+    let res;
+    try { res = await window.nutaan.gitSwitchBranch(activePath, name); } catch (e) { res = { ok: false, error: e.message }; }
+    if (!res.ok) {
+      appendBubble("error", `Couldn't switch to "${name}": ${res.error}`);
+      return;
+    }
+    await refreshGit();
+    refreshTree();
+    contextFiles = null;
+    appendBubble("assistant", `Switched to branch **${name}**.`);
+  }
+
+  branchSwitch?.addEventListener("click", (e) => { e.stopPropagation(); openBranchMenu(branchMenu); });
+  document.addEventListener("click", (e) => {
+    if (branchMenu && !branchMenu.hidden && !e.target.closest(".branch-chip")) branchMenu.hidden = true;
+  });
 
   // ---------- Git commit & push ----------
   const gitOverlay = el("gitOverlay");
@@ -1269,6 +1333,21 @@
     }
   }
 
+  // Run a command the user typed straight into the terminal — it becomes a background task and
+  // streams in the panel like any other. Uses the open project's folder, else the home directory.
+  el("termForm")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const input = el("termInput");
+    const cmd = input.value.trim();
+    if (!cmd) return;
+    input.value = "";
+    try {
+      const res = await window.nutaan.bgTasks.start(activePath || null, cmd);
+      if (res && res.id) { termSelectedId = res.id; }
+    } catch {}
+    refreshTerminal();
+  });
+
   async function renderTermOutput() {
     if (!termSelectedId) {
       termOutput.innerHTML = `<div class="term-empty">No background tasks yet. When the agent (or you) start one with run_background, it shows here live.</div>`;
@@ -1427,6 +1506,23 @@
     };
     view.addEventListener("did-navigate", syncUrl);
     view.addEventListener("did-navigate-in-page", syncUrl);
+
+    // The browser panel is one of the surfaces the self-healing monitor watches — but only for
+    // the user's own app (localhost / a LAN address). A console error on a third-party site is
+    // not an incident in this workspace.
+    const isOwnApp = () => /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.|10\.)/i.test(tab.url || "");
+    view.addEventListener("console-message", (e) => {
+      if (e.level < 3 || !isOwnApp() || !activePath) return;
+      const msg = String(e.message || "");
+      if (!/error|exception|failed|cannot|undefined is not|is not a function|unhandled/i.test(msg)) return;
+      window.nutaan.healer.signal({ source: "browser", root: activePath, title: msg.slice(0, 120), evidence: `Console error on ${tab.url}\n${msg}\n(${e.sourceId || ""}:${e.line || ""})`, url: tab.url });
+    });
+    view.addEventListener("did-fail-load", (e) => {
+      if (!e.isMainFrame || !activePath) return;
+      const url = e.validatedURL || tab.url || "";
+      if (!/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])/i.test(url) || e.errorCode === -3) return; // -3 = aborted (a redirect), not a failure
+      window.nutaan.healer.signal({ source: "browser", root: activePath, title: `${url} failed to load: ${e.errorDescription || e.errorCode}`, evidence: `Navigation to ${url} failed: ${e.errorDescription} (${e.errorCode}). The dev server may have crashed or the port changed.`, url });
+    });
 
     selectBrowserTab(id);
     return tab;
@@ -1596,10 +1692,11 @@
 
   // ---------- Thread rendering ----------
   function renderEmptyVisibility() {
-    const hasContent = thread.querySelectorAll(".row, .tool-card, .permission-card, .file-group-card").length > 0;
+    const hasContent = thread.querySelectorAll(".row, .tool-card, .permission-card, .file-group-card, .swarm-card").length > 0;
     const coworker = sidebarView === "coworker";
     emptyState.hidden = hasContent || coworker;
     if (coworkerHero) coworkerHero.hidden = hasContent || !coworker;
+    renderOutcomeEmpty();
   }
 
   // Outcome-oriented starters for the co-worker landing — clicking one drops it into the composer,
@@ -1697,13 +1794,114 @@
     openDeviceFileInPanel(link.dataset.path);
   });
 
+  // A link a connected tool produced should read as a result, not a bare URL. When a service we
+  // know is behind the link, its logo, name and an Open + Copy button turn it into the same card
+  // the tool-result card uses — so every tool that hands back a link looks the same in the thread.
+  const SERVICE_CARDS = [
+    { test: (u) => /:\/\/(www\.)?canva\.com\//.test(u), name: "Canva", sub: "Created in Canva", icon: "canva.ico" },
+    { test: (u) => /docs\.google\.com\/document/.test(u), name: "Google Docs", sub: "Google Docs", icon: "gdocs.png" },
+    { test: (u) => /docs\.google\.com\/spreadsheets/.test(u), name: "Google Sheets", sub: "Google Sheets", icon: "gsheets.png" },
+    { test: (u) => /docs\.google\.com\/presentation/.test(u), name: "Google Slides", sub: "Google Slides", icon: "gdocs.png" },
+    { test: (u) => /notebooklm\.google\.com/.test(u), name: "NotebookLM", sub: "NotebookLM", icon: "notebooklm.svg" },
+    { test: (u) => /\.(pdf|png|jpe?g|mp4|gif|pptx?)(\?|$)/i.test(u), name: "Download", sub: "File ready to download", icon: null, download: true },
+  ];
+
+  function serviceCardFor(url, label) {
+    const svc = SERVICE_CARDS.find((s) => s.test(url));
+    if (!svc) return null;
+    const card = document.createElement("div");
+    card.className = "link-card";
+    const logo = document.createElement("div"); logo.className = "link-card-logo";
+    if (svc.icon) { const img = document.createElement("img"); img.src = "../assets/tools/" + svc.icon; img.alt = ""; img.addEventListener("error", () => { img.remove(); logo.textContent = svc.name.slice(0, 1); }); logo.appendChild(img); }
+    else { logo.textContent = "↓"; logo.classList.add("dl"); }
+    const meta = document.createElement("div"); meta.className = "link-card-meta";
+    const title = document.createElement("div"); title.className = "link-card-title"; title.textContent = (label && label !== url) ? label : svc.name;
+    const sub = document.createElement("div"); sub.className = "link-card-sub"; sub.textContent = svc.sub;
+    meta.appendChild(title); meta.appendChild(sub);
+    const actions = document.createElement("div"); actions.className = "link-card-actions";
+    const open = document.createElement("button"); open.type = "button"; open.className = "link-card-btn";
+    open.textContent = svc.download ? "Download ↓" : "Open ↗";
+    open.addEventListener("click", () => window.nutaan.openExternal(url));
+    actions.appendChild(open);
+    if (!svc.download) {
+      const copy = document.createElement("button"); copy.type = "button"; copy.className = "link-card-btn ghost"; copy.title = "Copy link"; copy.textContent = "Copy";
+      copy.addEventListener("click", () => { navigator.clipboard?.writeText(url).then(() => { copy.textContent = "Copied"; setTimeout(() => (copy.textContent = "Copy"), 1200); }).catch(() => {}); });
+      actions.appendChild(copy);
+    }
+    card.appendChild(logo); card.appendChild(meta); card.appendChild(actions);
+    return card;
+  }
+
+  // Canva serves the same design under different share links (edit vs view), so collapse them to
+  // the design id; other services dedupe on the whole URL.
+  function linkDedupeKey(url) {
+    const m = /canva\.com\/(?:design|d)\/([A-Za-z0-9_-]+)/.exec(url);
+    return m ? "canva:" + m[1] : url;
+  }
+
+  // Every known-service link a message mentions becomes one card, appended under the text, so a
+  // tool that hands back a link always looks the same — the card the user asked for — instead of a
+  // raw "[Edit design](url)". The inline link stays as quiet styled text; the card carries the
+  // Open/Copy actions. Duplicate links to one design collapse into a single card.
+  function enrichServiceLinks(el) {
+    const seen = new Set();
+    const cards = [];
+    const addUrl = (url, label) => {
+      if (!url || !SERVICE_CARDS.some((s) => s.test(url))) return;
+      const key = linkDedupeKey(url);
+      if (seen.has(key)) return;
+      seen.add(key);
+      const card = serviceCardFor(url, label && label !== url ? label : null);
+      if (card) cards.push(card);
+    };
+
+    // Markdown links first — they carry a human label like "Edit design".
+    for (const a of el.querySelectorAll("a.md-link, a[href^='http']")) {
+      const url = a.getAttribute("href");
+      if (url && SERVICE_CARDS.some((s) => s.test(url))) { a.classList.add("inline-service-link"); addUrl(url, a.textContent); }
+    }
+
+    // Bare URLs the model wrote as plain text ("Edit URL: https://…") never became anchors, so scan
+    // the text too. Make each one clickable in place and give it a card as well.
+    const BARE_URL = /https?:\/\/[^\s<>()"']+/g;
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => (n.parentElement?.closest("code, pre, a") ? NodeFilter.FILTER_REJECT : (BARE_URL.test(n.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT)),
+    });
+    const textNodes = [];
+    while (walker.nextNode()) textNodes.push(walker.currentNode);
+    for (const node of textNodes) {
+      const text = node.nodeValue;
+      const frag = document.createDocumentFragment();
+      let last = 0; let m; BARE_URL.lastIndex = 0;
+      while ((m = BARE_URL.exec(text))) {
+        const url = m[0].replace(/[.,;:)\]]+$/, "");
+        if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+        const a = document.createElement("a");
+        a.href = url; a.target = "_blank"; a.rel = "noopener"; a.textContent = url;
+        a.className = "md-link" + (SERVICE_CARDS.some((s) => s.test(url)) ? " inline-service-link" : "");
+        frag.appendChild(a);
+        addUrl(url, null);
+        last = m.index + url.length;
+      }
+      if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+      node.parentNode.replaceChild(frag, node);
+    }
+
+    if (cards.length) {
+      const holder = document.createElement("div");
+      holder.className = "link-card-group";
+      cards.forEach((c) => holder.appendChild(c));
+      el.appendChild(holder);
+    }
+  }
+
   function appendBubble(role, content) {
     const row = document.createElement("div");
     row.className = "row " + role;
     const bubble = document.createElement("div");
     bubble.className = "bubble";
     bubble.innerHTML = role === "assistant" ? renderMarkdownLite(content) : escapeHtml(content);
-    if (role === "assistant") linkifyPaths(bubble);
+    if (role === "assistant") { linkifyPaths(bubble); enrichServiceLinks(bubble); enrichAgentListing(bubble, content); }
     row.appendChild(bubble);
     thread.appendChild(row);
     renderEmptyVisibility();
@@ -1712,6 +1910,7 @@
   }
 
   function toolLabel(name, args) {
+    if (name === "map_route") return `Mapping the route through <code>${escapeHtml((Array.isArray(args.stops) ? args.stops : []).join(" → ") || "your stops")}</code>`;
     if (name === "list_dir") return `Listing <code>${escapeHtml(args.path || ".")}</code>`;
     if (name === "read_file") return `Reading <code>${escapeHtml(args.path || "")}</code>`;
     if (name === "search_files") return `Searching for <code>${escapeHtml(args.pattern || "")}</code>`;
@@ -1737,6 +1936,9 @@
     if (name === "run_background") return `Starting background task <code>${escapeHtml((args.command || "").slice(0, 60))}</code>`;
     if (name === "check_background_task") return `Checking background task <code>${escapeHtml(args.id || "")}</code>`;
     if (name === "list_background_tasks") return `Listing background tasks`;
+    if (name === "cleanup_storage") return args.dry_run ? `Checking what storage can be freed` : `Freeing up disk space`;
+    if (name === "os_system_stats") return `Reading CPU, memory and disk usage`;
+    if (name === "os_kill_process") return `Closing <code>${escapeHtml(args.pid != null ? "pid " + args.pid : args.name || "")}</code>`;
     if (name === "stop_background_task") return `Stopping background task <code>${escapeHtml(args.id || "")}</code>`;
     if (name === "run_command") {
       const cmd = String(args.command || "").replace(/\s+/g, " ").trim();
@@ -1956,6 +2158,15 @@
     scrollToBottom();
   }
 
+  // Open a tool card's detail so a rich result (agent cards, a Canva design) is visible at once
+  // rather than hidden behind a chevron the user would have to find and click.
+  function expandCard(cardEl) {
+    const detail = cardEl.querySelector(".tool-detail");
+    const chev = cardEl.querySelector(".tool-chev");
+    if (detail) detail.hidden = false;
+    if (chev) chev.textContent = "▾";
+  }
+
   function setToolStat(cardEl, text) {
     const header = cardEl.querySelector(".tool-header");
     if (!header) return;
@@ -2017,6 +2228,39 @@
       setToolStat(cardEl, `${result.id || ""} ${statusTxt}`.trim());
       const head = `${result.id || ""} · ${statusTxt}${result.command ? "\n$ " + result.command : ""}`;
       detail.innerHTML = `<pre>${escapeHtml(head + (result.output ? "\n\n" + result.output : (result.status === "running" ? "\n\n(running — check again for output)" : "")))}</pre>`;
+    } else if (name === "cleanup_storage" && (result.items || result.scannedMB != null || result.totalMB != null)) {
+      const scanned = result.scannedMB != null ? result.scannedMB : result.totalMB;
+      const stat = result.dryRun
+        ? `up to ${scanned} MB`
+        : `freed ${result.freedMB} MB` + (result.blockedCount ? ` · ${result.blockedMB} MB locked` : "");
+      setToolStat(cardEl, stat);
+      // ✓ removed, ↺ freed some of it, ✗ nothing went. The reason travels with the line so a
+      // locked folder can never read as a success.
+      const lines = (result.items || []).map((i) => {
+        const mark = result.dryRun ? "·" : i.removed ? "✓" : i.freedMB > 0 ? "↺" : "✗";
+        const size = result.dryRun ? `${i.mb} MB` : `${i.freedMB} of ${i.mb} MB`;
+        return `${mark} ${size}  ${i.label}${i.error ? `  — ${i.error}` : ""}`;
+      });
+      const head = result.dryRun
+        ? `Up to ${scanned} MB across ${result.count} location(s) — some may be locked`
+        : `Freed ${result.freedMB} MB` + (result.blockedCount ? `; ${result.blockedMB} MB in ${result.blockedCount} location(s) still in use` : "");
+      detail.innerHTML = `<pre>${escapeHtml(head + "\n\n" + lines.join("\n"))}</pre>`;
+    } else if (name === "os_system_stats" && result.cpu) {
+      setToolStat(cardEl, `CPU ${result.cpu.percent}% · RAM ${result.memory.percent}%`);
+      const procs = (result.topProcesses || []).map((p) => `  ${String(p.cpu).padStart(5)}%  ${String(Math.round(p.memMB)).padStart(6)} MB  ${p.name}${p.procs > 1 ? ` (${p.procs})` : ""}`);
+      const disks = (result.disks || []).map((d) => `  ${d.drive}  ${d.freeGB} GB free of ${d.totalGB} GB`);
+      const body = [
+        result.summary,
+        "",
+        `CPU ${result.cpu.percent}% across ${result.cpu.cores} cores`,
+        `RAM ${(result.memory.usedMB / 1024).toFixed(1)} / ${(result.memory.totalMB / 1024).toFixed(1)} GB (${result.memory.percent}%)`,
+        "",
+        "Busiest programs:",
+        ...procs,
+        ...(disks.length ? ["", "Disks:", ...disks] : []),
+        ...(result.note ? ["", result.note] : []),
+      ].join("\n");
+      detail.innerHTML = `<pre>${escapeHtml(body)}</pre>`;
     } else if (name === "list_background_tasks" && result.tasks) {
       setToolStat(cardEl, `${result.tasks.length} task${result.tasks.length === 1 ? "" : "s"}`);
       const lines = result.tasks.map((t) => `${t.id}  [${t.status}${t.exitCode != null ? " " + t.exitCode : ""}]  ${t.command}`).join("\n");
@@ -2101,12 +2345,255 @@
       img.src = result.imageDataUrl;
       img.className = "tool-screenshot";
       detail.appendChild(img);
+    } else if (name.startsWith("mcp__canva__")) {
+      renderCanvaResult(cardEl, detail, name, result);
+    } else if (name === "mcp__nutaan__nutaan_list_agents") {
+      renderNutaanAgents(cardEl, detail, result);
+    } else if (name === "map_route" && result.ok && result.geometry) {
+      renderMapRoute(cardEl, detail, result);
+    } else if (name.startsWith("mcp__")) {
+      // Any other MCP tool: show its text so the transcript isn't blank.
+      const text = mcpResultText(result);
+      if (text) detail.innerHTML = `<pre>${escapeHtml(text.slice(0, 4000))}</pre>`;
     }
 
-    if (!detail.innerHTML.trim()) {
+    if (!detail.innerHTML.trim() && !detail.childElementCount) {
       const chev = cardEl.querySelector(".tool-chev");
       if (chev) chev.style.visibility = "hidden";
     }
+  }
+
+  // MCP results carry a text block and sometimes structured data; the text is what the server
+  // wrote for a human, so it is the right thing to fall back to.
+  function mcpResultText(result) {
+    if (typeof result.result === "string") return result.result;
+    if (result.result != null) return JSON.stringify(result.result, null, 2);
+    if (result.data != null) return JSON.stringify(result.data, null, 2);
+    return "";
+  }
+
+  // Leaflet is loaded on demand the first time a route needs a map — no reason to pay for it on
+  // every launch. Both files come from the pinned cdnjs build the rest of the app already trusts.
+  let leafletPromise = null;
+  function ensureLeaflet() {
+    if (window.L) return Promise.resolve(window.L);
+    if (leafletPromise) return leafletPromise;
+    // Bundled locally so it loads under the app's own strict CSP, with no network dependency for
+    // the library itself — only the map tiles come from the network.
+    leafletPromise = new Promise((resolve, reject) => {
+      const css = document.createElement("link");
+      css.rel = "stylesheet";
+      css.href = "vendor/leaflet/leaflet.min.css";
+      document.head.appendChild(css);
+      const js = document.createElement("script");
+      js.src = "vendor/leaflet/leaflet.min.js";
+      js.onload = () => {
+        // Leaflet resolves its marker images relative to the CSS by default; point it at the local
+        // copies so the pins actually appear.
+        try { window.L.Icon.Default.imagePath = "vendor/leaflet/images/"; } catch {}
+        resolve(window.L);
+      };
+      js.onerror = () => reject(new Error("Could not load the map library."));
+      document.head.appendChild(js);
+    });
+    return leafletPromise;
+  }
+
+  // A route result becomes a real map: the driving line, a numbered pin per stop, and a strip of
+  // per-leg distances and times under it. This is the itinerary's backbone — the honest distances
+  // the costs hang off — shown the way the user asked, not as a wall of text.
+  function renderMapRoute(cardEl, detail, result) {
+    setToolStat(cardEl, `${result.totalKm.toLocaleString()} km · ${result.totalHours} h`);
+    const wrap = document.createElement("div");
+    wrap.className = "map-route";
+    const mapEl = document.createElement("div");
+    mapEl.className = "map-canvas";
+    wrap.appendChild(mapEl);
+
+    const legsBar = document.createElement("div");
+    legsBar.className = "map-legs";
+    legsBar.innerHTML =
+      `<div class="map-leg total"><b>${escapeHtml(result.stops[0].name)} → ${escapeHtml(result.stops[result.stops.length - 1].name)}</b><span>${result.totalKm.toLocaleString()} km · ${result.totalHours} h driving</span></div>` +
+      (result.legs || []).map((l) => `<div class="map-leg"><b>${escapeHtml(l.from)} → ${escapeHtml(l.to)}</b><span>${l.km.toLocaleString()} km · ${l.hours} h</span></div>`).join("");
+    wrap.appendChild(legsBar);
+    detail.appendChild(wrap);
+    expandCard(cardEl);
+
+    ensureLeaflet().then((L) => {
+      const latlngs = result.geometry.map(([lng, lat]) => [lat, lng]);
+      const map = L.map(mapEl, { scrollWheelZoom: false, attributionControl: true });
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18, attribution: "© OpenStreetMap" }).addTo(map);
+      const line = L.polyline(latlngs, { color: "#a855f7", weight: 4, opacity: 0.9 }).addTo(map);
+      result.stops.forEach((s, i) => {
+        L.marker([s.lat, s.lon]).addTo(map).bindPopup(`<b>${i + 1}. ${s.name}</b>`);
+      });
+      map.fitBounds(line.getBounds(), { padding: [24, 24] });
+      // The card starts collapsed sometimes; Leaflet needs a size recalc once it is visible.
+      setTimeout(() => map.invalidateSize(), 200);
+    }).catch((e) => {
+      const note = document.createElement("div"); note.className = "note err"; note.textContent = e.message;
+      wrap.insertBefore(note, legsBar);
+    });
+  }
+
+  // nutaan_list_agents comes back as a bullet list of text, one agent per block. Parse it into a
+  // grid of cards — name, what it does, its language/voice/phone, and a Use button that drops a
+  // ready prompt into the composer — so picking an agent is a click, not copying an id out of text.
+  function parseNutaanAgents(text) {
+    const agents = [];
+    for (const block of String(text).split(/\n(?=\s*[•*-]\s)/)) {
+      const nameM = /[•*-]\s*(.+)/.exec(block);
+      if (!nameM) continue;
+      const id = (/id:\s*([A-Za-z0-9_-]+)/.exec(block) || [])[1] || null;
+      if (!id) continue;
+      const lang = (/language:\s*([A-Za-z-]+)/.exec(block) || [])[1] || null;
+      const voice = (/voice:\s*([A-Za-z0-9-]+)/.exec(block) || [])[1] || null;
+      const phone = (/(?:number|phone)(?:\s*\(if present\))?:\s*(\+?[\d][\d\s-]{6,})/i.exec(block) || [])[1] || null;
+      agents.push({ raw: nameM[1].trim(), id, lang, voice, phone: phone ? phone.trim() : null });
+    }
+    return agents;
+  }
+
+  function renderNutaanAgents(cardEl, detail, result) {
+    const text = mcpResultText(result);
+    const agents = parseNutaanAgents(text);
+    if (!agents.length) { detail.innerHTML = `<pre>${escapeHtml(text.slice(0, 4000))}</pre>`; return; }
+    setToolStat(cardEl, `${agents.length} agent${agents.length === 1 ? "" : "s"}`);
+    const grid = document.createElement("div");
+    grid.className = "agent-grid";
+    for (const a of agents) grid.appendChild(agentCardEl({ id: a.id, name: a.raw, lang: a.lang, voice: a.voice, phone: a.phone }));
+    detail.appendChild(grid);
+    expandCard(cardEl);
+  }
+
+  // Agents show up in the assistant's own text in a few shapes ("• Name — role / id: … / language:
+  // …", "1) Name / • id: …", "id: … · hi · Name"). Anchor on the 24-hex agent id and gather the
+  // name and language/voice/phone from the lines around it, so a card appears wherever the model
+  // listed an agent — and, because it runs on the saved text at render time, in reloaded history too.
+  function parseAgentsFromText(text) {
+    const lines = String(text).split("\n");
+    const agents = [];
+    for (let i = 0; i < lines.length; i++) {
+      const idM = /id:\s*([0-9a-fA-F]{24})/.exec(lines[i]) || /\b([0-9a-f]{24})\b/.exec(lines[i]);
+      if (!idM) continue;
+      const id = idM[1];
+      if (agents.some((a) => a.id === id)) continue;
+      let name = null;
+      for (let j = i; j >= Math.max(0, i - 3); j--) {
+        const l = lines[j].replace(/^[\s•*\-\d).]+/, "").trim();
+        if (!l) continue;
+        if (/^(id|language|voice|phone|engine|greeting|note|number)\b/i.test(l)) continue;
+        name = l.replace(/\s*\(?id[:\s].*$/i, "").replace(/\s*[—–-]\s*$/, "").trim();
+        if (name) break;
+      }
+      // "id: X · hi · Noida Property" — the name trails the id on the same line.
+      if (!name) {
+        const after = lines[i].split(/·|\|/).map((s) => s.trim()).filter(Boolean)
+          .filter((s) => !/^id:/i.test(s) && !/^[a-z]{2}-[A-Z]{2}$/.test(s) && !/^[0-9a-f]{24}$/.test(s) && !/voice|engine|phone|number/i.test(s));
+        if (after.length) name = after[after.length - 1].replace(/\s*\(.*$/, "").trim();
+      }
+      const win = [lines[i - 2], lines[i - 1], lines[i], lines[i + 1], lines[i + 2], lines[i + 3]].filter(Boolean).join(" ");
+      const lang = (/\b([a-z]{2}-[A-Z]{2})\b/.exec(win) || [])[1] || null;
+      const voice = (/voice:?\s*([A-Za-z0-9-]+)/i.exec(win) || [])[1] || null;
+      const phoneM = /(?:phone|number):?\s*(\+?[\d][\d\s-]{6,}|none[\w\s]*)/i.exec(win);
+      const phone = phoneM && !/none/i.test(phoneM[1]) ? phoneM[1].trim() : null;
+      if (name) agents.push({ id, name, lang, voice, phone });
+    }
+    return agents;
+  }
+
+  function agentCardEl(a) {
+    const dash = a.name.split(/\s+[—–-]\s+/);
+    const title = dash[0].trim();
+    const role = dash.slice(1).join(" — ").trim() || "Voice agent";
+    const card = document.createElement("div"); card.className = "agent-card";
+    const top = document.createElement("div"); top.className = "agent-top";
+    const ic = document.createElement("div"); ic.className = "agent-ic"; ic.textContent = (title[0] || "A").toUpperCase();
+    const meta = document.createElement("div"); meta.className = "agent-meta";
+    const nm = document.createElement("div"); nm.className = "agent-name"; nm.textContent = title;
+    const rl = document.createElement("div"); rl.className = "agent-role"; rl.textContent = role;
+    meta.appendChild(nm); meta.appendChild(rl); top.appendChild(ic); top.appendChild(meta); card.appendChild(top);
+    const chips = document.createElement("div"); chips.className = "agent-chips";
+    const chip = (t) => { const c = document.createElement("span"); c.className = "agent-chip"; c.textContent = t; chips.appendChild(c); };
+    if (a.lang) chip(a.lang);
+    if (a.voice) chip("🔊 " + a.voice);
+    chip(a.phone ? "📞 " + a.phone : "no number");
+    card.appendChild(chips);
+    const use = document.createElement("button"); use.type = "button"; use.className = "agent-use"; use.textContent = "Use Agent";
+    use.addEventListener("click", () => {
+      input.value = `Use the Nutaan agent "${title}" (id: ${a.id})${a.phone ? "" : " — note it has no caller number, so a call may need one assigned first"} to `;
+      input.focus(); input.dispatchEvent(new Event("input"));
+    });
+    card.appendChild(use);
+    return card;
+  }
+
+  // Append an agent-card grid to an assistant bubble when its text lists agents. Runs on both fresh
+  // messages and reloaded ones, so cards are part of the saved history.
+  function enrichAgentListing(el, rawText) {
+    const agents = parseAgentsFromText(rawText);
+    if (agents.length < 1) return;
+    const grid = document.createElement("div"); grid.className = "agent-grid";
+    agents.forEach((a) => grid.appendChild(agentCardEl(a)));
+    el.appendChild(grid);
+  }
+
+  // A Canva tool that produced or exported a design gets a proper card — the Canva mark, what was
+  // made, a thumbnail when the result carries an image, an Open button per design, and a Download
+  // button for an export. A bare canva.com link in the transcript was the thing that looked broken.
+  function renderCanvaResult(cardEl, detail, name, result) {
+    const text = mcpResultText(result);
+    const urls = [];
+    const seen = new Set();
+    // Design links (share and /design/ forms) and any export/download file links.
+    const designRe = /https:\/\/www\.canva\.com\/(?:design\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)?|d\/[A-Za-z0-9_-]+)(?:\/[a-z]+)?/g;
+    const fileRe = /https:\/\/[^\s"')]+\.(?:pdf|png|jpg|jpeg|mp4|gif|pptx?)\b[^\s"')]*/gi;
+    let m;
+    while ((m = designRe.exec(text))) { if (!seen.has(m[0])) { seen.add(m[0]); urls.push({ kind: "open", url: m[0] }); } }
+    while ((m = fileRe.exec(text))) { if (!seen.has(m[0])) { seen.add(m[0]); urls.push({ kind: "download", url: m[0] }); } }
+    // Thumbnails/exports can also arrive in structured data.
+    const dataStr = result.data ? JSON.stringify(result.data) : "";
+    let thumb = null;
+    const thumbM = /"(?:thumbnail|url|image|export_url)"\s*:\s*"(https:\/\/[^\"]+\.(?:png|jpg|jpeg|gif))"/i.exec(dataStr);
+    if (thumbM) thumb = thumbM[1];
+
+    const action = name.replace("mcp__canva__", "").replace(/-/g, " ");
+    const wrap = document.createElement("div");
+    wrap.className = "canva-result";
+
+    const head = document.createElement("div");
+    head.className = "canva-head";
+    const logo = document.createElement("img"); logo.className = "canva-logo"; logo.src = "../assets/tools/canva.ico"; logo.alt = "Canva";
+    const title = document.createElement("div"); title.className = "canva-title";
+    const designCount = urls.filter((u) => u.kind === "open").length;
+    title.innerHTML = `<strong>${escapeHtml(designCount > 1 ? `${designCount} Canva designs ready` : "Canva design ready")}</strong><span>${escapeHtml(action)}</span>`;
+    head.appendChild(logo); head.appendChild(title);
+    wrap.appendChild(head);
+
+    if (thumb) {
+      const img = document.createElement("img"); img.className = "canva-thumb"; img.src = thumb; img.loading = "lazy";
+      img.addEventListener("error", () => img.remove());
+      wrap.appendChild(img);
+    }
+
+    if (urls.length) {
+      const actions = document.createElement("div"); actions.className = "canva-actions";
+      for (const u of urls) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "canva-btn" + (u.kind === "download" ? " download" : "");
+        b.textContent = u.kind === "download" ? "Download ↓" : "Open in Canva ↗";
+        b.addEventListener("click", () => window.nutaan.openExternal(u.url));
+        actions.appendChild(b);
+      }
+      wrap.appendChild(actions);
+      setToolStat(cardEl, designCount > 1 ? `${designCount} designs` : "design ready");
+    } else if (text) {
+      // No link came back (e.g. an editing-transaction step) — keep the server's own words.
+      const pre = document.createElement("pre"); pre.textContent = text.slice(0, 2000); wrap.appendChild(pre);
+    }
+    detail.appendChild(wrap);
+    if (urls.length || thumb) expandCard(cardEl);
   }
 
   const RESTORE_VISIBLE_TOOLS = new Set([
@@ -2166,11 +2653,21 @@
   }
 
   // ---------- Status ----------
+  const cloudChip = el("cloudChip");
+  const cloudLabel = el("cloudLabel");
   function setStatus(ok, text, title) {
     statusDot.className = "status-dot " + (ok === null ? "" : ok ? "online" : "offline");
     statusText.textContent = text;
     statusText.title = title || "";
+    // The cloud chip reflects the real backend link — models run through nutaan.com, so this is
+    // where the user sees whether that connection is live, not just a label.
+    if (cloudChip) {
+      cloudChip.classList.toggle("connected", ok === true);
+      cloudChip.classList.toggle("offline", ok === false);
+      if (cloudLabel) cloudLabel.textContent = ok === true ? "Nutaan Cloud" : ok === false ? "Nutaan Cloud · offline" : "Nutaan Cloud";
+    }
   }
+  cloudChip?.addEventListener("click", () => window.nutaan.openExternal("https://nutaan.com/dev-console"));
 
   // ---------- Models ----------
   async function refreshModels() {
@@ -2833,6 +3330,13 @@
     renderCodeView();
     await refreshTree();
     await refreshGit();
+    // The autonomous layer: arm the workspace monitor, fire "on project open" workers, and work
+    // out what today actually needs from the repo itself.
+    if (activePath) {
+      try { window.nutaan.projectOpened(activePath); } catch {}
+      loadToday();
+      if (sidebarView === "health") loadHealth();
+    }
   }
 
   async function switchProject(path) {
@@ -3135,6 +3639,14 @@
     if (chat.title === "New chat") chat.title = deriveChatTitle(text);
     chat.updatedAt = new Date().toISOString();
 
+    // Outcome mode: the goal goes to the swarm, not to one agent.
+    if (composerMode === "outcome") {
+      input.value = "";
+      autoGrowInput();
+      launchSwarm(text, { chat, proj });
+      return;
+    }
+
     chat.messages.push({ role: "user", content: buildUserContent(text) });
     resetFileGroup();
     appendBubble("user", attachments.length ? `${attachments.map((a) => `📎 ${a.name}`).join("\n")}\n\n${text}` : text);
@@ -3225,6 +3737,8 @@
     if (streamBubble) {
       streamBubble.innerHTML = renderMarkdownLite(streamText);
       linkifyPaths(streamBubble);
+      enrichServiceLinks(streamBubble);
+      enrichAgentListing(streamBubble, streamText);
       streamBubble = null;
       streamText = "";
     }
@@ -3315,7 +3829,7 @@
       "osint_http_recon", "osint_dork_generator", "vuln_static_scan",
       // run_background / stop_background_task go through the approval card (like run_command), so
       // they are NOT here — listing them too made a second, never-resolving spinner card.
-      "check_background_task", "list_background_tasks",
+      "check_background_task", "list_background_tasks", "cleanup_storage", "os_system_stats",
     ];
     if (visibleTools.includes(name)) appendToolCard(id, name, args);
     runActivity.textContent = toolLabel(name, args).replace(/<[^>]+>/g, "");
@@ -3722,8 +4236,8 @@
 
     renderAccountRow();
     renderUsagePanel();
-    renderProviders();
     await loadOmniRouteCatalog();
+    if (typeof refreshTools === "function") refreshTools();
     switchSettingsTab(tabId || _settingsActiveTab || "account");
     settingsOverlay.hidden = false;
   }
@@ -3749,6 +4263,7 @@
 
     if (tabId === "omniroute") renderOmniRouteTab();
     if (tabId === "models") renderModelTable();
+    if (tabId === "providers") { renderProviders(); if (typeof renderTools === "function") renderTools(); }
     if (tabId === "agentbridge") renderAgentBridgeTab();
   }
 
@@ -4097,6 +4612,275 @@
     if (to) appendBubble("error", `⚡ Auto-switched model: ${from} → ${to}`);
   });
 
+  // ---------- Tools (MCP servers, other coding agents, apps, signed-in web apps) ----------
+  // Everything the panel shows comes from the main process's status(); the renderer never
+  // decides what a tool is, only how a row looks. Live connection changes arrive on tools:status.
+  let toolRows = [];
+  let toolCustomTemplate = null;
+  let toolEditing = null; // { id } for a catalogue tool's settings, or { custom: true } for a new server
+  let toolOpen = null; // id whose detail strip is expanded
+
+  async function refreshTools() {
+    if (!window.nutaan.tools) return;
+    try {
+      const [rows, cat] = await Promise.all([window.nutaan.tools.status(), toolCustomTemplate ? null : window.nutaan.tools.catalog()]);
+      if (cat) toolCustomTemplate = cat.custom;
+      toolRows = rows || [];
+    } catch (e) {
+      toolRows = [];
+    }
+    renderTools();
+  }
+
+  if (window.nutaan.tools?.onStatus) {
+    window.nutaan.tools.onStatus((rows) => {
+      toolRows = rows || [];
+      if (settingsOverlay && !settingsOverlay.hidden) renderTools();
+    });
+  }
+
+  const TOOL_KIND_LABEL = { mcp: "MCP", cli: "Agent", app: "App", session: "Web" };
+
+  function toolStateOf(t) {
+    if (!t.enabled) return { cls: "", text: "off" };
+    if (t.kind === "mcp") {
+      if (t.connecting) return { cls: "busy", text: "connecting…" };
+      if (t.connected) return { cls: "on", text: `${t.toolCount} tool${t.toolCount === 1 ? "" : "s"}` };
+      if (t.needsAuth) return { cls: "err", text: "sign in needed" };
+      if (t.error) return { cls: "err", text: "not connected" };
+      return { cls: "", text: "off" };
+    }
+    return { cls: "on", text: "ready" };
+  }
+
+  function renderTools() {
+    const list = el("toolList");
+    if (!list) return;
+    list.innerHTML = "";
+    for (const t of toolRows) {
+      const row = document.createElement("div");
+      row.className = "provider-row tool-row" + (t.enabled ? "" : " disabled");
+
+      const main = document.createElement("div"); main.className = "tool-main";
+      // The icon sits on the same light tile the model-provider logos use, so a coloured mark reads
+      // cleanly. The accent only fills in behind a letter when the image is missing.
+      const logo = document.createElement("div"); logo.className = "provider-logo";
+      const img = document.createElement("img"); img.src = "../assets/tools/" + t.icon; img.alt = "";
+      img.addEventListener("error", () => { img.remove(); logo.style.background = t.accent || "#8b93a7"; logo.textContent = (t.name || "?").slice(0, 1).toUpperCase(); });
+      logo.appendChild(img);
+      main.appendChild(logo);
+
+      const meta = document.createElement("div"); meta.className = "tool-meta";
+      const name = document.createElement("span"); name.className = "provider-name"; name.textContent = t.name;
+      const blurb = document.createElement("span"); blurb.className = "tool-blurb"; blurb.textContent = t.blurb || "";
+      meta.appendChild(name); meta.appendChild(blurb);
+      main.appendChild(meta);
+
+      const kind = document.createElement("span"); kind.className = "tool-kind"; kind.textContent = TOOL_KIND_LABEL[t.kind] || t.kind;
+      main.appendChild(kind);
+
+      const st = toolStateOf(t);
+      const state = document.createElement("span"); state.className = "tool-state " + st.cls; state.textContent = st.text;
+      main.appendChild(state);
+
+      const actions = document.createElement("div"); actions.className = "tool-actions";
+      if (t.enabled && t.kind === "mcp" && t.needsOAuth) {
+        const b = document.createElement("button"); b.type = "button"; b.className = "btn-secondary provider-connect";
+        if (t.signedIn && t.connected) { b.textContent = "Sign out"; b.addEventListener("click", () => toolSignOut(t.id)); }
+        else { b.textContent = t.signedIn ? "Reconnect" : "Sign in"; b.addEventListener("click", () => toolAuthorize(t.id, b)); }
+        actions.appendChild(b);
+      } else if (t.enabled && t.kind === "mcp" && t.error && !t.connecting) {
+        const b = document.createElement("button"); b.type = "button"; b.className = "btn-secondary provider-connect"; b.textContent = "Retry";
+        b.addEventListener("click", () => toolConnect(t.id, b)); actions.appendChild(b);
+      }
+      const hasSettings = (t.fields && t.fields.length) || (t.oauthFields && t.oauthFields.length) || t.custom;
+      if (hasSettings) {
+        const b = document.createElement("button"); b.type = "button"; b.className = "icon-btn tiny"; b.title = "Settings"; b.textContent = "⚙";
+        b.addEventListener("click", () => openToolEditor(t.id)); actions.appendChild(b);
+      }
+      if (t.custom) {
+        const rm = document.createElement("button"); rm.type = "button"; rm.className = "icon-btn tiny provider-remove"; rm.title = "Remove"; rm.textContent = "✕";
+        rm.addEventListener("click", () => toolRemoveCustom(t.id)); actions.appendChild(rm);
+      }
+      main.appendChild(actions);
+
+      const sw = document.createElement("span"); sw.className = "tool-switch" + (t.enabled ? " on" : ""); sw.title = t.enabled ? "Switch off" : "Switch on";
+      sw.innerHTML = '<span class="switch-track"><span class="switch-knob"></span></span>';
+      sw.addEventListener("click", () => toolSetEnabled(t.id, !t.enabled));
+      main.appendChild(sw);
+
+      main.addEventListener("click", (e) => {
+        if (e.target.closest("button, .tool-switch")) return;
+        toolOpen = toolOpen === t.id ? null : t.id;
+        renderTools();
+      });
+      row.appendChild(main);
+
+      if (toolOpen === t.id) {
+        const d = document.createElement("div"); d.className = "tool-detail";
+        const noteFor = (text, cls) => { const n = document.createElement("div"); n.className = "note" + (cls ? " " + cls : ""); n.textContent = text; d.appendChild(n); };
+        if (t.error && t.enabled) noteFor(t.error, "err");
+        if (t.noApi) noteFor(t.noApi);
+        if (t.kind === "mcp" && t.connected && t.serverInfo) noteFor(`Connected to ${t.serverInfo.name || "server"}${t.serverInfo.version ? " " + t.serverInfo.version : ""}.`);
+        if (t.kind === "mcp" && t.tools && t.tools.length) {
+          const wrap = document.createElement("div"); wrap.className = "tool-tools";
+          for (const tt of t.tools.slice(0, 40)) { const c = document.createElement("code"); c.textContent = tt.name; c.title = tt.description || ""; wrap.appendChild(c); }
+          if (t.tools.length > 40) { const c = document.createElement("code"); c.textContent = `+${t.tools.length - 40} more`; wrap.appendChild(c); }
+          d.appendChild(wrap);
+        }
+        if (t.kind === "cli") noteFor(`The agent gets a "${t.id.replace(/-/g, "_")}_task" tool: it hands over a task and reads the answer back.`);
+        if (t.kind === "app") noteFor(`The agent gets a "${t.id.replace(/-/g, "_")}_open" tool to open the project, a folder or a file in it.`);
+        if (t.kind === "session") noteFor("Driven in its own signed-in window. The first time, sign in there and the login is kept.");
+        if (t.docs) {
+          const a = document.createElement("a"); a.href = "#"; a.className = "note"; a.textContent = "Documentation ↗";
+          a.addEventListener("click", (e) => { e.preventDefault(); window.nutaan.openExternal(t.docs); }); d.appendChild(a);
+        }
+        row.appendChild(d);
+      }
+      list.appendChild(row);
+    }
+  }
+
+  async function toolSetEnabled(id, enabled) {
+    try { toolRows = await window.nutaan.tools.setEnabled(id, enabled); } catch (e) { console.warn("tools:set-enabled failed", e); }
+    renderTools();
+  }
+  async function toolConnect(id, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = "Connecting…"; }
+    try { await window.nutaan.tools.connect(id); } catch (e) { console.warn("tools:connect failed", e); }
+    await refreshTools();
+  }
+  async function toolAuthorize(id, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = "Waiting for sign-in…"; }
+    try {
+      const res = await window.nutaan.tools.authorize(id);
+      if (res && res.status) toolRows = res.status;
+      if (res && !res.ok) { toolOpen = id; const r = toolRows.find((x) => x.id === id); if (r) r.error = res.error; }
+    } catch (e) { console.warn("tools:authorize failed", e); }
+    renderTools();
+  }
+  async function toolSignOut(id) {
+    try { toolRows = await window.nutaan.tools.signOut(id); } catch (e) { console.warn("tools:sign-out failed", e); }
+    renderTools();
+  }
+  async function toolRemoveCustom(id) {
+    try { toolRows = await window.nutaan.tools.removeCustom(id); } catch (e) { console.warn("tools:remove-custom failed", e); }
+    if (toolOpen === id) toolOpen = null;
+    renderTools();
+  }
+
+  // The editor is one form built from the catalogue's field list, so a new field on a tool never
+  // needs a renderer change. keyvalue and list fields grow a row at a time.
+  function teFieldRow(f, value) {
+    const wrap = document.createElement("div"); wrap.className = "field"; wrap.dataset.key = f.key;
+    if (f.when) wrap.dataset.when = JSON.stringify(f.when);
+    const label = document.createElement("label"); label.textContent = f.label; wrap.appendChild(label);
+    if (f.type === "select") {
+      const s = document.createElement("select"); s.dataset.key = f.key;
+      for (const o of f.options || []) { const op = document.createElement("option"); op.value = o.value; op.textContent = o.label; s.appendChild(op); }
+      if (value != null) s.value = value;
+      s.addEventListener("change", teApplyWhen);
+      wrap.appendChild(s);
+    } else if (f.type === "keyvalue" || f.type === "list") {
+      const box = document.createElement("div"); box.dataset.key = f.key; box.dataset.type = f.type;
+      const addRow = (k = "", v = "") => {
+        const r = document.createElement("div"); r.className = f.type === "keyvalue" ? "te-kv-row" : "te-list-row";
+        if (f.type === "keyvalue") { const ki = document.createElement("input"); ki.placeholder = "Name"; ki.value = k; ki.dataset.role = "k"; r.appendChild(ki); }
+        const vi = document.createElement("input"); vi.placeholder = f.type === "keyvalue" ? "Value" : (f.placeholder || ""); vi.value = v; vi.dataset.role = "v"; r.appendChild(vi);
+        const x = document.createElement("button"); x.type = "button"; x.className = "icon-btn tiny"; x.textContent = "✕"; x.addEventListener("click", () => r.remove()); r.appendChild(x);
+        box.appendChild(r);
+      };
+      if (f.type === "keyvalue" && value && typeof value === "object") for (const [k, v] of Object.entries(value)) addRow(k, v);
+      else if (f.type === "list" && Array.isArray(value)) for (const v of value) addRow("", v);
+      const add = document.createElement("button"); add.type = "button"; add.className = "btn-secondary"; add.textContent = "+ Add"; add.addEventListener("click", () => addRow());
+      wrap.appendChild(box); wrap.appendChild(add);
+    } else {
+      const i = document.createElement("input"); i.type = f.type === "password" ? "password" : f.type === "number" ? "number" : "text";
+      i.dataset.key = f.key; i.placeholder = f.placeholder || ""; i.autocomplete = "off"; if (value != null) i.value = value;
+      wrap.appendChild(i);
+    }
+    if (f.hint) { const h = document.createElement("div"); h.className = "note"; h.textContent = f.hint; wrap.appendChild(h); }
+    return wrap;
+  }
+
+  function teApplyWhen() {
+    const box = el("teFields"); if (!box) return;
+    const current = {};
+    box.querySelectorAll("select[data-key], input[data-key]").forEach((i) => { current[i.dataset.key] = i.value; });
+    box.querySelectorAll(".field[data-when]").forEach((w) => {
+      const cond = JSON.parse(w.dataset.when);
+      w.hidden = !Object.entries(cond).every(([k, v]) => current[k] === v);
+    });
+  }
+
+  function teCollect() {
+    const box = el("teFields"); const out = {};
+    box.querySelectorAll(".field").forEach((w) => {
+      if (w.hidden) return;
+      const key = w.dataset.key;
+      const kv = w.querySelector("[data-type]");
+      if (kv) {
+        if (kv.dataset.type === "keyvalue") {
+          const o = {}; kv.querySelectorAll(".te-kv-row").forEach((r) => { const k = r.querySelector("[data-role=k]").value.trim(); const v = r.querySelector("[data-role=v]").value; if (k) o[k] = v; });
+          out[key] = o;
+        } else {
+          out[key] = [...kv.querySelectorAll(".te-list-row [data-role=v]")].map((i) => i.value.trim()).filter(Boolean);
+        }
+        return;
+      }
+      const i = w.querySelector("input[data-key], select[data-key]");
+      if (!i) return;
+      out[key] = i.type === "number" && i.value !== "" ? Number(i.value) : i.value;
+    });
+    return out;
+  }
+
+  function openToolEditor(id) {
+    const editor = el("toolEditor"); const box = el("teFields"); if (!editor || !box) return;
+    box.innerHTML = ""; el("teError").hidden = true;
+    if (id) {
+      const t = toolRows.find((x) => x.id === id); if (!t) return;
+      toolEditing = { id };
+      el("teTitle").textContent = t.name + " settings";
+      const fields = t.custom && toolCustomTemplate ? toolCustomTemplate.fields : (t.fields || []);
+      for (const f of fields) box.appendChild(teFieldRow(f, t.config?.[f.key]));
+      if (t.oauthFields && t.oauthFields.length) {
+        const n = document.createElement("div"); n.className = "note"; n.textContent = t.oauthNote || "API access (optional)"; n.style.marginTop = "10px"; box.appendChild(n);
+        for (const f of t.oauthFields) box.appendChild(teFieldRow(f, t.config?.[f.key]));
+      }
+      if (!fields.length && !(t.oauthFields || []).length) { const n = document.createElement("div"); n.className = "note"; n.textContent = "Nothing to configure."; box.appendChild(n); }
+    } else {
+      if (!toolCustomTemplate) return;
+      toolEditing = { custom: true };
+      el("teTitle").textContent = toolCustomTemplate.name;
+      for (const f of toolCustomTemplate.fields) box.appendChild(teFieldRow(f, f.key === "transport" ? "http" : undefined));
+    }
+    teApplyWhen();
+    editor.hidden = false;
+    editor.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+  function closeToolEditor() { const e = el("toolEditor"); if (e) e.hidden = true; toolEditing = null; }
+
+  async function saveToolEditor() {
+    if (!toolEditing) return;
+    const cfg = teCollect(); const err = el("teError");
+    try {
+      if (toolEditing.custom) {
+        if (cfg.transport === "http" && !cfg.url) throw new Error("A server URL is needed.");
+        if (cfg.transport === "stdio" && !cfg.command) throw new Error("A command is needed.");
+        toolRows = await window.nutaan.tools.addCustom(cfg);
+      } else {
+        toolRows = await window.nutaan.tools.saveConfig(toolEditing.id, cfg);
+      }
+      closeToolEditor(); renderTools();
+    } catch (e) { err.textContent = e.message || String(e); err.hidden = false; }
+  }
+
+  el("addToolBtn")?.addEventListener("click", () => openToolEditor(null));
+  el("teClose")?.addEventListener("click", closeToolEditor);
+  el("teCancel")?.addEventListener("click", closeToolEditor);
+  el("teSave")?.addEventListener("click", saveToolEditor);
+
   function fmtNum(n) {
     n = n || 0;
     if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
@@ -4379,6 +5163,698 @@
   }
 
   // ---------- Init ----------
+  // =====================================================================================
+  // Autonomous layer — Workers (scheduled jobs + Updates feed), Self-Healing Workspace,
+  // Nutaan Swarm (Outcome mode), and Today (what this project needs, from the repo itself).
+  // =====================================================================================
+  const workersPage = el("workersPage");
+  const healthPage = el("healthPage");
+  const studioPage = el("studioPage");
+  const composerWrap = document.querySelector(".composer-wrap");
+  const todaySection = el("todaySection");
+  const todayGrid = el("todayGrid");
+  const outcomeChips = el("outcomeChips");
+  const emptyTitle = el("emptyTitle");
+  const emptySub = el("emptySub");
+  const modeToggle = el("modeToggle");
+
+  function relTime(ts) {
+    if (!ts) return "";
+    const m = Math.round((Date.now() - ts) / 60000);
+    if (m < 1) return "just now";
+    if (m < 60) return `${m} min ago`;
+    const h = Math.round(m / 60);
+    if (h < 24) return `${h}h ago`;
+    const d = Math.round(h / 24);
+    return d === 1 ? "yesterday" : `${d}d ago`;
+  }
+  function untilTime(ts) {
+    if (!ts) return "";
+    const m = Math.round((ts - Date.now()) / 60000);
+    if (m <= 0) return "due now";
+    if (m < 60) return `in ${m} min`;
+    const h = Math.round(m / 60);
+    if (h < 24) return `in ${h}h`;
+    return new Date(ts).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  }
+  function clockTime(ts) {
+    return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  // Pages replace the thread while Workers / Health is selected in the sidebar. The composer
+  // stays, so the user can still talk to the agent from either page.
+  function renderPages() {
+    const showWorkers = sidebarView === "workers";
+    const showHealth = sidebarView === "health";
+    // The Studio is a full-bleed editor rather than a page above the composer — a timeline and a
+    // chat box fighting for the same bottom strip helps nobody.
+    const showStudio = sidebarView === "studio";
+    workersPage.hidden = !showWorkers;
+    healthPage.hidden = !showHealth;
+    if (studioPage) studioPage.hidden = !showStudio;
+    if (composerWrap) composerWrap.hidden = showStudio;
+    threadScroll.hidden = showWorkers || showHealth || showStudio;
+    if (showWorkers) renderWorkersPage();
+    if (showHealth) {
+      renderHealthPage();
+      if (window.NutaanMonitor) window.NutaanMonitor.onShowHealth();
+    }
+    // The Studio is a full-bleed editor — a stage, an inspector and a timeline do not fit beside
+    // the code/browser panel. Fold the panel away while it is open and put it back on the way out,
+    // exactly as the user left it.
+    if (showStudio && !panel.hidden) {
+      studioFoldedPanel = true;
+      panel.hidden = true;
+      resizer.hidden = true;
+    } else if (!showStudio && studioFoldedPanel) {
+      studioFoldedPanel = false;
+      panel.hidden = false;
+      resizer.hidden = false;
+    }
+    if (window.NutaanStudio) {
+      if (showStudio) window.NutaanStudio.onShow();
+      else window.NutaanStudio.onHide();
+    }
+  }
+  let studioFoldedPanel = false;
+
+  // ---------- Workers ----------
+  async function loadWorkers() {
+    try {
+      const [w, u] = await Promise.all([window.nutaan.workers.list(), window.nutaan.workers.updates(100)]);
+      autonomous.workers = w.workers || [];
+      autonomous.templates = w.templates || [];
+      autonomous.updates = u.updates || [];
+      autonomous.unread = u.unread || 0;
+    } catch (e) {
+      console.warn("workers load failed", e);
+    }
+    renderNav();
+    if (sidebarView === "workers") { renderWorkersPage(); renderWorkersSidebar(); }
+  }
+
+  function workerStatusChip(w) {
+    if (w.isRunning) return `<span class="wk-chip running"><span class="wk-spark"></span>running</span>`;
+    if (!w.enabled) return `<span class="wk-chip off">paused</span>`;
+    if (w.lastStatus === "error") return `<span class="wk-chip err">last run failed</span>`;
+    return `<span class="wk-chip">${escapeHtml(w.nextRunAt ? untilTime(w.nextRunAt) : w.scheduleText)}</span>`;
+  }
+
+  function renderWorkersPage() {
+    const list = el("workerList");
+    const count = el("workerCount");
+    count.textContent = autonomous.workers.length ? String(autonomous.workers.length) : "";
+    list.innerHTML = "";
+    if (!autonomous.workers.length) {
+      list.innerHTML = `<div class="page-empty">No workers yet. Pick a template below, or just tell the agent: <em>"every morning at 8, check whether any new RERA project was registered"</em>.</div>`;
+    }
+    for (const w of autonomous.workers) {
+      const row = document.createElement("div");
+      row.className = "worker-row" + (w.enabled ? "" : " off");
+      row.innerHTML =
+        `<span class="wk-icon">${escapeHtml(w.icon || "🤖")}</span>` +
+        `<div class="wk-main"><div class="wk-name">${escapeHtml(w.name)}</div>` +
+        `<div class="wk-meta">${escapeHtml(w.scheduleText)}${w.root ? ` · ${escapeHtml(basename(w.root))}` : ""}${w.readOnly ? "" : " · can edit"}</div>` +
+        (w.lastHeadline ? `<div class="wk-last">${escapeHtml(w.lastHeadline)}<span class="wk-when"> · ${escapeHtml(relTime(w.lastRunAt))}</span></div>` : "") +
+        `</div>` +
+        `<div class="wk-side">${workerStatusChip(w)}` +
+        `<div class="wk-actions">` +
+        `<button class="icon-btn tiny" data-act="run" title="${w.isRunning ? "Stop" : "Run now"}">${w.isRunning
+          ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>'
+          : '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5l12 7-12 7z"/></svg>'}</button>` +
+        `<button class="icon-btn tiny" data-act="toggle" title="${w.enabled ? "Pause" : "Resume"}">${w.enabled
+          ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>'
+          : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4.5V10h-5.4"/></svg>'}</button>` +
+        `<button class="icon-btn tiny" data-act="edit" title="Edit"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17z"/></svg></button>` +
+        `</div></div>`;
+      row.addEventListener("click", async (e) => {
+        const btn = e.target.closest("button[data-act]");
+        if (!btn) { openWorkerModal(w); return; }
+        e.stopPropagation();
+        const act = btn.dataset.act;
+        if (act === "run") { if (w.isRunning) await window.nutaan.workers.stop(w.id); else await window.nutaan.workers.runNow(w.id); }
+        if (act === "toggle") await window.nutaan.workers.update(w.id, { enabled: !w.enabled });
+        if (act === "edit") openWorkerModal(w);
+        loadWorkers();
+      });
+      list.appendChild(row);
+    }
+
+    const tpl = el("workerTemplates");
+    tpl.innerHTML = "";
+    for (const t of autonomous.templates) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "template-card";
+      card.innerHTML = `<span class="tpl-icon">${escapeHtml(t.icon)}</span><span class="tpl-name">${escapeHtml(t.name)}</span><span class="tpl-when">${escapeHtml(describeScheduleClient(t.schedule))}</span>`;
+      card.addEventListener("click", () => openWorkerModal({ ...t, id: null, root: t.needsProject ? activePath : null }));
+      tpl.appendChild(card);
+    }
+    renderUpdates();
+  }
+
+  function describeScheduleClient(s) {
+    if (!s) return "";
+    if (s.type === "interval") return s.everyMinutes % 60 === 0 ? `every ${s.everyMinutes / 60}h` : `every ${s.everyMinutes} min`;
+    if (s.type === "daily") {
+      const d = s.days || [];
+      const when = !d.length ? "daily" : d.length === 5 && !d.includes(0) && !d.includes(6) ? "weekdays" : d.length === 6 && !d.includes(0) ? "Mon–Sat" : `${d.length} days/wk`;
+      return `${when} · ${s.time}`;
+    }
+    if (s.type === "project-open") return "on project open";
+    if (s.type === "app-start") return "on app start";
+    if (s.type === "once") return "once";
+    return "";
+  }
+
+  function renderUpdates() {
+    const feed = el("updateFeed");
+    const count = el("updateCount");
+    count.textContent = autonomous.unread ? `${autonomous.unread} new` : "";
+    feed.innerHTML = "";
+    if (!autonomous.updates.length) {
+      feed.innerHTML =
+        `<div class="updates-empty">` +
+        `<div class="ue-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></div>` +
+        `<div class="ue-title">No updates yet</div>` +
+        `<div class="ue-sub">When a worker runs, its report lands here — the headline first, then the facts and the sources it used. You'll get a desktop notification too.</div>` +
+        `</div>`;
+      return;
+    }
+    let lastDay = "";
+    for (const u of autonomous.updates) {
+      const day = new Date(u.at).toDateString();
+      if (day !== lastDay) {
+        lastDay = day;
+        const h = document.createElement("div");
+        h.className = "feed-day";
+        h.textContent = day === new Date().toDateString() ? "Today" : day === new Date(Date.now() - 86400000).toDateString() ? "Yesterday" : new Date(u.at).toLocaleDateString([], { weekday: "long", day: "numeric", month: "short" });
+        feed.appendChild(h);
+      }
+      const card = document.createElement("div");
+      card.className = "update-card" + (u.unread ? " unread" : "") + (u.status === "error" ? " err" : "");
+      card.innerHTML =
+        `<div class="up-head"><span class="up-icon">${escapeHtml(u.icon || "🤖")}</span>` +
+        `<span class="up-worker">${escapeHtml(u.workerName)}</span>` +
+        `<span class="up-time">${escapeHtml(clockTime(u.at))}${u.durationMs ? ` · ${Math.round(u.durationMs / 1000)}s` : ""}</span>` +
+        `<span class="up-chev">▸</span></div>` +
+        `<div class="up-headline">${escapeHtml(u.headline)}</div>` +
+        `<div class="up-body" hidden>${renderMarkdownLite(u.body || "")}` +
+        (u.toolsUsed?.length ? `<div class="up-tools">${u.toolsUsed.slice(0, 12).map((t) => `<span>${escapeHtml(t.tool)}${t.args ? `: ${escapeHtml(String(t.args).slice(0, 40))}` : ""}</span>`).join("")}</div>` : "") +
+        `<div class="up-actions"><button class="link-btn" data-act="ask">Ask about this</button></div></div>`;
+      card.addEventListener("click", async (e) => {
+        const btn = e.target.closest("button[data-act]");
+        if (btn?.dataset.act === "ask") {
+          e.stopPropagation();
+          sidebarView = "chats";
+          renderNav(); renderExplorer();
+          input.value = `About the "${u.workerName}" update from ${clockTime(u.at)} ("${u.headline}"): `;
+          input.focus();
+          autoGrowInput();
+          return;
+        }
+        const body = card.querySelector(".up-body");
+        body.hidden = !body.hidden;
+        card.querySelector(".up-chev").textContent = body.hidden ? "▸" : "▾";
+        if (u.unread) {
+          u.unread = false;
+          card.classList.remove("unread");
+          autonomous.unread = Math.max(0, autonomous.unread - 1);
+          count.textContent = autonomous.unread ? `${autonomous.unread} new` : "";
+          renderNav();
+          window.nutaan.workers.markRead([u.id]);
+        }
+      });
+      feed.appendChild(card);
+    }
+  }
+
+  function renderWorkersSidebar() {
+    chatsView.innerHTML = "";
+    const box = document.createElement("div");
+    box.className = "side-list";
+    if (!autonomous.workers.length) {
+      box.innerHTML = `<div class="side-empty">No workers yet</div>`;
+    }
+    for (const w of autonomous.workers) {
+      const row = document.createElement("div");
+      row.className = "side-row" + (w.enabled ? "" : " off");
+      row.innerHTML = `<span class="side-icon">${escapeHtml(w.icon || "🤖")}</span><span class="side-name">${escapeHtml(w.name)}</span><span class="side-meta">${w.isRunning ? "●" : escapeHtml(w.nextRunAt ? untilTime(w.nextRunAt) : "")}</span>`;
+      row.addEventListener("click", () => openWorkerModal(w));
+      box.appendChild(row);
+    }
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "side-add";
+    add.textContent = "+ New worker";
+    add.addEventListener("click", () => openWorkerModal(null));
+    box.appendChild(add);
+    chatsView.appendChild(box);
+  }
+
+  // ---- worker modal ----
+  const workerOverlay = el("workerOverlay");
+  const wk = { icon: el("wkIcon"), name: el("wkName"), prompt: el("wkPrompt"), type: el("wkType"), time: el("wkTime"), every: el("wkEvery"), at: el("wkAt"), days: el("wkDays"), project: el("wkProject"), changes: el("wkChanges"), notify: el("wkNotify"), del: el("wkDelete") };
+  let editingWorker = null;
+
+  function syncWorkerFields() {
+    const t = wk.type.value;
+    el("wkTimeField").hidden = t !== "daily";
+    el("wkDaysField").hidden = t !== "daily";
+    el("wkEveryField").hidden = t !== "interval";
+    el("wkAtField").hidden = t !== "once";
+  }
+  wk.type.addEventListener("change", syncWorkerFields);
+  wk.days.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-day]");
+    if (b) b.classList.toggle("on");
+  });
+
+  function openWorkerModal(w) {
+    editingWorker = w && w.id ? w : null;
+    el("workerModalTitle").textContent = editingWorker ? "Edit worker" : "New worker";
+    wk.icon.value = w?.icon || "🤖";
+    wk.name.value = w?.name || "";
+    wk.prompt.value = w?.prompt || "";
+    const s = w?.schedule || { type: "daily", time: "07:30", days: [] };
+    wk.type.value = s.type || "daily";
+    wk.time.value = s.time || "07:30";
+    wk.every.value = s.everyMinutes || 60;
+    wk.at.value = s.at ? new Date(s.at).toISOString().slice(0, 16) : "";
+    for (const b of wk.days.querySelectorAll("button")) b.classList.toggle("on", (s.days || []).includes(Number(b.dataset.day)));
+    wk.project.checked = !!(w?.root || w?.needsProject);
+    wk.project.disabled = !activePath;
+    el("wkProjectHint").textContent = activePath ? `(${basename(activePath)})` : "(open a project first)";
+    wk.changes.checked = w ? w.readOnly === false : false;
+    wk.notify.checked = w ? w.notify !== false : true;
+    wk.del.hidden = !editingWorker;
+    syncWorkerFields();
+    workerOverlay.hidden = false;
+    setTimeout(() => (wk.name.value ? wk.prompt : wk.name).focus(), 30);
+  }
+  function closeWorkerModal() { workerOverlay.hidden = true; editingWorker = null; }
+
+  el("wkCancel").addEventListener("click", closeWorkerModal);
+  workerOverlay.addEventListener("click", (e) => { if (e.target === workerOverlay) closeWorkerModal(); });
+  el("wkSave").addEventListener("click", async () => {
+    const name = wk.name.value.trim();
+    const prompt = wk.prompt.value.trim();
+    if (!name || !prompt) { (name ? wk.prompt : wk.name).focus(); return; }
+    const type = wk.type.value;
+    const schedule = { type };
+    if (type === "daily") { schedule.time = wk.time.value || "08:00"; schedule.days = [...wk.days.querySelectorAll("button.on")].map((b) => Number(b.dataset.day)); }
+    if (type === "interval") schedule.everyMinutes = Number(wk.every.value) || 60;
+    if (type === "once") schedule.at = wk.at.value ? new Date(wk.at.value).toISOString() : new Date(Date.now() + 3600_000).toISOString();
+    const spec = { name, icon: wk.icon.value.trim() || "🤖", prompt, schedule, root: wk.project.checked && activePath ? activePath : null, readOnly: !wk.changes.checked, notify: wk.notify.checked };
+    try {
+      if (editingWorker) await window.nutaan.workers.update(editingWorker.id, spec);
+      else await window.nutaan.workers.create(spec);
+    } catch (e) {
+      alert("Could not save the worker: " + e.message);
+      return;
+    }
+    closeWorkerModal();
+    loadWorkers();
+  });
+  wk.del.addEventListener("click", async () => {
+    if (!editingWorker) return;
+    if (!confirm(`Delete "${editingWorker.name}"?`)) return;
+    await window.nutaan.workers.remove(editingWorker.id);
+    closeWorkerModal();
+    loadWorkers();
+  });
+  el("newWorkerBtn").addEventListener("click", () => openWorkerModal(null));
+  el("markAllReadBtn").addEventListener("click", async () => { await window.nutaan.workers.markRead(null); loadWorkers(); });
+  el("clearUpdatesBtn").addEventListener("click", async () => { if (confirm("Clear the whole Updates feed?")) { await window.nutaan.workers.clearUpdates(); loadWorkers(); } });
+
+  // ---------- Self-Healing Workspace ----------
+  async function loadHealth() {
+    try { autonomous.health = await window.nutaan.healer.view(activePath || null); }
+    catch (e) { console.warn("health load failed", e); return; }
+    autonomous.openIncidents = autonomous.health.openCount || 0;
+    renderNav();
+    if (sidebarView === "health") { renderHealthPage(); renderHealthSidebar(); }
+  }
+
+  const STAGE_LABEL = { detect: "Detect", reproduce: "Reproduce", diagnose: "Diagnose", patch: "Patch", test: "Test", deploy: "Deploy", verify: "Verify" };
+  const INCIDENT_STATUS = { detected: "Detected", repairing: "Repairing", fixed: "Fixed", "patched-unverified": "Patched · not verified", failed: "Repair failed", ignored: "Ignored", "needs-human": "Needs you" };
+
+  function renderHealthPage() {
+    const h = autonomous.health;
+    if (!h) return;
+    for (const b of el("healMode").querySelectorAll("button")) b.classList.toggle("active", b.dataset.mode === h.mode);
+    const cfg = h.project || {};
+    if (document.activeElement !== el("healthUrl")) el("healthUrl").value = cfg.healthUrl || "";
+    if (document.activeElement !== el("healthTest")) el("healthTest").value = cfg.testCommand || "";
+    if (document.activeElement !== el("healthDeploy")) el("healthDeploy").value = cfg.deployCommand || "";
+    el("healthWatchTests").checked = !!cfg.watchTests;
+    el("healthConfig").classList.toggle("disabled", !activePath);
+    const status = el("healthStatus");
+    if (!activePath) status.innerHTML = `<span class="muted">Open a project to configure its checks.</span>`;
+    else if (h.mode === "off") status.innerHTML = `<span class="muted">Monitoring is off.</span>`;
+    else status.innerHTML =
+      `<span class="hs ${cfg.healthy === true ? "ok" : cfg.healthy === false ? "bad" : ""}">${cfg.healthUrl ? (cfg.healthy === true ? "Health URL responding" : cfg.healthy === false ? "Health URL down" : "Health URL not checked yet") : "No health URL"}</span>` +
+      `<span class="hs">${h.mode === "auto" ? "Auto-heal on — incidents are repaired automatically" : "Watch mode — incidents are reported, repair is one click"}</span>`;
+
+    const list = el("incidentList");
+    const count = el("incidentCount");
+    const incidents = h.incidents || [];
+    count.textContent = h.openCount ? `${h.openCount} open` : "";
+    list.innerHTML = "";
+    if (!incidents.length) {
+      list.innerHTML = `<div class="page-empty">Nothing detected${activePath ? ` in ${escapeHtml(basename(activePath))}` : ""}. Start the dev server with the agent (it runs as a background task) or open your app in the browser panel, and anything that breaks shows up here.</div>`;
+      return;
+    }
+    for (const inc of incidents) {
+      const card = document.createElement("div");
+      card.className = `incident ${inc.status}`;
+      const stages = (inc.stages || []).map((s) => `<span class="stage ${s.status}" title="${escapeHtml(s.note || "")}"><span class="stage-dot"></span>${STAGE_LABEL[s.stage] || s.stage}</span>`).join('<span class="stage-arrow">→</span>');
+      const notes = (inc.stages || []).filter((s) => s.note && s.status !== "pending").map((s) => `<div class="stage-note"><b>${STAGE_LABEL[s.stage]}</b> ${escapeHtml(s.note)}</div>`).join("");
+      card.innerHTML =
+        `<div class="inc-head"><span class="inc-src">${escapeHtml(inc.source)}</span><span class="inc-title">${escapeHtml(inc.title)}</span><span class="inc-status ${inc.status}">${INCIDENT_STATUS[inc.status] || inc.status}</span></div>` +
+        `<div class="inc-meta">${escapeHtml(relTime(inc.detectedAt))}${inc.occurrences > 1 ? ` · seen ${inc.occurrences}×` : ""}${inc.filesChanged?.length ? ` · changed ${inc.filesChanged.map(escapeHtml).join(", ")}` : ""}${inc.currentTool ? ` · <span class="inc-tool">${escapeHtml(inc.currentTool)}</span>` : ""}</div>` +
+        `<div class="stages">${stages}</div>` +
+        (notes ? `<div class="stage-notes">${notes}</div>` : "") +
+        `<details class="inc-evidence"><summary>Evidence</summary><pre>${escapeHtml(inc.evidence || "")}</pre></details>` +
+        (inc.summary ? `<div class="inc-summary">${renderMarkdownLite(inc.summary)}</div>` : "") +
+        `<div class="inc-actions">` +
+        (inc.status === "repairing"
+          ? `<button class="btn-secondary sm" data-act="stop">Stop repair</button>`
+          : inc.status === "fixed" || inc.status === "ignored" ? ""
+          : `<button class="btn-primary sm" data-act="repair">${inc.status === "detected" ? "Repair now" : "Retry repair"}</button>`) +
+        (inc.status !== "repairing" && inc.status !== "ignored" ? `<button class="link-btn" data-act="chat">Open in chat</button><button class="link-btn" data-act="ignore">Ignore</button>` : "") +
+        `</div>`;
+      card.addEventListener("click", async (e) => {
+        const btn = e.target.closest("button[data-act]");
+        if (!btn) return;
+        const act = btn.dataset.act;
+        if (act === "repair") { btn.disabled = true; btn.textContent = "Starting…"; const r = await window.nutaan.healer.repair(inc.id); if (!r.ok) alert(r.error); }
+        if (act === "stop") await window.nutaan.healer.stopRepair(inc.id);
+        if (act === "ignore") await window.nutaan.healer.ignore(inc.id);
+        if (act === "chat") {
+          sidebarView = "chats"; renderNav(); renderExplorer();
+          input.value = `The workspace monitor caught this in ${inc.source}: "${inc.title}". Evidence:\n${(inc.evidence || "").slice(0, 1200)}\n\nReproduce it, find the root cause, fix it, and verify.`;
+          input.focus(); autoGrowInput();
+          return;
+        }
+        loadHealth();
+      });
+      list.appendChild(card);
+    }
+  }
+
+  function renderHealthSidebar() {
+    chatsView.innerHTML = "";
+    const h = autonomous.health;
+    const box = document.createElement("div");
+    box.className = "side-list";
+    if (!h) { box.innerHTML = `<div class="side-empty">Loading…</div>`; chatsView.appendChild(box); return; }
+    const mode = document.createElement("div");
+    mode.className = "side-mode";
+    mode.innerHTML = `<span class="dot ${h.mode}"></span>${h.mode === "auto" ? "Auto-heal" : h.mode === "watch" ? "Watching" : "Off"}${h.project?.healthUrl ? ` · ${h.project.healthy === true ? "up" : h.project.healthy === false ? "down" : "…"}` : ""}`;
+    box.appendChild(mode);
+    const open = (h.incidents || []).filter((i) => i.status !== "ignored").slice(0, 12);
+    if (!open.length) box.innerHTML += `<div class="side-empty">No incidents</div>`;
+    for (const inc of open) {
+      const row = document.createElement("div");
+      row.className = `side-row inc-${inc.status}`;
+      row.innerHTML = `<span class="side-icon">${inc.status === "fixed" ? "✓" : inc.status === "repairing" ? "◌" : "!"}</span><span class="side-name">${escapeHtml(inc.title)}</span><span class="side-meta">${escapeHtml(relTime(inc.detectedAt))}</span>`;
+      box.appendChild(row);
+    }
+    chatsView.appendChild(box);
+  }
+
+  el("healMode").addEventListener("click", async (e) => {
+    const b = e.target.closest("button[data-mode]");
+    if (!b) return;
+    await window.nutaan.healer.setMode(b.dataset.mode);
+    loadHealth();
+  });
+  el("healthSave").addEventListener("click", async () => {
+    if (!activePath) return;
+    await window.nutaan.healer.configure(activePath, { healthUrl: el("healthUrl").value, testCommand: el("healthTest").value, deployCommand: el("healthDeploy").value, watchTests: el("healthWatchTests").checked });
+    loadHealth();
+  });
+  el("healthScan").addEventListener("click", async () => {
+    if (!activePath) return;
+    const btn = el("healthScan");
+    btn.disabled = true; btn.textContent = "Checking…";
+    try {
+      await window.nutaan.healer.configure(activePath, { healthUrl: el("healthUrl").value, testCommand: el("healthTest").value, deployCommand: el("healthDeploy").value, watchTests: el("healthWatchTests").checked });
+      const r = await window.nutaan.healer.scan(activePath);
+      const status = el("healthStatus");
+      status.innerHTML = (r.findings || []).length
+        ? r.findings.map((f) => `<span class="hs ${f.ok ? "ok" : "bad"}">${escapeHtml(f.check)}: ${escapeHtml(f.detail)}</span>`).join("")
+        : `<span class="muted">Nothing to check — set a health URL or a test command first.</span>`;
+    } finally {
+      btn.disabled = false; btn.textContent = "Check now";
+      loadHealth();
+    }
+  });
+  el("clearIncidentsBtn").addEventListener("click", async () => { await window.nutaan.healer.clear(); loadHealth(); });
+
+  // ---------- Today ----------
+  function lastChatSummary() {
+    const proj = activeProject();
+    if (!proj) return null;
+    const chats = [...proj.chats].filter((c) => c.messages?.some((m) => m.role === "user")).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+    const chat = chats[0];
+    if (!chat) return null;
+    let tasks = null;
+    for (const m of chat.messages) {
+      for (const call of m.tool_calls || []) {
+        if (String(call.function?.name || "").startsWith("task_write")) {
+          try { tasks = JSON.parse(call.function.arguments || "{}").tasks || null; } catch {}
+        }
+      }
+    }
+    const openTasks = (tasks || []).filter((t) => t.status !== "completed").map((t) => t.task).slice(0, 6);
+    return { title: chat.title, openTasks };
+  }
+
+  let todayToken = 0;
+  async function loadToday({ force = false } = {}) {
+    if (!activePath) { todaySection.hidden = true; return; }
+    const token = ++todayToken;
+    const root = activePath;
+    todaySection.hidden = false;
+    el("todayDate").textContent = new Date().toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" });
+    if (!autonomous.today || autonomous.today.root !== root) {
+      el("todayHeadline").textContent = "Reading the project…";
+      todayGrid.innerHTML = "";
+    }
+    try {
+      const t = await window.nutaan.today({ root, lastChat: lastChatSummary(), force });
+      if (token !== todayToken || activePath !== root) return;
+      autonomous.today = t;
+      renderToday();
+    } catch (e) {
+      if (token !== todayToken) return;
+      el("todayHeadline").textContent = "Couldn't read the project: " + e.message;
+    }
+  }
+
+  const KIND_COLOR = { fix: "#f87171", resume: "#c084fc", git: "#60a5fa", code: "#fb923c", quality: "#4ade80", deps: "#facc15", config: "#e0a336", docs: "#38bdf8", run: "#34d399", worker: "#a78bfa", idea: "#ec4899", todo: "#9ba0ab" };
+
+  function renderToday() {
+    const t = autonomous.today;
+    if (!t) return;
+    el("todayHeadline").textContent = t.headline || "";
+    todayGrid.innerHTML = "";
+    if (!t.cards.length) {
+      todayGrid.innerHTML = `<div class="today-empty">Nothing is waiting on you in ${escapeHtml(t.name)} — pick a quick action below.</div>`;
+      return;
+    }
+    for (const c of t.cards) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "today-card" + (c.kind === "fix" ? " fix" : "");
+      card.innerHTML =
+        `<span class="tc-bar" style="background:${KIND_COLOR[c.kind] || KIND_COLOR.todo}"></span>` +
+        `<span class="tc-title">${escapeHtml(c.title)}</span>` +
+        `<span class="tc-why">${escapeHtml(c.why || "")}</span>` +
+        (c.fromModel ? `<span class="tc-tag">suggested</span>` : "");
+      card.addEventListener("click", async () => {
+        if (String(c.prompt).startsWith("__run_worker__:")) {
+          await window.nutaan.workers.runNow(c.prompt.split(":")[1]);
+          sidebarView = "workers"; renderNav(); renderExplorer(); loadWorkers();
+          return;
+        }
+        input.value = c.prompt;
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+        autoGrowInput();
+      });
+      todayGrid.appendChild(card);
+    }
+  }
+  el("todayRefresh").addEventListener("click", () => loadToday({ force: true }));
+
+  // ---------- Outcome mode + Nutaan Swarm ----------
+  const OUTCOMES = [
+    { label: "Build a SaaS", goal: "Build a SaaS: " },
+    { label: "Fix production", goal: "Fix production: " },
+    { label: "Launch website", goal: "Launch the website: " },
+    { label: "Create marketing campaign", goal: "Create a marketing campaign for " },
+    { label: "Research competitors", goal: "Research competitors: " },
+    { label: "Set up CRM", goal: "Set up a CRM for " },
+    { label: "Deploy application", goal: "Deploy the application to " },
+  ];
+
+  function setComposerMode(mode) {
+    composerMode = mode;
+    for (const b of modeToggle.querySelectorAll(".mode-opt")) b.classList.toggle("active", b.dataset.mode === mode);
+    input.placeholder = mode === "outcome" ? "What outcome do you want? e.g. Launch my SaaS by Friday" : "Build a feature, fix a bug, or refactor code...";
+    appEl.classList.toggle("outcome-mode", mode === "outcome");
+    renderOutcomeEmpty();
+  }
+  modeToggle.addEventListener("click", (e) => {
+    const b = e.target.closest(".mode-opt");
+    if (b) setComposerMode(b.dataset.mode);
+  });
+
+  function renderOutcomeEmpty() {
+    const outcome = composerMode === "outcome";
+    if (outcome) {
+      emptyTitle.innerHTML = `What <span class="grad-text">outcome</span> do you want?`;
+      emptySub.textContent = "Name the result, not the steps. Nutaan Swarm plans it, splits it across Planner · Developer · Browser QA · Researcher · Reviewer · DevOps, runs them in parallel and merges one report.";
+    } else {
+      emptyTitle.innerHTML = `Build anything with <span class="grad-text">Nutaan Code</span>`;
+      emptySub.textContent = "Your AI coding agent that understands your entire project.";
+    }
+    outcomeChips.hidden = !outcome;
+    quickGrid.hidden = outcome;
+    if (outcome && !outcomeChips.childElementCount) {
+      for (const o of OUTCOMES) {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "outcome-chip";
+        chip.textContent = o.label;
+        chip.addEventListener("click", () => { input.value = o.goal; input.focus(); input.setSelectionRange(input.value.length, input.value.length); autoGrowInput(); });
+        outcomeChips.appendChild(chip);
+      }
+    }
+  }
+
+  const swarmCards = new Map(); // runId -> { el, chat }
+
+  async function launchSwarm(goal, { chat, proj }) {
+    if (!settings.nutaanKey && !settings.apiKey) { showActivation("Activate Nutaan Code with your nutaan.com API key first."); return; }
+    appendBubble("user", goal);
+    chat.messages.push({ role: "user", content: `[Outcome handed to Nutaan Swarm] ${goal}` });
+    chat.updatedAt = new Date().toISOString();
+    let res;
+    try { res = await window.nutaan.swarm.start({ goal, root: proj.path, model: settings.model }); }
+    catch (e) { appendBubble("error", "Couldn't start the swarm: " + e.message); return; }
+    ensureSwarmCard(res.runId, { goal, chat });
+    persistProjects();
+  }
+
+  function ensureSwarmCard(runId, { goal, chat }) {
+    if (swarmCards.has(runId)) return swarmCards.get(runId);
+    const card = document.createElement("div");
+    card.className = "swarm-card";
+    card.dataset.runId = runId;
+    card.innerHTML = `<div class="sw-head"><span class="sw-mark">◎</span><div class="sw-title"><b>Nutaan Swarm</b><span class="sw-goal">${escapeHtml(goal || "")}</span></div><span class="sw-status">planning</span><button class="link-btn sw-stop">Stop</button></div><div class="sw-plan" hidden></div><div class="sw-team"></div>`;
+    card.querySelector(".sw-stop").addEventListener("click", () => window.nutaan.swarm.stop(runId));
+    thread.appendChild(card);
+    renderEmptyVisibility();
+    scrollToBottom();
+    const entry = { el: card, chat: chat || activeChat(), reported: false };
+    swarmCards.set(runId, entry);
+    return entry;
+  }
+
+  function renderSwarmCard(run) {
+    const entry = swarmCards.get(run.id) || ensureSwarmCard(run.id, { goal: run.goal });
+    const card = entry.el;
+    const status = card.querySelector(".sw-status");
+    status.textContent = run.status;
+    status.className = "sw-status " + run.status;
+    card.querySelector(".sw-stop").hidden = !["planning", "running", "merging"].includes(run.status);
+    const plan = card.querySelector(".sw-plan");
+    if (run.plan?.summary) { plan.hidden = false; plan.textContent = run.plan.summary; }
+    const team = card.querySelector(".sw-team");
+    team.innerHTML = "";
+    for (const t of run.tasks) {
+      const row = document.createElement("div");
+      row.className = `sw-agent ${t.status}`;
+      const steps = t.steps || [];
+      // The steps trail expands like Claude Code's side panel: the header line summarises, and the
+      // list under it shows every step this agent took. Auto-open while running so the user watches
+      // it work; collapsible once done so a finished run stays tidy.
+      const stateLabel = t.status === "running"
+        ? `<span class="wk-spark"></span>${escapeHtml(t.currentTool || "working")}${t.toolCount ? ` · ${t.toolCount}` : ""}`
+        : t.status === "done" ? `✓${t.toolCount ? ` ${t.toolCount} steps` : ""}`
+        : t.status === "pending" ? (t.dependsOn?.length ? "waiting" : "queued") : t.status;
+      const head =
+        `<div class="sw-agent-head">` +
+        `<span class="sw-role" style="--role:${t.color || "#9ba0ab"}">${escapeHtml(t.icon)} ${escapeHtml(t.roleName)}</span>` +
+        `<span class="sw-task">${escapeHtml(t.title)}</span>` +
+        `<span class="sw-state">${stateLabel}</span>` +
+        (steps.length ? `<span class="sw-chev">${t.status === "running" ? "▾" : "▸"}</span>` : "") +
+        `</div>`;
+      const stepList = steps.length
+        ? `<div class="sw-steps"${t.status === "running" ? "" : " hidden"}>` +
+          steps.map((s) => `<div class="sw-step">${escapeHtml(s)}</div>`).join("") +
+          `</div>`
+        : "";
+      row.innerHTML =
+        head + stepList +
+        (t.findings && t.status === "done" ? `<details class="sw-findings"><summary>Findings</summary>${renderMarkdownLite(t.findings)}</details>` : "") +
+        (t.error ? `<div class="sw-err">${escapeHtml(t.error)}</div>` : "");
+      if (steps.length) {
+        const h = row.querySelector(".sw-agent-head");
+        const list = row.querySelector(".sw-steps");
+        const chev = row.querySelector(".sw-chev");
+        h.style.cursor = "pointer";
+        h.addEventListener("click", () => { list.hidden = !list.hidden; if (chev) chev.textContent = list.hidden ? "▸" : "▾"; });
+      }
+      team.appendChild(row);
+    }
+    if ((run.status === "done" || run.status === "stopped" || run.status === "failed") && !entry.reported) {
+      entry.reported = true;
+      const report = run.report || (run.status === "stopped" ? "Swarm stopped before finishing." : run.error ? `Swarm failed: ${run.error}` : "");
+      if (report) {
+        appendBubble("assistant", report);
+        const chat = entry.chat;
+        if (chat) {
+          chat.messages.push({ role: "assistant", content: `[Nutaan Swarm report]\n\n${report}` });
+          chat.updatedAt = new Date().toISOString();
+          persistProjects();
+        }
+      }
+      loadToday();
+    }
+    scrollToBottom();
+  }
+
+  // ---------- events from the main process ----------
+  window.nutaan.onAutonomousEvent("workers:changed", ({ workers }) => {
+    autonomous.workers = workers || autonomous.workers;
+    if (sidebarView === "workers") { renderWorkersPage(); renderWorkersSidebar(); }
+  });
+  window.nutaan.onAutonomousEvent("workers:update", (u) => {
+    autonomous.updates.unshift(u);
+    if (u.unread) autonomous.unread++;
+    renderNav();
+    if (sidebarView === "workers") renderUpdates();
+  });
+  window.nutaan.onAutonomousEvent("workers:run", () => { if (sidebarView === "workers") loadWorkers(); });
+  window.nutaan.onAutonomousEvent("swarm:event", ({ run }) => { if (run) renderSwarmCard(run); });
+  window.nutaan.onAutonomousEvent("swarm:launched", ({ runId, goal }) => { ensureSwarmCard(runId, { goal }); });
+  window.nutaan.onAutonomousEvent("healer:changed", (view) => {
+    if (!view.project || !activePath || view.project.root === activePath) autonomous.health = view;
+    autonomous.openIncidents = view.openCount || 0;
+    renderNav();
+    if (sidebarView === "health") { renderHealthPage(); renderHealthSidebar(); }
+  });
+  window.nutaan.onAutonomousEvent("healer:incident", ({ incident }) => {
+    if (incident.root === activePath) loadToday();
+  });
+  window.nutaan.onAutonomousEvent("healer:health", () => { if (sidebarView === "health") loadHealth(); });
+  window.nutaan.onAutonomousEvent("healer:repair-done", () => { loadHealth(); loadToday(); });
+
   (async function init() {
     if (appVersionText && window.nutaan.getVersion) {
       window.nutaan.getVersion().then((v) => { appVersionText.textContent = "v" + v; });
@@ -4445,8 +5921,13 @@
       await refreshTree();
       await refreshGit();
       renderThreadFromMessages(activeChat().messages);
+      try { window.nutaan.projectOpened(activePath); } catch {}
     }
     persistProjects();
+    // Badges for unread updates and open incidents, and today's suggestions for the open project.
+    loadWorkers();
+    loadHealth();
+    if (activePath) loadToday();
 
     if (!settings.nutaanKey) {
       showActivation("");
