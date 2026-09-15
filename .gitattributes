@@ -1,4 +1,38 @@
-# Shell scripts are run by dpkg and rpm on the user's machine. Checked out with CRLF they fail as
-# "/bin/bash^M: bad interpreter", which on rpm fails the whole transaction, so pin them to LF
-# regardless of the committer's platform.
+# Normalize line endings so every platform (Windows, macOS, Linux) commits and
+# checks out the same bytes. Text is stored as LF in the repo; this stops the
+# constant "LF will be replaced by CRLF" churn and keeps diffs and builds clean.
+* text=auto eol=lf
+
+# Shell scripts are run by dpkg and rpm on the user's machine. Checked out with CRLF
+# they fail as "/bin/bash^M: bad interpreter", which on rpm fails the whole
+# transaction, so pin them to LF regardless of the committer's platform.
 *.sh text eol=lf
+
+# Source and config: explicit LF.
+*.js   text eol=lf
+*.mjs  text eol=lf
+*.cjs  text eol=lf
+*.json text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.md   text eol=lf
+*.svg  text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# Binary assets — never touch line endings or try to diff them.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.icns binary
+*.webp binary
+*.woff  binary
+*.woff2 binary
+*.ttf  binary
+*.otf  binary
+*.mp4  binary
+*.zip  binary
+*.exe  binary
+*.node binary

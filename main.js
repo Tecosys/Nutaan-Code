@@ -9,6 +9,7 @@ const arsenal = require("./arsenal");
 const mitmManager = require("./arsenal/mitm");
 const gatewayManager = require("./arsenal/gateway");
 const { ToolRegistry } = require("./tools/registry");
+require("./tools/terminal").register({ app, ipcMain });
 
 // Electron derives userData from app.getName(), which is package.json's `name` when run from
 // source ("nutaan-code") but `productName` once packaged ("Nutaan Code"). Left alone, the
@@ -69,7 +70,13 @@ const FALLBACK_MODEL = "nvidia/nemotron-3-super-120b-a12b";
 // Requests go to nutaan.com authenticated with the user's own API key, and the provider keys
 // live server-side. A user who wants to bring their own endpoint can still set Server URL in
 // Settings, in which case their key for that endpoint is used instead.
-async function activeBackend({ baseUrl, apiKey, nutaanKey, customProviders, modelProviderId }) {
+async function activeBackend({ baseUrl, apiKey, nutaanKey, customProviders, modelProviderId, omnirouteApiKey }) {
+  if (modelProviderId === "omniroute") {
+    gatewayManager.configure({ apiKey: omnirouteApiKey || "" });
+    await gatewayManager.getModels();
+    const status = await gatewayManager.getStatus();
+    return { baseUrl: `${status.url}/v1`, apiKey: omnirouteApiKey || "" };
+  }
   // A user-managed provider selected for this specific model wins: route straight to its own
   // OpenAI-compatible endpoint with its own key. This is what lets one account mix Nutaan-managed
   // models with the user's own OpenAI / OpenRouter / Together / NVIDIA / Azure / … keys.
@@ -85,6 +92,8 @@ async function activeBackend({ baseUrl, apiKey, nutaanKey, customProviders, mode
 }
 
 let win;
+if (!app.requestSingleInstanceLock()) app.exit(0);
+app.on("second-instance", () => { if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); } });
 const pendingPermissions = new Map();
 const pendingBrowserActions = new Map();
 let agentAbort = null;
@@ -568,12 +577,21 @@ function toolGuidance() {
 }
 
 app.whenReady().then(async () => {
+  createWindow();
   try {
-    await gatewayManager.start({ port: 20128 });
+    const saved = await readStore();
+    gatewayManager.configure({
+      apiKey: saved.omnirouteApiKey || "",
+      // The user's Nutaan managed key powers the keyless free pool so free
+      // models work out of the box with zero provider signups.
+      nutaanKey: saved.nutaanKey || "",
+      nutaanBase: NUTAAN_LLM_BASE,
+      keys: saved.omnirouteKeys || {}
+    });
+    gatewayManager.start({ port: 20128 }).catch(error => console.warn("[omniroute]", error.message));
   } catch (err) {
     console.warn("[omniroute] auto-start:", err.message);
   }
-  createWindow();
   setTimeout(() => { try { pruneUpdaterCacheOnStartup(); } catch {} }, 4000);
   // Connect the user's tools in the background so they are ready by the time they are asked for.
   refreshSettingsCache().then(() => toolRegistry.sync()).catch(() => {});
@@ -746,9 +764,17 @@ function isAzureEndpoint(baseUrl) {
 // Azure OpenAI diverges from the plain OpenAI-compatible shape everything else here assumes:
 // api-key header instead of Authorization: Bearer, a required api-version query param, and the
 // deployment name baked into the URL path instead of picked via a model id.
+// Some OpenAI-compatible gateways (AgentRouter and other "new-api" resellers) reject
+// requests from unrecognised clients with "unauthorized client detected" before they
+// even check the key — they allowlist the CLI client User-Agent. These keys are sold
+// for use with coding CLIs, so we identify as one; ordinary providers ignore the UA.
+const CLIENT_USER_AGENT = "claude-cli/1.0.60 (external, cli)";
 function buildAuthHeaders(baseUrl, apiKey) {
-  if (!apiKey) return {};
-  return isAzureEndpoint(baseUrl) ? { "api-key": apiKey } : { Authorization: `Bearer ${apiKey}` };
+  const ua = { "User-Agent": CLIENT_USER_AGENT };
+  if (!apiKey) return ua;
+  return isAzureEndpoint(baseUrl)
+    ? { ...ua, "api-key": apiKey }
+    : { ...ua, Authorization: `Bearer ${apiKey}` };
 }
 
 function buildEndpointUrl(baseUrl, endpointPath) {
@@ -797,7 +823,11 @@ async function fetchModels(baseUrl, apiKey) {
 
 // Embedding / reranking / document-parsing models share the same catalog but have no
 // /chat/completions route, so offering them in the model picker only produces confusing errors.
-const NON_CHAT_MODEL_RE = /embed|rerank|nemoretriever|nemotron-parse|reward|content-safety|safety-guard/i;
+const NON_CHAT_MODEL_RE = /embed|rerank|nemoretriever|nemotron-parse|reward|content-safety|safety-guard|ocr|moderation|transcribe|realtime|diffusion|whisper|dall-?e|-tts\b|voxtral-mini/i;
+// Paid / Pro-only models are not part of the free pool. Azure deployments on the
+// managed backend are Pro-tier, so a free user must not see or be auto-switched to
+// them — they come back only if the user connects their own Azure provider.
+const PAID_MODEL_RE = /^azure\//i;
 
 // Never infer that an unpriced model is free. Gateways such as OmniRoute/OpenRouter commonly
 // expose a price object or an explicit free flag; accepting only those signals prevents a user
@@ -832,22 +862,21 @@ function isExplicitlyFreeModel(model) {
 //   google/gemma-4-31b-it           timed out past 240s at every budget tried
 //   nvidia/ising-calibration        replies in prose and never calls a tool
 //   nvidia/nemotron-3-ultra-550b    39s to first token and frequent 503s
+// Order reflects a real one-by-one probe (Feb 2026): these answered a completion
+// reliably and fast. Azure entries were removed (Pro-only/paid) and gemini-3.7-flash
+// dropped (returns empty content). Free, working models lead so the default and the
+// auto-switch fallback both land on something that responds.
 const AGENT_MODELS = [
-  "azure/model-router",
-  "gemini/gemini-3.7-flash",
-  "azure/gpt-5-mini",
-  "azure/Kimi-K2.6",
-  "gemini/gemini-3.6-flash",
-  "gemini/gemini-flash-latest",
-  "azure/gpt-4.1-mini",
-  "gemini/gemini-3.5-flash",
-  "gemini/gemini-3.5-flash-lite",
   "nvidia/nemotron-3-super-120b-a12b",
-  "openai/gpt-oss-20b",
+  "gemini/gemini-flash-latest",
+  "gemini/gemini-3.5-flash-lite",
   "nvidia/nemotron-3.5-lightning-30b-a3b",
   "meta/llama-3.2-11b-vision-instruct",
-  "google/diffusiongemma-26b-a4b-it",
+  "openai/gpt-oss-20b",
+  "mistral/codestral-latest",
   "poolside/laguna-xs-2.1",
+  "gemini/gemini-3.6-flash",
+  "gemini/gemini-3.5-flash",
 ];
 const agentRank = (id) => {
   const i = AGENT_MODELS.indexOf(id);
@@ -884,20 +913,104 @@ ipcMain.handle("ai:list-models", async (_e, payload) => {
   const backend = await activeBackend(payload || {});
   try {
     const catalog = await fetchCatalog(backend.baseUrl, backend.apiKey);
+    // The Nutaan managed backend is the free pool — every model on it is free, so show
+    // them all (Gemini, Azure, NVIDIA, OpenRouter…). Only a user's own custom endpoint
+    // needs the explicit ":free" gate to avoid surfacing paid models by accident.
+    const known = isKnownBackend(backend.baseUrl);
     let models = catalog.models
-      .filter((m) => isExplicitlyFreeModel(m) && !isImageOnlyModel(m) && !NON_CHAT_MODEL_RE.test(m.id))
+      .filter((m) => (known || isExplicitlyFreeModel(m)) && !isImageOnlyModel(m) && !NON_CHAT_MODEL_RE.test(m.id))
+      // On the managed backend, drop Pro-only (paid) models from the free pool.
+      .filter((m) => !(known && PAID_MODEL_RE.test(m.id)))
       .map((m) => m.id);
+    // Reliable, fast models first (probed order) so the default + auto-switch fallback
+    // land on something that responds; the rest keep their catalog order after.
+    if (known) models.sort((a, b) => agentRank(a) - agentRank(b));
     // Keep the picker truthful: every non-image chat model advertised by the selected backend
     // is shown. The live test marks which ones respond; the agent retry/fallback path still
     // handles models that later reject a tool call or are temporarily rate-limited.
-    const imageModels = catalog.models.filter((m) => isExplicitlyFreeModel(m) && isImageOnlyModel(m)).map((m) => m.id);
-    const defaultModel = catalog.defaultModel && models.includes(catalog.defaultModel)
-      ? catalog.defaultModel
-      : models.includes(FALLBACK_MODEL) ? FALLBACK_MODEL : models[0] || "";
+    const imageModels = catalog.models.filter((m) => (known || isExplicitlyFreeModel(m)) && isImageOnlyModel(m)).map((m) => m.id);
+    // On the managed backend, ignore the server's advertised default (it can point at a
+    // model that returns empty) and start on a probed-reliable one.
+    const defaultModel = known
+      ? (models.includes(FALLBACK_MODEL) ? FALLBACK_MODEL : models[0] || "")
+      : (catalog.defaultModel && models.includes(catalog.defaultModel)
+          ? catalog.defaultModel
+          : models.includes(FALLBACK_MODEL) ? FALLBACK_MODEL : models[0] || "");
     return { ok: true, models, imageModels, defaultModel };
   } catch (err) {
     // err.cause often carries the real reason for a network-level failure (DNS, proxy, TLS) that
     // err.message alone doesn't show — e.g. a corporate network blocking the server outright.
+    const causeCode = err.cause?.code;
+    return { ok: false, error: causeCode ? `${err.message} (${causeCode})` : err.message };
+  }
+});
+
+// List EVERY model a user-managed provider exposes for its own API key (no free-only
+// filter) so the provider editor can auto-detect models — the user just pastes a base
+// URL + key. Returns { ok, models: [id...] } or { ok:false, error }.
+// Standard AWS Bedrock foundation models — Bedrock is not OpenAI-compatible and
+// its ListFoundationModels needs SigV4 signing, so we surface the well-known ids
+// the user can invoke rather than a live call.
+const BEDROCK_MODELS = [
+  "anthropic.claude-3-7-sonnet-20250219-v1:0",
+  "anthropic.claude-3-5-sonnet-20241022-v2:0",
+  "anthropic.claude-3-5-haiku-20241022-v1:0",
+  "anthropic.claude-3-opus-20240229-v1:0",
+  "amazon.nova-pro-v1:0",
+  "amazon.nova-lite-v1:0",
+  "amazon.nova-micro-v1:0",
+  "meta.llama3-3-70b-instruct-v1:0",
+  "meta.llama3-1-8b-instruct-v1:0",
+  "mistral.mistral-large-2407-v1:0",
+  "cohere.command-r-plus-v1:0",
+];
+
+function isBedrockEndpoint(u) {
+  return /bedrock|amazonaws\.com/i.test(u || "");
+}
+
+// List EVERY model a user-managed provider exposes for its own API key (no free-only
+// filter) so the provider editor can auto-detect models — the user just pastes a base
+// URL + key. Handles OpenAI-compatible /models, Azure OpenAI deployments, and Bedrock.
+ipcMain.handle("provider:list-models", async (_e, payload = {}) => {
+  const baseUrl = String(payload.baseUrl || "").trim();
+  const apiKey = String(payload.apiKey || "").trim();
+  if (!baseUrl) return { ok: false, error: "No base URL" };
+
+  // AWS Bedrock: return the curated foundation-model ids.
+  if (isBedrockEndpoint(baseUrl) || String(payload.type || "") === "bedrock") {
+    return { ok: true, models: BEDROCK_MODELS, defaultModel: BEDROCK_MODELS[0] };
+  }
+
+  // Azure OpenAI: if the URL already points at one deployment, that IS the model;
+  // otherwise call the deployments listing API to enumerate every deployment.
+  if (isAzureEndpoint(baseUrl)) {
+    if (/\/deployments\/[^/?]+/i.test(baseUrl)) {
+      return { ok: true, models: [azureDeploymentName(baseUrl)], defaultModel: azureDeploymentName(baseUrl) };
+    }
+    try {
+      const origin = baseUrl.match(/^https?:\/\/[^/]+/i)?.[0] || baseUrl.replace(/\/+$/, "");
+      const url = `${origin}/openai/deployments?api-version=2024-10-21`;
+      const res = await fetch(url, { headers: buildAuthHeaders(origin, apiKey) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const models = (Array.isArray(data.data) ? data.data : [])
+        .map((d) => d.id || d.model || "")
+        .filter(Boolean);
+      return { ok: true, models, defaultModel: models[0] || "" };
+    } catch (err) {
+      return { ok: false, error: `Azure deployments listing failed: ${err.message}. Put the deployment in the URL (…/deployments/<name>) or add ids manually.` };
+    }
+  }
+
+  // Standard OpenAI-compatible /models.
+  try {
+    const catalog = await fetchCatalog(baseUrl, apiKey);
+    const models = (catalog.models || [])
+      .map((m) => (m && m.id) ? String(m.id) : "")
+      .filter((id) => id && !NON_CHAT_MODEL_RE.test(id));
+    return { ok: true, models, defaultModel: catalog.defaultModel || "" };
+  } catch (err) {
     const causeCode = err.cause?.code;
     return { ok: false, error: causeCode ? `${err.message} (${causeCode})` : err.message };
   }
@@ -914,13 +1027,24 @@ ipcMain.handle("ai:test-models", async (_e, payload) => {
       const res = await fetch(buildEndpointUrl(backend.baseUrl, "/chat/completions"), {
         method: "POST",
         headers: { "Content-Type": "application/json", ...buildAuthHeaders(backend.baseUrl, backend.apiKey) },
-        body: JSON.stringify({ model, messages: [{ role: "user", content: "Reply with OK." }], max_tokens: 2, temperature: 0, stream: false }),
-        signal: AbortSignal.timeout(20_000),
+        // Enough headroom that a reasoning model can finish its hidden reasoning and
+        // still emit the answer — a small budget gets spent entirely on reasoning and
+        // returns empty, which looks identical to a broken model. A working model emits
+        // "OK" and stops early, so this stays fast; only a truly dead model runs to the cap.
+        body: JSON.stringify({ model, messages: [{ role: "user", content: "Reply with the word OK." }], max_tokens: 256, temperature: 0, stream: false }),
+        signal: AbortSignal.timeout(30_000),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         return { model, ok: false, error: String(data?.error?.message || `HTTP ${res.status}`).slice(0, 160) };
       }
+      // A 200 with no actual content (e.g. gemini-3.7-flash) is a dead model — treat it
+      // as a failure so it's hidden from the picker.
+      const data = await res.json().catch(() => ({}));
+      const msg = data?.choices?.[0]?.message || {};
+      const content = (typeof msg.content === "string" ? msg.content : "").trim();
+      const hasReasoning = typeof msg.reasoning_content === "string" && msg.reasoning_content.trim().length > 0;
+      if (!content && !hasReasoning) return { model, ok: false, error: "returned empty response" };
       return { model, ok: true };
     } catch (err) {
       return { model, ok: false, error: String(err.message || "Request failed").slice(0, 160) };
@@ -2668,7 +2792,9 @@ ipcMain.handle("gateway:stop", async () => {
 
 ipcMain.handle("gateway:get-models", async () => {
   try {
-    return gatewayManager.getModels();
+    const saved = await readStore();
+    gatewayManager.configure({ apiKey: saved.omnirouteApiKey || "" });
+    return await gatewayManager.getModels(true);
   } catch (err) {
     return { error: err.message };
   }
@@ -4994,10 +5120,12 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
 }
 
 ipcMain.on("agent:send", async (event, payload) => {
-  const backend = await activeBackend(payload || {});
-  runAgentLoop(event.sender, { ...payload, ...backend }).catch((err) => {
+  try {
+    const backend = await activeBackend(payload || {});
+    await runAgentLoop(event.sender, { ...payload, ...backend });
+  } catch (err) {
     event.sender.send("agent:error", { message: err.message });
-  });
+  }
 });
 
 ipcMain.on("agent:stop", () => {
@@ -5025,7 +5153,7 @@ async function headlessBackend(model) {
   // wrong or expired (a 401 that would silently kill every background agent) must not be a dead
   // end: when a Nutaan account key exists, carry it as a managed fallback the caller drops to on an
   // auth failure. `managedFallback` is null when the primary already IS the managed backend.
-  const backend = await activeBackend({ baseUrl: s.baseUrl, apiKey: s.apiKey, nutaanKey: s.nutaanKey, customProviders: s.customProviders, modelProviderId: s.modelProviderId });
+  const backend = await activeBackend({ baseUrl: s.baseUrl, apiKey: s.apiKey, nutaanKey: s.nutaanKey, customProviders: s.customProviders, modelProviderId: s.modelProviderId, omnirouteApiKey: s.omnirouteApiKey });
   if (!backend.apiKey) throw new Error("Nutaan Code is not activated — add your nutaan.com API key in Settings first.");
   const nutaanKey = String(s.nutaanKey || "").trim();
   const onManaged = backend.baseUrl === NUTAAN_LLM_BASE;

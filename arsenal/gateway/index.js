@@ -1,95 +1,153 @@
-/**
- * Nutaan OmniRoute Engine — Gateway Manager Entry Point
- *
- * Exposes lifecycle control, configuration persistence, and status.
- */
 "use strict";
+/**
+ * Nutaan OmniRoute — lifecycle manager (native, in-process).
+ *
+ * Runs the self-contained OmniRouteServer (server.js + router + catalog +
+ * adapters) directly inside the Electron main process — no external npm
+ * package, no child process, no port-spawn race. This is what actually
+ * delivers the free-model pool: the app's own Nutaan managed backend is the
+ * first hop in every free combo, so free models work with zero user config.
+ */
 
 const path = require("node:path");
-const fs   = require("node:fs");
-const os   = require("node:os");
-const { app } = require("electron");
-
 const { OmniRouteServer } = require("./server");
 const { CATALOG, COMBOS, PROVIDERS } = require("./catalog");
 
-let _serverInstance = null;
-let _serverPort = 20128;
+let electronApp = null;
+try { electronApp = require("electron").app; } catch { electronApp = null; }
 
-function getGatewayConfigDir() {
+let PORT = 20128;
+let BASE = `http://127.0.0.1:${PORT}`;
+
+let server = null;
+let starting = null;
+let lastError = "";
+// Persisted + injected provider keys (incl. the keyless "nutaan" managed key).
+const injectedKeys = {};
+let apiKey = "";
+
+function configFile() {
   try {
-    return path.join(app.getPath("userData"), "omniroute");
+    return path.join(electronApp.getPath("userData"), "omniroute-config.json");
   } catch {
-    return path.join(os.homedir(), ".nutaan", "omniroute");
+    return null;
   }
 }
 
-function getConfigFile() {
-  const dir = getGatewayConfigDir();
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, "config.json");
+/**
+ * Accept configuration from the main process. Recognized fields:
+ *   apiKey       — optional master client token (unused for local, kept for UI)
+ *   keys         — { providerId: key } map (e.g. { groq, gemini, openrouter })
+ *   nutaanKey    — the user's Nutaan managed key → wired as the keyless free hop
+ *   nutaanBase   — override for the Nutaan managed base URL
+ */
+function configure(config = {}) {
+  if (config.apiKey !== undefined) apiKey = String(config.apiKey || "");
+  if (config.keys && typeof config.keys === "object") {
+    for (const [p, k] of Object.entries(config.keys)) {
+      if (k) injectedKeys[p] = String(k);
+    }
+  }
+  if (config.nutaanKey) injectedKeys.nutaan = String(config.nutaanKey);
+  if (config.nutaanBase && PROVIDERS.nutaan) {
+    PROVIDERS.nutaan.baseUrl = String(config.nutaanBase).replace(/\/+$/, "");
+  }
+  // If the server is already up, push new keys straight into the live router.
+  if (server && server.router) {
+    for (const [p, k] of Object.entries(injectedKeys)) server.router.setKey(p, k);
+  }
 }
 
-async function start(options = {}) {
-  const port = options.port || _serverPort;
-  if (_serverInstance) {
-    return { status: "already_running", port: _serverPort, host: "127.0.0.1" };
-  }
+async function start(opts = {}) {
+  if (opts && Object.keys(opts).length) configure(opts);
+  if (opts && opts.port) { PORT = Number(opts.port); BASE = `http://127.0.0.1:${PORT}`; }
+  if (server) return { status: "running", port: PORT, host: "127.0.0.1", url: BASE };
+  if (starting) return starting;
 
-  const configFile = getConfigFile();
-  _serverInstance = new OmniRouteServer({
-    port,
-    configFile,
-    routerConfig: options.routerConfig || {}
-  });
+  starting = (async () => {
+    try {
+      lastError = "";
+      const srv = new OmniRouteServer({
+        port: PORT,
+        configFile: configFile(),
+        routerConfig: { keys: { ...injectedKeys } }
+      });
+      // Make sure keys handed to us before start() reach the router.
+      for (const [p, k] of Object.entries(injectedKeys)) srv.router.setKey(p, k);
+      await srv.start();
+      server = srv;
+      return { status: "running", port: PORT, host: "127.0.0.1", url: BASE };
+    } catch (err) {
+      lastError = err && err.code === "EADDRINUSE"
+        ? `Port ${PORT} is already in use by another process.`
+        : (err && err.message) || "OmniRoute failed to start.";
+      throw new Error(lastError);
+    } finally {
+      starting = null;
+    }
+  })();
 
-  const res = await _serverInstance.start();
-  _serverPort = res.port;
-  return { status: "running", port: _serverPort, host: "127.0.0.1" };
+  return starting;
 }
 
 function stop() {
-  if (_serverInstance) {
-    _serverInstance.stop();
-    _serverInstance = null;
+  if (server) {
+    try { server.stop(); } catch { /* ignore */ }
+    server = null;
   }
   return { status: "stopped" };
 }
 
 function getStatus() {
   return {
-    running: Boolean(_serverInstance),
-    port: _serverPort,
-    host: "127.0.0.1",
-    url: `http://127.0.0.1:${_serverPort}`,
-    stats: _serverInstance ? _serverInstance.router.stats : {},
-    modelsCount: CATALOG.length + 1000,
-    freeTokensPoolActive: true
+    running: !!server,
+    starting: !!starting,
+    port: PORT,
+    url: BASE,
+    dashboardUrl: BASE,
+    freeTiersUrl: BASE,
+    error: lastError,
+    modelsCount: CATALOG.length,
+    freePoolActive: true,
+    stats: server && server.router ? server.router.stats : {},
+    managed: !!server
   };
 }
 
-function saveConfig(cfg = {}) {
-  const configFile = getConfigFile();
-  try {
-    fs.writeFileSync(configFile, JSON.stringify(cfg, null, 2), "utf8");
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
+async function getModels() {
+  const combos = Object.keys(COMBOS).map((id) => ({
+    id,
+    name: COMBOS[id].name,
+    description: COMBOS[id].description,
+    tier: "free",
+    provider: "nutaan-omniroute"
+  }));
+  const models = CATALOG.map((m) => ({
+    id: m.id,
+    name: m.name || m.id,
+    provider: m.provider,
+    contextWindow: m.contextWindow,
+    tier: m.tier
+  }));
+  const providers = Object.entries(PROVIDERS).map(([id, p]) => ({
+    id,
+    name: p.name,
+    tier: p.tier,
+    website: p.website,
+    freeQuotaInfo: p.freeQuotaInfo,
+    hasKey: !!injectedKeys[id],
+    keyless: id === "nutaan"
+  }));
+  return { models, combos, providers, modelsCount: models.length };
 }
 
-function getModels() {
-  return {
-    combos: COMBOS,
-    models: CATALOG,
-    providers: PROVIDERS
-  };
+async function saveConfig(config = {}) {
+  configure(config);
+  return { ok: true, ...(await getModels()) };
 }
 
-module.exports = {
-  start,
-  stop,
-  getStatus,
-  getModels,
-  saveConfig
-};
+if (electronApp) {
+  electronApp.on("before-quit", () => { try { stop(); } catch { /* ignore */ } });
+}
+
+module.exports = { start, stop, getStatus, getModels, saveConfig, configure };

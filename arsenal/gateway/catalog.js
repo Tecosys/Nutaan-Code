@@ -12,6 +12,42 @@
 "use strict";
 
 const PROVIDERS = {
+  // Keyless managed free pool — the app's own Nutaan backend. No signup, no
+  // API key: the moment the app runs (signed in to Nutaan) this delivers free
+  // models. It is the first hop in every free combo below.
+  nutaan: {
+    name: "Nutaan Free Pool",
+    type: "openai_compatible",
+    baseUrl: "https://nutaan.com/api/v1",
+    envKey: "NUTAAN_API_KEY",
+    tier: "free",
+    website: "https://nutaan.com",
+    freeQuotaInfo: "1.6 Billion free tokens — managed pool, zero config required"
+  },
+  // Antigravity gives free Gemini access; Kiro gives free Claude access. When
+  // the user has those IDEs (AgentBridge/MITM) or pastes a key, Nutaan borrows
+  // that free tier. Branded so users recognise them in the model picker.
+  // Antigravity gives free Gemini AND Claude; Kiro gives free Claude. These are used
+  // via their real endpoints through the AgentBridge interceptor (which replays the
+  // IDE's own free-tier credentials), so the models are genuinely what they say.
+  antigravity: {
+    name: "Antigravity (Free Gemini + Claude)",
+    type: "gemini",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+    envKey: "GEMINI_API_KEY",
+    tier: "free",
+    website: "https://antigravity.google",
+    freeQuotaInfo: "Free Gemini & Claude via Antigravity — connect through AgentBridge"
+  },
+  kiro: {
+    name: "Kiro (Free Claude)",
+    type: "anthropic",
+    baseUrl: "https://api.anthropic.com/v1",
+    envKey: "ANTHROPIC_API_KEY",
+    tier: "free",
+    website: "https://kiro.dev",
+    freeQuotaInfo: "Free Claude Sonnet via Kiro — connect through AgentBridge"
+  },
   groq: {
     name: "Groq",
     type: "openai_compatible",
@@ -126,6 +162,90 @@ const PROVIDERS = {
  * Key Models catalog with capabilities & routing tags
  */
 const CATALOG = [
+  // -------------------------------------------------------------
+  // Nutaan Managed Free Pool — keyless, zero-config (tried first)
+  // -------------------------------------------------------------
+  {
+    id: "nutaan/nemotron-super",
+    name: "Nutaan Free (Nemotron 120B)",
+    provider: "nutaan",
+    targetModel: "nvidia/nemotron-3-super-120b-a12b",
+    contextWindow: 128000,
+    maxOutput: 8192,
+    capabilities: ["tools", "json"],
+    tier: "free",
+    category: "coding",
+    speed: "fast",
+    description: "Nutaan managed free pool — no key needed, works out of the box"
+  },
+  {
+    id: "nutaan/auto",
+    name: "Nutaan Free (Auto)",
+    provider: "nutaan",
+    targetModel: "nvidia/nemotron-3-super-120b-a12b",
+    contextWindow: 128000,
+    maxOutput: 8192,
+    capabilities: ["tools", "json"],
+    tier: "free",
+    category: "coding",
+    speed: "fast",
+    description: "Nutaan managed free pool, auto-selected model"
+  },
+  // -------------------------------------------------------------
+  // Antigravity (free Gemini) & Kiro (free Claude) — via AgentBridge
+  // -------------------------------------------------------------
+  {
+    id: "antigravity/gemini-2.0-flash",
+    name: "Gemini 2.0 Flash (Antigravity Free)",
+    provider: "antigravity",
+    targetModel: "gemini-2.0-flash",
+    contextWindow: 1000000,
+    maxOutput: 8192,
+    capabilities: ["tools", "json", "vision"],
+    tier: "free",
+    category: "coding",
+    speed: "fast",
+    description: "Free Gemini 2.0 Flash borrowed from Antigravity via AgentBridge"
+  },
+  {
+    id: "antigravity/gemini-2.5-pro",
+    name: "Gemini 2.5 Pro (Antigravity Free)",
+    provider: "antigravity",
+    targetModel: "gemini-2.5-pro",
+    contextWindow: 1000000,
+    maxOutput: 8192,
+    capabilities: ["tools", "json", "vision"],
+    tier: "free",
+    category: "reasoning",
+    speed: "medium",
+    description: "Free Gemini 2.5 Pro borrowed from Antigravity via AgentBridge"
+  },
+  {
+    id: "kiro/claude-3-7-sonnet",
+    name: "Claude 3.7 Sonnet (Kiro Free)",
+    provider: "kiro",
+    targetModel: "claude-3-7-sonnet-20250219",
+    contextWindow: 200000,
+    maxOutput: 8192,
+    capabilities: ["tools", "json", "vision"],
+    tier: "free",
+    category: "coding",
+    speed: "medium",
+    description: "Free Claude 3.7 Sonnet borrowed from Kiro via AgentBridge"
+  },
+  {
+    id: "kiro/claude-3-5-sonnet",
+    name: "Claude 3.5 Sonnet (Kiro Free)",
+    provider: "kiro",
+    targetModel: "claude-3-5-sonnet-20241022",
+    contextWindow: 200000,
+    maxOutput: 8192,
+    capabilities: ["tools", "json", "vision"],
+    tier: "free",
+    category: "coding",
+    speed: "medium",
+    description: "Free Claude 3.5 Sonnet borrowed from Kiro via AgentBridge"
+  },
   // -------------------------------------------------------------
   // Free Tier Pool (Part of the 1.6 Billion Tokens Capacity)
   // -------------------------------------------------------------
@@ -459,8 +579,9 @@ const CATALOG = [
 const COMBOS = {
   "nutaan-auto-coding": {
     name: "Nutaan Auto-Coding (0 Downtime)",
-    description: "Cascades through Groq -> Cerebras -> Gemini -> OpenRouter so you never hit a rate limit wall",
+    description: "Starts on the keyless Nutaan free pool, then cascades through Groq -> Cerebras -> Gemini -> OpenRouter so you never hit a rate limit wall",
     chain: [
+      "nutaan/nemotron-super",
       "groq/llama-3.3-70b-versatile",
       "cerebras/llama3.3-70b",
       "gemini/gemini-2.0-flash",
@@ -480,8 +601,9 @@ const COMBOS = {
   },
   "nutaan-1.6b-free-pool": {
     name: "1.6B Free Tokens Pool (Unlimited)",
-    description: "Pulls from all 100% free-tier providers to give you endless coding capacity",
+    description: "Pulls from the keyless Nutaan pool plus all 100% free-tier providers to give you endless coding capacity",
     chain: [
+      "nutaan/nemotron-super",
       "cerebras/llama3.3-70b",
       "groq/llama-3.3-70b-versatile",
       "gemini/gemini-2.0-flash",

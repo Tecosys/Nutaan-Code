@@ -59,6 +59,9 @@
     const unread = (v && v.unread) || 0;
     badge.hidden = !unread;
     badge.textContent = String(unread);
+    badge.title = `${unread} unread health alerts`;
+    badge.setAttribute("aria-label", `${unread} unread health alerts`);
+    chip.title = `${overallLabel(v)}${unread ? ` · ${unread} unread health alerts` : ""}. Open device and web-app health.`;
   }
 
   function checkRow(c, compact) {

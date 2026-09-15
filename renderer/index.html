@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob: https://*.tile.openstreetmap.org; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
 <title>Nutaan Code</title>
+<link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
 <link rel="stylesheet" href="styles.css" />
 <link rel="stylesheet" href="studio.css" />
 </head>
@@ -96,7 +97,11 @@
       <div class="nav" id="navList"></div>
 
       <div class="explorer-head">
-        <span class="title" id="explorerLabel">Explorer</span>
+        <button class="explorer-toggle" id="explorerToggle" type="button" title="Collapse / expand">
+          <span class="explorer-caret" id="explorerCaret"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
+          <span class="title" id="explorerLabel">Explorer</span>
+        </button>
+        <span class="explorer-spacer"></span>
         <button class="icon-btn tiny" id="refreshTreeBtn" title="Refresh">
           <svg id="refreshIcon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4.5V10h-5.4"/></svg>
         </button>
@@ -116,13 +121,13 @@
         <div id="chatsView" hidden></div>
       </div>
 
-      <div class="recent">
-        <div class="recent-head">
+      <details class="recent" id="recentDetails">
+        <summary class="recent-head">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5d616b" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>
           <span>Recent</span>
-        </div>
+        </summary>
         <div id="recentList"></div>
-      </div>
+      </details>
 
       <div class="sidebar-status">
         <span class="status-dot" id="statusDot"></span>
@@ -221,18 +226,27 @@
           </div>
           <div class="page-cols">
             <section class="page-col">
-              <div class="page-col-title">Scheduled <span class="count" id="workerCount"></span></div>
-              <div class="worker-list" id="workerList"></div>
-              <div class="page-col-title" style="margin-top:18px">Start from a template</div>
-              <div class="template-grid" id="workerTemplates"></div>
+              <div class="worker-tabs" id="workerTabs">
+                <button class="worker-tab active" data-wtab="mine" type="button">My workers <span class="count" id="workerCount"></span></button>
+                <button class="worker-tab" data-wtab="templates" type="button">Templates</button>
+              </div>
+              <div class="worker-panel" data-wpanel="mine">
+                <div class="worker-list" id="workerList"></div>
+              </div>
+              <div class="worker-panel" data-wpanel="templates" hidden>
+                <div class="template-grid" id="workerTemplates"></div>
+              </div>
             </section>
             <section class="page-col wide">
-              <div class="page-col-title">Updates <span class="count" id="updateCount"></span>
-                <span class="spacer"></span>
-                <button class="link-btn" id="markAllReadBtn" type="button">Mark all read</button>
-                <button class="link-btn" id="clearUpdatesBtn" type="button">Clear</button>
+              <div class="activity-card">
+                <div class="activity-head">
+                  <span class="activity-title">Recent activity <span class="count" id="updateCount"></span></span>
+                  <span class="spacer"></span>
+                  <button class="link-btn" id="markAllReadBtn" type="button">Mark all read</button>
+                  <button class="link-btn" id="clearUpdatesBtn" type="button">Clear</button>
+                </div>
+                <div class="update-feed" id="updateFeed"></div>
               </div>
-              <div class="update-feed" id="updateFeed"></div>
             </section>
           </div>
         </div>
@@ -609,7 +623,7 @@
 
               <div class="menu-wrap">
                 <button class="pill-btn" id="modelBadge" title="Change model">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a855f7" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="9" ry="4"/><ellipse cx="12" cy="12" rx="4" ry="9"/></svg>
+                  <img id="modelBadgeLogo" class="model-item-logo" src="providers/nutaan.png" alt="" />
                   <span class="label-text" id="modelBadgeLabel">No model</span>
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2.6" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
                 </button>
@@ -714,12 +728,7 @@
               <span class="term-spacer"></span>
               <button class="icon-btn tiny" id="termStopBtn" title="Stop this task" hidden>Stop</button>
             </div>
-            <form class="term-input-row" id="termForm">
-              <span class="term-prompt">$</span>
-              <input type="text" id="termInput" class="term-input" placeholder="Run a command…  (e.g. npm test, git status, ls)" autocomplete="off" spellcheck="false" />
-              <button type="submit" class="term-run-btn">Run</button>
-            </form>
-            <pre class="term-output" id="termOutput"><div class="term-empty" id="termEmpty">Type a command above to run it here, or the agent starts one with run_background.</div></pre>
+            <pre class="term-output" id="termOutput"><div class="term-empty" id="termEmpty">No background tasks yet. Use the terminal above to run commands, or the agent starts one with run_background.</div></pre>
           </div>
         </div>
       </div>
@@ -914,6 +923,10 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
         Providers
       </button>
+      <button class="settings-tab" data-tab="tools" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4l-6 6a1.5 1.5 0 0 0 2 2l6-6a4 4 0 0 0 5.4-5.4l-2.3 2.3-2-2 2.3-2.3z"/></svg>
+        Tools
+      </button>
       <button class="settings-tab" data-tab="agentbridge" type="button">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
         AgentBridge
@@ -922,6 +935,7 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
         Advanced
       </button>
+    </div><!-- /settings-nav -->
     <!-- Settings content area -->
     <div class="settings-content">
       <div class="settings-content-head">
@@ -968,7 +982,7 @@
               <div class="or-title-row">
                 <span class="or-status-dot" id="orStatusDot"></span>
                 <span class="or-title">Nutaan OmniRoute</span>
-                <span class="or-badge">1.6B Free Tokens Pool</span>
+                <span class="or-badge">Local model gateway</span>
               </div>
               <div class="or-hero-actions">
                 <button class="btn-primary" id="orStartBtn" type="button">Start Gateway</button>
@@ -976,46 +990,28 @@
               </div>
             </div>
             <p class="or-hero-desc">
-              Universal local AI gateway running directly inside Nutaan Code. Automatically routes, aggregates, and load-balances 1,000+ models across 30+ providers with zero-downtime fallback cascades.
+              Nutaan OmniRoute is a local AI gateway built into Nutaan Code. It runs automatically and already serves a keyless free-model pool — nothing to set up. Open the dashboard to add your own free provider keys (Groq, Gemini, OpenRouter…) and unlock even more models.
             </p>
             <div class="or-endpoint-row">
-              <span class="or-ep-label">Local Endpoint:</span>
+              <span class="or-ep-label">Dashboard:</span>
+              <code class="or-ep-code" id="orDashboardUrl">http://127.0.0.1:20128</code>
+              <button class="btn-primary tiny" id="orOpenDashboard" type="button">Open dashboard ↗</button>
+            </div>
+            <div class="or-endpoint-row">
+              <span class="or-ep-label">API base URL (for Cursor, Claude Code, VS Code…):</span>
               <code class="or-ep-code" id="orEndpointUrl">http://127.0.0.1:20128/v1</code>
               <button class="btn-secondary tiny" id="orCopyEndpointBtn" type="button">Copy</button>
             </div>
           </div>
 
-          <!-- 1.6B Free Tokens Aggregator -->
           <section class="settings-section">
-            <div class="settings-section-title">1.6 Billion Free Tokens Aggregator</div>
-            <div class="or-feature-card">
-              <div class="or-feature-row">
-                <div>
-                  <div class="or-feature-title">Unlimited Free-Tier Pooling</div>
-                  <div class="note">Aggregates monthly free quotas from Groq, Cerebras (2000 tps), SambaNova (DeepSeek-R1), Google Gemini (1M TPM), and OpenRouter (:free) for endless coding with 0 costs.</div>
-                </div>
-                <label class="toggle-label">
-                  <input type="checkbox" id="orFreePoolToggle" checked />
-                  <span class="switch-track"><span class="switch-knob"></span></span>
-                </label>
-              </div>
-            </div>
+            <div class="settings-section-title">Connect providers (optional — free pool already works)</div>
+            <p class="note">Open the local dashboard at <code>http://127.0.0.1:20128</code> to paste free-tier API keys (Groq, Cerebras, SambaNova, Google Gemini, OpenRouter…). Antigravity’s free Gemini and Kiro’s free Claude connect through AgentBridge. Keys are stored privately on your machine.</p>
+            <div class="or-hero-actions"><button class="btn-primary" id="orOpenProviders" type="button">Connect providers ↗</button><button class="btn-secondary" id="orOpenFreeTiers" type="button">Free tiers &amp; quotas ↗</button></div>
+            <div class="field" style="margin-top:16px"><label for="orClientKey">OmniRoute client API key (optional)</label><input id="orClientKey" type="password" autocomplete="new-password" placeholder="Only needed if you set a custom gateway key" /></div>
+            <div class="or-hero-actions"><button class="btn-secondary" id="orSaveClientKey" type="button">Save connection</button><button class="btn-secondary" id="orRefreshProviders" type="button">Sync connected models</button></div>
+            <p class="note" id="orConnectionMessage" role="status"></p>
           </section>
-
-          <!-- Auto-Fallback & Combo Chains -->
-          <section class="settings-section">
-            <div class="settings-section-title">Auto-Fallback Combos (0 Downtime)</div>
-            <div class="field">
-              <label for="orActiveCombo">Active Routing Combo</label>
-              <select id="orActiveCombo" class="or-select">
-                <option value="nutaan-auto-coding" selected>Nutaan Auto-Coding (Groq ➔ Cerebras ➔ Gemini ➔ OpenRouter)</option>
-                <option value="nutaan-reasoning-flow">Nutaan Reasoning Flow (SambaNova R1 ➔ Gemini Thinking ➔ DeepSeek R1 ➔ o3-mini)</option>
-                <option value="nutaan-1.6b-free-pool">1.6B Free Tokens Pool (Unlimited Round-Robin)</option>
-              </select>
-              <div class="note">When your active model hits a rate-limit (429) or temporary server error, OmniRoute automatically fails over to the next capable model in milliseconds.</div>
-            </div>
-          </section>
-
           <!-- Intercepted IDEs & MITM Integration -->
           <section class="settings-section">
             <div class="settings-section-title">Internal MITM Interception</div>
@@ -1050,7 +1046,7 @@
               <div class="usage-tile"><div class="usage-num" id="orStatReq">0</div><div class="usage-lbl">Total Queries</div></div>
               <div class="usage-tile"><div class="usage-num" id="orStatOk">0</div><div class="usage-lbl">Successful</div></div>
               <div class="usage-tile"><div class="usage-num" id="orStatFb">0</div><div class="usage-lbl">Fallbacks Used</div></div>
-              <div class="usage-tile"><div class="usage-num" id="orStatModels">1,200+</div><div class="usage-lbl">Available Models</div></div>
+              <div class="usage-tile"><div class="usage-num" id="orStatModels">0</div><div class="usage-lbl">Available Models</div></div>
             </div>
           </section>
         </div>
@@ -1064,6 +1060,7 @@
             </div>
             <div class="model-page-actions">
               <button class="btn-secondary" id="refreshModelsBtn" type="button">Refresh</button>
+              <button class="btn-secondary" id="testSelectedModelBtn" type="button">Test selected</button>
               <button class="btn-secondary" id="testModelsBtn" type="button">Test all</button>
             </div>
           </div>
@@ -1080,7 +1077,7 @@
             <input type="text" id="modelSearchInput" class="model-search-input" placeholder="Search 1,000+ models (e.g. DeepSeek, Groq, Cerebras, Claude, Gemini)..." />
             <div class="model-chips" id="modelFilterChips">
               <button type="button" class="m-chip active" data-filter="all">All Models</button>
-              <button type="button" class="m-chip" data-filter="free">1.6B Free Pool</button>
+              <button type="button" class="m-chip" data-filter="free">Free-tier models</button>
               <button type="button" class="m-chip" data-filter="coding">Coding</button>
               <button type="button" class="m-chip" data-filter="reasoning">Reasoning</button>
               <button type="button" class="m-chip" data-filter="local">Local (Ollama)</button>
@@ -1123,9 +1120,10 @@
               <div class="field"><label for="peBaseUrl">Endpoint (OpenAI-compatible)</label><input type="text" id="peBaseUrl" placeholder="https://…/v1" /></div>
               <div class="field"><label for="peKey">API key</label><input type="password" id="peKey" placeholder="Your provider API key" autocomplete="off" /></div>
               <div class="field">
-                <label>Models <span class="byo-sub">add as many model ids as you like</span></label>
+                <label>Models <span class="byo-sub">auto-detected from your key — or add ids manually</span></label>
                 <div class="pe-model-add">
                   <input type="text" id="peModelInput" placeholder="model id, e.g. openai/gpt-4o" />
+                  <button class="btn-primary" id="peDetectModels" type="button">Detect</button>
                   <button class="btn-secondary" id="peModelAdd" type="button">Add</button>
                 </div>
                 <div class="pe-model-list" id="peModelList"></div>
@@ -1140,9 +1138,12 @@
             <input type="password" id="apiKeyInput" hidden />
             <button id="useBuiltInBtn" type="button" hidden></button>
           </section>
+        </div>
 
+        <!-- TAB: TOOLS (MCP & Agent Extensions) -->
+        <div class="settings-page" data-page="tools" hidden>
           <section class="settings-section">
-            <div class="settings-section-title">Tools (MCP &amp; Agent Extensions)</div>
+            <div class="settings-section-title">Tools &amp; integrations</div>
             <div class="note">Switch on the apps and services the agent can use. Each one becomes tools it can call — an MCP server's tools, a task handed to another coding agent, or a signed-in web app it can drive.</div>
             <div class="provider-list tool-list" id="toolList"></div>
             <button class="btn-secondary add-provider-btn" id="addToolBtn" type="button">+ Add a custom MCP server</button>
@@ -1285,6 +1286,9 @@
   </div>
 </div>
 
+<script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
+<script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+<script src="terminal.js"></script>
 <script src="app.js"></script>
 <script src="monitor.js"></script>
 <script src="studio.js"></script>

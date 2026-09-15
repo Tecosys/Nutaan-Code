@@ -452,8 +452,23 @@
       { id: "settings", label: "Settings", icon: "gear", badge: "" },
     ];
     navList.innerHTML = "";
+    const more = document.createElement("details");
+    more.className = "nav-more";
+    more.open = !!settings.navMoreExpanded;
+    const summary = document.createElement("summary");
+    summary.innerHTML =
+      `<span class="nav-more-caret"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></span>` +
+      `<span class="nav-more-label">Workspace</span>`;
+    more.appendChild(summary);
+    more.addEventListener("toggle", () => {
+      if (!more.isConnected) return;
+      if (!!settings.navMoreExpanded === more.open) return;
+      settings.navMoreExpanded = more.open;
+      window.nutaan.setSettings(settings).catch(console.error);
+    });
     for (const d of defs) {
-      const row = document.createElement("div");
+      const row = document.createElement("button");
+      row.type = "button";
       row.className = "nav-row" + (d.id === sidebarView ? " active" : "");
       row.innerHTML =
         `<span class="nav-icon">${ICONS[d.icon]}</span>` +
@@ -471,8 +486,10 @@
         if (d.id === "workers") loadWorkers();
         if (d.id === "health") loadHealth();
       });
-      navList.appendChild(row);
+      if (["chats", "files"].includes(d.id)) navList.appendChild(row);
+      else more.appendChild(row);
     }
+    navList.appendChild(more);
   }
 
   function renderExplorer() {
@@ -1048,12 +1065,27 @@
     await buildTreeNode(fileTreeEl, ".", 0);
   }
 
-  refreshTreeBtn.addEventListener("click", async () => {
+  refreshTreeBtn.addEventListener("click", async (e) => {
+    e.stopPropagation();
     refreshIcon.classList.add("spinning");
     contextFiles = null;
     await refreshTree();
     await refreshGit();
     setTimeout(() => refreshIcon.classList.remove("spinning"), 300);
+  });
+
+  // Collapsible Explorer — remembered across sessions.
+  function applyExplorerCollapsed() {
+    const collapsed = !!settings.explorerCollapsed;
+    const body = el("explorerBody");
+    const caret = el("explorerCaret");
+    if (body) body.hidden = collapsed;
+    if (caret) caret.classList.toggle("collapsed", collapsed);
+  }
+  el("explorerToggle")?.addEventListener("click", () => {
+    settings.explorerCollapsed = !settings.explorerCollapsed;
+    window.nutaan.setSettings(settings).catch(() => {});
+    applyExplorerCollapsed();
   });
 
   // ---------- Code panel ----------
@@ -1079,7 +1111,22 @@
     fileTabs.hidden = !isCode;
     browserTabsEl.hidden = !isBrowser;
     if (isBrowser && browserTabs.length === 0) addBrowserTab("about:blank");
-    if (isTerm) refreshTerminal();
+    if (isBrowser) {
+      // <webview> often paints at its intrinsic 300×150 in the top-left until a
+      // reflow lands (that's why a manual resize fixed it). Nudge it once the
+      // panel is actually visible so it fills the viewport immediately.
+      requestAnimationFrame(() => {
+        try {
+          window.dispatchEvent(new Event("resize"));
+          const wv = activeWebview();
+          if (wv) { wv.style.height = "99.9%"; void wv.offsetHeight; wv.style.height = ""; }
+        } catch {}
+      });
+    }
+    if (isTerm) {
+      refreshTerminal();
+      window.dispatchEvent(new CustomEvent("terminal:open", { detail: { cwd: activePath || null } }));
+    }
   }
 
   function openPanel(mode) {
@@ -1535,6 +1582,11 @@
     if (t) browserAddress.value = t.url === "about:blank" ? "" : t.url;
     renderBrowserTabs();
     applyDeviceScale();
+    // Force the freshly-shown <webview> to fill its host — without this it can
+    // paint small in the top-left corner until the user manually resizes.
+    if (t && t.view) requestAnimationFrame(() => {
+      try { t.view.style.height = "99.9%"; void t.view.offsetHeight; t.view.style.height = ""; } catch {}
+    });
   }
 
   function closeBrowserTab(id) {
@@ -1900,6 +1952,33 @@
     row.className = "row " + role;
     const bubble = document.createElement("div");
     bubble.className = "bubble";
+    // Swarm report lands in history as a minimized story the user can expand.
+    if (role === "assistant" && typeof content === "string" && content.startsWith("[Nutaan Swarm report]")) {
+      const body = content.replace(/^\[Nutaan Swarm report\]\s*/, "");
+      const om = body.match(/outcome[^\n]*\n+([^\n]+)/i);
+      const preview = ((om ? om[1] : body.split("\n").find((l) => l.trim())) || "").replace(/[#*`>]/g, "").trim();
+      const details = document.createElement("details");
+      details.className = "swarm-report";
+      const summary = document.createElement("summary");
+      summary.innerHTML =
+        `<span class="sr-mark">◎</span>` +
+        `<span class="sr-head"><span class="sr-title">Nutaan Swarm report</span>` +
+        `<span class="sr-preview">${escapeHtml(preview.slice(0, 96))}</span></span>` +
+        `<span class="sr-chev"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></span>`;
+      const inner = document.createElement("div");
+      inner.className = "swarm-report-body";
+      inner.innerHTML = renderMarkdownLite(body);
+      linkifyPaths(inner); enrichServiceLinks(inner);
+      details.appendChild(summary);
+      details.appendChild(inner);
+      bubble.classList.add("swarm-report-bubble");
+      bubble.appendChild(details);
+      row.appendChild(bubble);
+      thread.appendChild(row);
+      renderEmptyVisibility();
+      scrollToBottom();
+      return bubble;
+    }
     bubble.innerHTML = role === "assistant" ? renderMarkdownLite(content) : escapeHtml(content);
     if (role === "assistant") { linkifyPaths(bubble); enrichServiceLinks(bubble); enrichAgentListing(bubble, content); }
     row.appendChild(bubble);
@@ -2671,8 +2750,11 @@
 
   // ---------- Models ----------
   async function refreshModels() {
-    if (!settings.nutaanKey) {
-      setStatus(false, "Not activated");
+    if (!settings.nutaanKey && !settings.baseUrl) {
+      nutaanModels = [];
+      await loadOmniRouteCatalog(true);
+      rebuildModels();
+      setStatus(_omniCatalogCache.length > 0, _omniCatalogCache.length ? "Providers connected" : "Connect a provider");
       return;
     }
     const res = await window.nutaan.listModels(settings.baseUrl, settings.apiKey, settings.nutaanKey);
@@ -2691,9 +2773,15 @@
     availableModels = res.models;
     nutaanModels = res.models;
 
-    // If the saved model is a Nutaan one that's no longer in the catalog, fall back — but leave a
-    // user-managed model (modelProviderId set) alone, it lives in the user's own provider.
-    if (!settings.modelProviderId && !res.models.includes(settings.model)) {
+    // Keep the selected model to one that actually works without setup: a managed
+    // model, the keyless nutaan gateway pool, or a provider the user connected. An
+    // OmniRoute model from an unconnected provider (Kiro/Antigravity/Groq/…) is reset
+    // to the managed backend so the user is never stuck on a hidden, failing model.
+    const anyProviderConnected = (_omniProviders || []).some((p) => p.hasKey);
+    const onUnconnectedGateway = settings.modelProviderId === "omniroute"
+      && !/^nutaan\//i.test(settings.model || "") && !anyProviderConnected;
+    const managedMissing = !settings.modelProviderId && !res.models.includes(settings.model);
+    if (managedMissing || onUnconnectedGateway) {
       const fallback = res.defaultModel && res.models.includes(res.defaultModel) ? res.defaultModel : res.models[0];
       if (fallback) {
         settings.model = fallback;
@@ -2702,10 +2790,14 @@
       }
     }
     rebuildModels();
+    // Probe which managed models actually respond, in the background, then hide the
+    // dead ones from the picker. Cached, so it's cheap on subsequent opens.
+    refreshModelHealth();
   }
 
   let _omniCatalogCache = [];
   let _omniCombosCache = {};
+  let _omniProviders = [];
   let _omniModelsLoaded = false;
 
   function getProviderLogo(providerId) {
@@ -2717,6 +2809,11 @@
     if (id.includes("samba")) return "providers/sambanova.svg";
     if (id.includes("gemini") || id.includes("google")) return "providers/google.png";
     if (id.includes("openrouter")) return "providers/openrouter.png";
+    if (id.includes("agentrouter") || id.includes("agent-router")) return "providers/agentrouter.svg";
+    if (id.includes("azure")) return "providers/azure.svg";
+    if (id.includes("bedrock") || id.includes("aws")) return "providers/aws.svg";
+    if (id.includes("antigravity")) return "providers/google.png";
+    if (id.includes("kiro")) return "providers/anthropic.png";
     if (id.includes("mistral") || id.includes("codestral")) return "providers/mistral.png";
     if (id.includes("openai") || id.includes("gpt") || id.includes("o3") || id.includes("o1")) return "providers/openai.png";
     if (id.includes("together")) return "providers/together.png";
@@ -2725,13 +2822,14 @@
     return "providers/nutaan.png";
   }
 
-  async function loadOmniRouteCatalog() {
-    if (_omniModelsLoaded || !window.nutaan || !window.nutaan.gateway) return;
+  async function loadOmniRouteCatalog(force = false) {
+    if ((!force && _omniModelsLoaded) || !window.nutaan || !window.nutaan.gateway) return;
     try {
       const res = await window.nutaan.gateway.getModels();
       if (res && res.models) {
         _omniCatalogCache = res.models;
         _omniCombosCache = res.combos || {};
+        _omniProviders = res.providers || [];
         _omniModelsLoaded = true;
         rebuildModels();
       }
@@ -2740,21 +2838,87 @@
     }
   }
 
+  // Health of managed models is probed live; a model that fails is hidden from the
+  // picker so only working models are ever selectable.
+  function modelHealthy(id) {
+    const h = (settings.modelHealth || {})[id];
+    return !h || h.ok !== false; // untested or passing → show; failed → hide
+  }
+
+  let _healthTesting = false;
+  const MODEL_HEALTH_TTL = 30 * 60 * 1000;
+  // Probe the managed models in the background so the picker shows only ones that
+  // actually respond. Cached per model for 30 min so opening the app doesn't hammer
+  // the backend every time.
+  const HEALTH_PROBE_VERSION = 2; // bump when the probe logic changes, to re-test all
+  async function refreshModelHealth() {
+    if (_healthTesting) return;
+    if (!settings.nutaanKey && !settings.baseUrl) return;
+    if (!nutaanModels.length) return;
+    const now = Date.now();
+    // Old results from a different probe are unreliable — drop them and re-test.
+    if (settings.modelHealthVersion !== HEALTH_PROBE_VERSION) {
+      settings.modelHealth = {};
+      settings.modelHealthVersion = HEALTH_PROBE_VERSION;
+    }
+    settings.modelHealth = settings.modelHealth || {};
+    const toTest = nutaanModels
+      .filter((id) => !/^azure\//i.test(id))
+      .filter((id) => { const h = settings.modelHealth[id]; return !h || (now - (h.at || 0)) > MODEL_HEALTH_TTL; });
+    if (!toTest.length) return;
+    _healthTesting = true;
+    try {
+      // Force the managed backend (omit modelProviderId) — this pool lives on nutaan.com.
+      const res = await window.nutaan.testModels({
+        models: toTest,
+        baseUrl: settings.baseUrl,
+        apiKey: settings.apiKey,
+        nutaanKey: settings.nutaanKey,
+      });
+      if (res && res.ok && Array.isArray(res.results)) {
+        for (const r of res.results) settings.modelHealth[r.model] = { ok: !!r.ok, at: Date.now() };
+        await window.nutaan.setSettings(settings);
+        rebuildModels();
+        // If the model in use just failed, jump to a healthy one so the next send works.
+        if (!settings.modelProviderId && settings.modelHealth[settings.model] && settings.modelHealth[settings.model].ok === false) {
+          const good = nutaanModels.find((id) => !/^azure\//i.test(id) && modelHealthy(id));
+          if (good) { settings.model = good; await window.nutaan.setSettings(settings); updateModelBadge(); }
+        }
+      }
+    } catch (e) {
+      console.warn("model health probe:", e);
+    } finally {
+      _healthTesting = false;
+    }
+  }
+
   // Combine the Nutaan catalog with OmniRoute models and user-managed provider models
   function rebuildModels() {
     aggregatedModels = [];
-    for (const id of nutaanModels) aggregatedModels.push({ id, providerId: "", providerName: "Nutaan", providerType: "nutaan" });
+    // Managed free pool. Hide paid azure ids and any model that failed the live health
+    // test, so the dropdown only ever offers models that actually respond.
+    for (const id of nutaanModels) {
+      if (/^azure\//i.test(id)) continue;
+      if (!modelHealthy(id)) continue;
+      aggregatedModels.push({ id, providerId: "", providerName: "Nutaan", providerType: "nutaan" });
+    }
     for (const p of settings.customProviders || []) {
       for (const id of p.models || []) aggregatedModels.push({ id, providerId: p.id, providerName: p.name, providerType: p.type });
     }
-    // Inject OmniRoute 1,000+ Models Catalog
+    // Gateway catalog: surface the keyless nutaan managed pool (works 24/7) plus any
+    // provider the user has actually connected with their own key. Providers that need
+    // credentials we don't have (Antigravity/Kiro/Groq/…) are not shown until connected,
+    // so the picker only ever offers models that actually respond.
+    const showProviders = new Set(["nutaan"]);
+    for (const p of (_omniProviders || [])) if (p.hasKey) showProviders.add(p.id);
     if (_omniCatalogCache && _omniCatalogCache.length) {
       for (const m of _omniCatalogCache) {
+        if (!showProviders.has(m.provider)) continue;
         if (!aggregatedModels.some((existing) => existing.id === m.id)) {
           aggregatedModels.push({
             id: m.id,
             name: m.name,
-            providerId: m.provider,
+            providerId: "omniroute",
             providerName: (m.provider || "OmniRoute").toUpperCase(),
             providerType: m.provider,
             tier: m.tier,
@@ -2792,6 +2956,11 @@
   function updateModelBadge() {
     modelBadgeLabel.textContent = settings.model ? basename(settings.model) : "No model";
     modelBadge.title = settings.model || "No model set";
+    const logo = el("modelBadgeLogo");
+    if (logo) {
+      logo.src = getProviderLogo(settings.model);
+      logo.onerror = () => { logo.onerror = null; logo.src = "providers/nutaan.png"; };
+    }
   }
 
   async function selectModel(id, providerId = "") {
@@ -2827,9 +2996,9 @@
           item.className = "menu-item mono model-item" + (active ? " active" : "");
           const mlogo = document.createElement("img");
           mlogo.className = "model-item-logo";
-          mlogo.src = "providers/" + (m.providerType || "nutaan") + ".png";
+          mlogo.src = getProviderLogo(m.providerType || m.id);
           mlogo.alt = "";
-          mlogo.onerror = () => { mlogo.style.visibility = "hidden"; };
+          mlogo.onerror = () => { mlogo.onerror = null; mlogo.src = "providers/nutaan.png"; };
           const mname = document.createElement("div");
           mname.className = "name";
           mname.title = m.id;
@@ -2838,6 +3007,12 @@
           item.appendChild(mname);
           item.addEventListener("click", () => selectModel(m.id, m.providerId));
           modelMenu.appendChild(item);
+        }
+        if (!_omniModelsLoaded) {
+          const loading = document.createElement("div");
+          loading.className = "menu-loading";
+          loading.innerHTML = `<span class="menu-spinner"></span><span>More models loading…</span>`;
+          modelMenu.appendChild(loading);
         }
       }
     }
@@ -3212,13 +3387,42 @@
   // Distinct from Add Context: that references a file already in the project by path, this
   // pulls a file in from anywhere on disk and puts its actual content into the message.
   let attachments = [];
+  // Caps silent model auto-switch+retry per user turn so it cascades through a
+  // few models but never loops forever.
+  let _autoSwitchCount = 0;
+  let _lastTurnHadImage = false;
+  const MAX_AUTO_SWITCH = 3;
+  // A model that fails is put on a TEMPORARY cooldown (auto-watch), not disabled
+  // forever — many failures are transient (a provider briefly down, rate limited).
+  // After the cooldown it's automatically eligible again ("freed").
+  const MODEL_COOLDOWN_MS = 5 * 60 * 1000;
+  function modelOnCooldown(id) {
+    const until = (settings.modelCooldowns || {})[id];
+    return !!until && Date.now() < until;
+  }
+  // Skip a model only if the user disabled it OR it's on a live cooldown.
+  function modelUsable(id) {
+    return !!id && !(settings.disabledModels || []).includes(id) && !modelOnCooldown(id);
+  }
+  function putModelOnCooldown(id) {
+    if (!id) return;
+    settings.modelCooldowns = settings.modelCooldowns || {};
+    settings.modelCooldowns[id] = Date.now() + MODEL_COOLDOWN_MS;
+    // Drop any cooldowns that have already lapsed so the map stays small and
+    // recovered models are freed automatically.
+    const now = Date.now();
+    for (const [k, v] of Object.entries(settings.modelCooldowns)) {
+      if (!v || now >= v) delete settings.modelCooldowns[k];
+    }
+  }
 
   function renderAttachments() {
     attachRow.innerHTML = "";
     attachments.forEach((a, i) => {
       const chip = document.createElement("span");
-      chip.className = "attach-chip";
-      chip.innerHTML = `<span>${escapeHtml(a.name)}</span><button title="Remove">✕</button>`;
+      chip.className = "attach-chip" + (a.kind === "image" && a.dataUrl ? " attach-image" : "");
+      const thumb = (a.kind === "image" && a.dataUrl) ? `<img class="attach-thumb" src="${a.dataUrl}" alt="" />` : "";
+      chip.innerHTML = `${thumb}<span>${escapeHtml(a.name)}</span><button title="Remove">✕</button>`;
       chip.querySelector("button").addEventListener("click", () => {
         attachments.splice(i, 1);
         renderAttachments();
@@ -3249,6 +3453,43 @@
     renderAttachments();
     updateSendState();
   });
+
+  // Heuristic: does the selected model accept images? Text-only models must not be
+  // sent an image (they answer with a server error), so we gate on this instead.
+  function looksMultimodal(id) {
+    return /gemini|gpt-4o|gpt-4\.1|gpt-4o|gpt-5|o3|o4|claude-3|claude-opus|claude-sonnet|claude-haiku|vision|multimodal|llava|pixtral|qwen.*vl|internvl|kimi|nova-(pro|lite)|-vl\b|\bvl-/i.test(String(id || ""));
+  }
+  function warnIfTextOnlyForImages() {
+    if (!attachments.some((a) => a.kind === "image")) return;
+    if (looksMultimodal(settings.model)) return;
+    appendNoticeCard(`"${settings.model}" is a text-only model and can't read images. Pick a multimodal model (e.g. a Gemini or GPT-4o model) from the model menu below, then send.`);
+  }
+
+  // Paste an image straight into the composer — a multimodal model reads it immediately.
+  async function handlePastedImages(e) {
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    const imageItems = [...items].filter((it) => it.type && it.type.startsWith("image/"));
+    if (!imageItems.length) return;
+    e.preventDefault();
+    for (const it of imageItems) {
+      const blob = it.getAsFile();
+      if (!blob) continue;
+      const dataUrl = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = reject;
+        r.readAsDataURL(blob);
+      }).catch(() => null);
+      if (!dataUrl) continue;
+      const ext = ((blob.type.split("/")[1] || "png").split("+")[0]);
+      attachments.push({ kind: "image", name: `pasted-image-${Date.now().toString(36)}.${ext}`, dataUrl });
+    }
+    renderAttachments();
+    updateSendState();
+    warnIfTextOnlyForImages();
+  }
+  input.addEventListener("paste", handlePastedImages);
 
   // ---------- Project / chat management ----------
   function systemPrompt(root) {
@@ -3624,9 +3865,15 @@
       return;
     }
     const text = input.value.trim();
-    if (!text) return;
-    if (!settings.nutaanKey) {
-      showActivation("Activate Nutaan Code with your nutaan.com API key to start chatting.");
+    if (!text && !attachments.length) return;
+    // Block sending an image to a text-only model — it would just error out.
+    if (attachments.some((a) => a.kind === "image") && !looksMultimodal(settings.model)) {
+      warnIfTextOnlyForImages();
+      return;
+    }
+    if (!settings.model || (!settings.nutaanKey && !settings.baseUrl && !settings.modelProviderId)) {
+      await openSettings();
+      switchSettingsTab("omniroute");
       return;
     }
     const proj = activeProject();
@@ -3648,6 +3895,7 @@
     }
 
     chat.messages.push({ role: "user", content: buildUserContent(text) });
+    _lastTurnHadImage = attachments.some((a) => a.kind === "image");
     resetFileGroup();
     appendBubble("user", attachments.length ? `${attachments.map((a) => `📎 ${a.name}`).join("\n")}\n\n${text}` : text);
     attachments = [];
@@ -3696,11 +3944,22 @@
       showThinking("Thinking");
     }
 
+    _autoSwitchCount = 0;
+    runAgentTurn();
+  }
+
+  // Re-send the current conversation with whatever model is now selected. Used both
+  // for a fresh turn and for a silent auto-retry after a model auto-switch.
+  function runAgentTurn() {
+    const proj = activeProject();
+    const chat = activeChat();
+    if (!proj || !chat) return;
     window.nutaan.sendAgentMessage({
       root: proj.path,
       baseUrl: settings.baseUrl,
       apiKey: settings.apiKey,
       nutaanKey: settings.nutaanKey,
+      omnirouteApiKey: settings.omnirouteApiKey,
       customProviders: settings.customProviders,
       modelProviderId: settings.modelProviderId,
       model: settings.model,
@@ -3980,16 +4239,38 @@
     }
 
     // A model id left over from a previous Server URL isn't in the live catalog at all — that
-    // alone is a reliable signal the model is wrong for this backend, independent of whatever
-    // error text the server happens to return for a request it can't fulfil.
+    // alone is a reliable signal the model is wrong for this backend. But a valid-looking model
+    // can also fail at the backend (500s, "no available channel", a model that can't read the
+    // pasted image, an expired route). In both cases: disable the model that just failed and
+    // cascade to the next one, retrying silently — never dump a raw server error on the user.
     const unknownModel = settings.model && availableModels.length > 0 && !availableModels.includes(settings.model);
-    if (unknownModel) {
-      const fallback = availableModels[0];
+    const backendGlitch = /internal server error|no available channel|无可用渠道|not a valid model|unavailable|temporarily|overloaded|\b5\d\d\b|bad_response|rate.?limit|too many requests|does not support (images|vision)|image|multimodal/i.test(message || "");
+    const canSwitch = availableModels.length > 0 && _autoSwitchCount < MAX_AUTO_SWITCH;
+    if ((unknownModel || backendGlitch) && canSwitch) {
       const badModel = settings.model;
-      settings.model = fallback;
+      // Put the failing model on a temporary cooldown (auto-watch) — never a
+      // permanent disable, since it may just be briefly down. It's freed again
+      // automatically once the cooldown lapses.
+      putModelOnCooldown(badModel);
+      const fallback = availableModels.find((m) => m !== badModel && modelUsable(m) && (!_lastTurnHadImage || looksMultimodal(m)));
+      if (fallback) {
+        _autoSwitchCount++;
+        settings.model = fallback;
+        // availableModels come from the Nutaan managed backend — route there, not
+        // through the OmniRoute gateway (which needs provider keys the user may not
+        // have). This is what makes it "just work" without opening Settings.
+        settings.modelProviderId = "";
+        window.nutaan.setSettings(settings);
+        updateModelBadge();
+        appendNoticeCard(`"${badModel}" is temporarily unavailable — switched to "${fallback}" and retrying (it'll be retried automatically later)…`);
+        setRunning(true);
+        showThinking();
+        runAgentTurn();
+        return;
+      }
+      // Everything is on cooldown right now — keep the model and tell the user gently.
       window.nutaan.setSettings(settings);
-      updateModelBadge();
-      appendBubble("error", `${message}\n\n"${badModel}" isn't a valid model for this backend. Switched to "${fallback}" — try sending again.`);
+      appendBubble("error", `Every available model is briefly unavailable right now. It'll recover on its own — try again in a minute, or pick another in Settings → Models.`);
       setRunning(false);
       return;
     }
@@ -4255,6 +4536,7 @@
       omniroute: "OmniRoute Universal Gateway",
       models: "Models Catalog",
       providers: "Model Providers",
+      tools: "Tools & Integrations",
       agentbridge: "AgentBridge (Internal MITM)",
       advanced: "Advanced Settings"
     };
@@ -4263,7 +4545,8 @@
 
     if (tabId === "omniroute") renderOmniRouteTab();
     if (tabId === "models") renderModelTable();
-    if (tabId === "providers") { renderProviders(); if (typeof renderTools === "function") renderTools(); }
+    if (tabId === "providers") renderProviders();
+    if (tabId === "tools") { if (typeof renderTools === "function") renderTools(); }
     if (tabId === "agentbridge") renderAgentBridgeTab();
   }
 
@@ -4307,7 +4590,8 @@
           if (statOk) statOk.textContent = st.stats.successfulRequests || 0;
           if (statFb) statFb.textContent = st.stats.fallbacksTriggered || 0;
         }
-        if (statModels) statModels.textContent = `${(aggregatedModels && aggregatedModels.length) || 1200}+`;
+        if (statModels) statModels.textContent = String(st.modelsCount || 0);
+        if (st.error) el("orConnectionMessage").textContent = st.error;
       } catch (err) {
         console.warn("Error fetching gateway status:", err);
       }
@@ -4334,8 +4618,11 @@
         startBtn.disabled = true;
         startBtn.textContent = "Starting…";
         try {
-          await window.nutaan.gateway.start({ port: 20128 });
+          const result = await window.nutaan.gateway.start({ port: 20128 });
+          if (result.error) throw new Error(result.error);
           await updateStatus();
+        } catch (error) {
+          el("orConnectionMessage").textContent = error.message;
         } finally {
           startBtn.disabled = false;
           startBtn.textContent = "Start Gateway";
@@ -4368,9 +4655,71 @@
     }
 
     await updateStatus();
+    await refreshGatewayConnections();
   }
 
   // ---------- Enhanced Model Table Rendering ----------
+  async function refreshGatewayConnections() {
+    const message = el("orConnectionMessage");
+    message.textContent = "Syncing models from OmniRoute…";
+    const result = await window.nutaan.gateway.getModels();
+    if (result.error) { message.textContent = result.error; return; }
+    _omniCatalogCache = result.models || [];
+    _omniModelsLoaded = true;
+    rebuildModels();
+    message.textContent = _omniCatalogCache.length + " models returned by OmniRoute. Test selected verifies the selected route.";
+    el("orStatModels").textContent = String(_omniCatalogCache.length);
+    el("orClientKey").value = settings.omnirouteApiKey || "";
+    updateSendState();
+  }
+  el("orRefreshProviders")?.addEventListener("click", () => refreshGatewayConnections().catch(error => { el("orConnectionMessage").textContent = error.message; }));
+  // Both buttons open the local dashboard (root) — that is where the provider
+  // key fields, free-tier pool and connect flow all live in the native gateway.
+  for (const id of ["orOpenProviders", "orOpenFreeTiers", "orOpenDashboard"]) {
+    el(id)?.addEventListener("click", async () => {
+      el(id).disabled = true;
+      try {
+        const result = await window.nutaan.gateway.start({ port: 20128 });
+        if (result && result.error) throw new Error(result.error);
+        await window.nutaan.openExternal("http://127.0.0.1:20128/");
+      } catch(error) { el("orConnectionMessage").textContent = error.message; }
+      finally { el(id).disabled = false; }
+    });
+  }
+  el("orSaveClientKey")?.addEventListener("click", async () => {
+    settings.omnirouteApiKey = el("orClientKey").value.trim();
+    await window.nutaan.setSettings(settings);
+    await refreshGatewayConnections();
+  });
+
+  async function testModelConnections(selectedOnly) {
+    const buttons = [el("testModelsBtn"), el("testSelectedModelBtn")];
+    buttons.forEach(button => { button.disabled = true; });
+    const status = el("modelTestStatus");
+    const models = selectedOnly ? [{ id: settings.model, providerId: settings.modelProviderId || "" }] : aggregatedModels;
+    settings.modelHealth ||= {};
+    let passed = 0, checked = 0;
+    try {
+      for (const model of models.filter(m => m.id)) {
+        status.textContent = `Testing ${++checked}/${models.length}: ${model.id}`;
+        const result = await window.nutaan.testModels({ ...settings, modelProviderId: model.providerId || "", models: [model.id] });
+        const health = result.results?.[0] || { ok: false, error: result.error || "No test result" };
+        settings.modelHealth[modelHealthKey(model.providerId || "", model.id)] = { ...health, checkedAt: Date.now() };
+        if (health.ok) passed++;
+        renderModelTable();
+      }
+      await window.nutaan.setSettings(settings);
+      const last = selectedOnly && settings.modelHealth[modelHealthKey(settings.modelProviderId || "", settings.model)];
+      status.textContent = `${passed}/${checked} models responded.${last?.error ? ` ${last.error}` : ""}`;
+    } catch(error) { status.textContent = error.message; }
+    finally { buttons.forEach(button => { button.disabled = false; }); }
+  }
+  el("testModelsBtn")?.addEventListener("click", () => testModelConnections(false));
+  el("testSelectedModelBtn")?.addEventListener("click", () => testModelConnections(true));
+
+  function modelHealthKey(providerId, modelId) {
+    return `${providerId || ""}::${modelId || ""}`;
+  }
   function renderModelTable() {
     const tbody = el("modelTableBody");
     if (!tbody) return;
@@ -4399,7 +4748,7 @@
     }
 
     if (!aggregatedModels || !aggregatedModels.length) {
-      tbody.innerHTML = `<tr><td colspan="5" class="model-table-empty">Loading 1,000+ models from OmniRoute catalog…</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="5" class="model-table-empty">No connected models. Open OmniRoute to connect a provider, or connect your Nutaan account.</td></tr>`;
       return;
     }
 
@@ -4449,17 +4798,17 @@
       tr.className = isActive ? "model-row active-model" : "model-row";
       tr.innerHTML = `
         <td class="model-id-cell">
-          <b>${escapeHtml(m.name || m.id)}</b>${isFreePool ? ' <span class="free-pool-badge">1.6B Pool</span>' : ''}
+          <b>${escapeHtml(m.name || m.id)}</b>${isFreePool ? ' <span class="free-pool-badge">Free tier</span>' : ''}
           <div style="font-size:11px;color:var(--text-muted);font-family:var(--mono);margin-top:2px;">${escapeHtml(m.id)}</div>
         </td>
         <td>
           <div class="provider-logo-cell">
-            <img class="provider-logo-img" src="${getProviderLogo(m.providerId || m.providerType)}" alt="" />
+            <img class="provider-logo-img" src="${getProviderLogo(m.providerType || m.id)}" alt="" />
             <span>${escapeHtml(m.providerName || "Nutaan")}</span>
           </div>
         </td>
         <td>
-          <span class="context-badge">${m.context_window || "128k"}</span>
+          <span class="context-badge">${escapeHtml(m.context_window || "—")}</span>
           ${m.speed ? `<span class="speed-badge">${escapeHtml(m.speed)}</span>` : ""}
         </td>
         <td>${statusHtml}</td>
@@ -4482,6 +4831,7 @@
     const btn = el("refreshModelsBtn");
     if (btn) { btn.disabled = true; btn.textContent = "Refreshing…"; }
     await refreshModels();
+    await loadOmniRouteCatalog(true);
     renderModelTable();
     if (btn) { btn.disabled = false; btn.textContent = "Refresh"; }
   });
@@ -4906,14 +5256,16 @@
     { type: "groq", name: "Groq (Free Tier)", baseUrl: "https://api.groq.com/openai/v1", color: "#f55036", mark: "gq" },
     { type: "google", name: "Google Gemini (Free Tier)", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", color: "#4285f4", mark: "G" },
     { type: "openrouter", name: "OpenRouter (Free + Paid)", baseUrl: "https://openrouter.ai/api/v1", color: "#6467f2", mark: "OR" },
+    { type: "agentrouter", name: "AgentRouter", baseUrl: "https://agentrouter.org/v1", color: "#7c3aed", mark: "AR" },
     { type: "deepseek", name: "DeepSeek (Official)", baseUrl: "https://api.deepseek.com/v1", color: "#4d6bfe", mark: "DS" },
     { type: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", color: "#10a37f", mark: "AI" },
+    { type: "azure", name: "Azure OpenAI", baseUrl: "https://YOUR-RESOURCE.openai.azure.com", color: "#0078d4", mark: "Az" },
+    { type: "bedrock", name: "AWS Bedrock", baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com", color: "#ff9900", mark: "BR" },
     { type: "anthropic", name: "Anthropic", baseUrl: "https://api.anthropic.com/v1", color: "#d97757", mark: "A" },
     { type: "together", name: "Together AI", baseUrl: "https://api.together.xyz/v1", color: "#0f6fff", mark: "T" },
     { type: "mistral", name: "Mistral", baseUrl: "https://api.mistral.ai/v1", color: "#fa5310", mark: "M" },
     { type: "ollama", name: "Ollama (Local Offline)", baseUrl: "http://127.0.0.1:11434/v1", color: "#1e293b", mark: "OL" },
     { type: "nvidia", name: "NVIDIA NIM", baseUrl: "https://integrate.api.nvidia.com/v1", color: "#76b900", mark: "NV" },
-    { type: "azure", name: "Azure OpenAI", baseUrl: "", color: "#0a84ff", mark: "Az" },
     { type: "xai", name: "xAI (Grok)", baseUrl: "https://api.x.ai/v1", color: "#111827", mark: "x" },
     { type: "custom", name: "Custom (OpenAI-compatible)", baseUrl: "", color: "#6b7280", mark: "•" },
   ];
@@ -4970,9 +5322,9 @@
     }
 
     const gate = el("byoGateNote");
-    if (gate) gate.textContent = hasNutaan ? "" : "— add your nutaan.com API key first (required for bring-your-own-key)";
+    if (gate) gate.textContent = "Connect your own provider key or local server.";
     const addBtn = el("addProviderBtn");
-    if (addBtn) addBtn.disabled = !hasNutaan;
+    if (addBtn) addBtn.disabled = false;
   }
 
   // ---------- Provider editor (add / edit a user-managed provider with its own key + models) ----------
@@ -5000,7 +5352,7 @@
       const preset = presetFor(sel.value);
       el("peName").value = preset.name; el("peBaseUrl").value = preset.baseUrl; el("peKey").value = ""; editorModels = [];
     }
-    const lg = el("peTypeLogo"); if (lg) lg.src = "providers/" + (el("peType").value || "openai") + ".png";
+    const lg = el("peTypeLogo"); if (lg) { lg.onerror = () => { lg.onerror = null; lg.src = "providers/nutaan.png"; }; lg.src = getProviderLogo(el("peType").value || "openai"); }
     renderEditorModels();
     editor.hidden = false;
     editor.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -5027,6 +5379,39 @@
     for (const id of v.split(/[\s,]+/).filter(Boolean)) { if (!editorModels.includes(id)) editorModels.push(id); }
     inp.value = "";
     renderEditorModels();
+  }
+
+  let _fetchingModels = false;
+  // Auto-detect which models a provider actually exposes — the user only pastes
+  // a base URL + API key, we call its /models endpoint and fill the list.
+  async function fetchProviderModels(opts = {}) {
+    const baseUrl = (el("peBaseUrl").value || "").trim();
+    const apiKey = (el("peKey").value || "").trim();
+    if (!baseUrl || _fetchingModels) return;
+    if (opts.requireKey && !apiKey) return;
+    if (!window.nutaan || !window.nutaan.providerListModels) return;
+    _fetchingModels = true;
+    const inp = el("peModelInput");
+    const prevPlaceholder = inp ? inp.placeholder : "";
+    if (inp) { inp.placeholder = "Checking available models…"; }
+    try {
+      const provType = (el("peType") && el("peType").value) || "";
+      const res = await window.nutaan.providerListModels(baseUrl, apiKey, provType);
+      const ids = (res && res.ok && Array.isArray(res.models)) ? res.models : [];
+      if (ids.length) {
+        let added = 0;
+        for (const id of ids) { if (id && !editorModels.includes(id)) { editorModels.push(id); added++; } }
+        renderEditorModels();
+        if (inp) { inp.placeholder = added ? `Found ${ids.length} models — ${added} added` : `${ids.length} models available`; }
+      } else if (inp) {
+        inp.placeholder = (res && res.error) ? `Couldn't list models: ${res.error}` : "No models returned — add ids manually";
+      }
+    } catch (e) {
+      if (inp) inp.placeholder = "Couldn't reach /models — add ids manually";
+    } finally {
+      _fetchingModels = false;
+      if (inp) setTimeout(() => { if (inp) inp.placeholder = prevPlaceholder; }, 4000);
+    }
   }
 
   function saveProviderEditor() {
@@ -5063,12 +5448,25 @@
     el("peCancel")?.addEventListener("click", () => { el("providerEditor").hidden = true; });
     el("peSave")?.addEventListener("click", saveProviderEditor);
     el("peModelAdd")?.addEventListener("click", addEditorModel);
+    el("peDetectModels")?.addEventListener("click", async () => {
+      const btn = el("peDetectModels");
+      const baseUrl = (el("peBaseUrl").value || "").trim();
+      if (!baseUrl) { el("peBaseUrl").focus(); return; }
+      btn.disabled = true; const prev = btn.textContent; btn.textContent = "Detecting…";
+      try { await fetchProviderModels({ force: true }); }
+      finally { btn.disabled = false; btn.textContent = prev; }
+    });
     el("peModelInput")?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addEditorModel(); } });
+    // Auto-check available models once the user finishes entering the API key
+    // (or the base URL), so they never have to type model ids by hand.
+    el("peKey")?.addEventListener("blur", () => fetchProviderModels());
+    el("peKey")?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); fetchProviderModels(); } });
+    el("peBaseUrl")?.addEventListener("blur", () => fetchProviderModels({ requireKey: true }));
     el("peType")?.addEventListener("change", () => {
       const preset = presetFor(el("peType").value);
       el("peName").value = preset.name;
       el("peBaseUrl").value = preset.baseUrl;
-      const lg = el("peTypeLogo"); if (lg) lg.src = "providers/" + preset.type + ".png";
+      const lg = el("peTypeLogo"); if (lg) { lg.onerror = () => { lg.onerror = null; lg.src = "providers/nutaan.png"; }; lg.src = getProviderLogo(preset.type); }
     });
   })();
 
@@ -5180,7 +5578,9 @@
 
   function relTime(ts) {
     if (!ts) return "";
-    const m = Math.round((Date.now() - ts) / 60000);
+    const stamp = typeof ts === "number" ? ts : new Date(ts).getTime();
+    if (!Number.isFinite(stamp)) return "";
+    const m = Math.round((Date.now() - stamp) / 60000);
     if (m < 1) return "just now";
     if (m < 60) return `${m} min ago`;
     const h = Math.round(m / 60);
@@ -5484,6 +5884,14 @@
     loadWorkers();
   });
   el("newWorkerBtn").addEventListener("click", () => openWorkerModal(null));
+  // Worker sub-tabs: My workers / Templates
+  document.querySelectorAll(".worker-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const which = btn.dataset.wtab;
+      document.querySelectorAll(".worker-tab").forEach((b) => b.classList.toggle("active", b === btn));
+      document.querySelectorAll(".worker-panel").forEach((p) => { p.hidden = p.dataset.wpanel !== which; });
+    });
+  });
   el("markAllReadBtn").addEventListener("click", async () => { await window.nutaan.workers.markRead(null); loadWorkers(); });
   el("clearUpdatesBtn").addEventListener("click", async () => { if (confirm("Clear the whole Updates feed?")) { await window.nutaan.workers.clearUpdates(); loadWorkers(); } });
 
@@ -5816,10 +6224,11 @@
       entry.reported = true;
       const report = run.report || (run.status === "stopped" ? "Swarm stopped before finishing." : run.error ? `Swarm failed: ${run.error}` : "");
       if (report) {
-        appendBubble("assistant", report);
+        const tagged = `[Nutaan Swarm report]\n\n${report}`;
+        appendBubble("assistant", tagged);
         const chat = entry.chat;
         if (chat) {
-          chat.messages.push({ role: "assistant", content: `[Nutaan Swarm report]\n\n${report}` });
+          chat.messages.push({ role: "assistant", content: tagged });
           chat.updatedAt = new Date().toISOString();
           persistProjects();
         }
@@ -5867,13 +6276,11 @@
     // longer exists. Left in place they shadow the built-in backend and every request dies with
     // ECONNREFUSED against a server that isn't running, so clear them once on upgrade.
     if (settings.backendRevision !== BACKEND_REVISION) {
-      settings.baseUrl = "";
-      settings.apiKey = "";
-      settings.model = "";
       settings.backendRevision = BACKEND_REVISION;
       await window.nutaan.setSettings(settings);
     }
 
+    applyExplorerCollapsed();
     renderAutoApprove();
     updateModelBadge();
     rebuildModels();
@@ -5929,11 +6336,6 @@
     loadHealth();
     if (activePath) loadToday();
 
-    if (!settings.nutaanKey) {
-      showActivation("");
-      setStatus(false, "Not activated");
-    } else {
-      await refreshModels();
-    }
+    await refreshModels();
   })();
 })();

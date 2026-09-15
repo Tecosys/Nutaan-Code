@@ -1,6 +1,17 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("nutaan", {
+  terminal: {
+    create: (cwd) => ipcRenderer.invoke("terminal:create", cwd),
+    write: (id, data) => ipcRenderer.invoke("terminal:write", id, data),
+    resize: (id, cols, rows) => ipcRenderer.invoke("terminal:resize", id, cols, rows),
+    close: (id) => ipcRenderer.invoke("terminal:close", id),
+    onEvent: (callback) => {
+      const listener = (_event, data) => callback(data);
+      ipcRenderer.on("terminal:event", listener);
+      return () => ipcRenderer.removeListener("terminal:event", listener);
+    },
+  },
   getSettings: () => ipcRenderer.invoke("store:get"),
   setSettings: (data) => ipcRenderer.invoke("store:set", data),
   pickFolder: () => ipcRenderer.invoke("dialog:pick-folder"),
@@ -8,6 +19,7 @@ contextBridge.exposeInMainWorld("nutaan", {
   prepareAttachment: (payload) => ipcRenderer.invoke("attach:prepare", payload),
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
   listModels: (baseUrl, apiKey, nutaanKey) => ipcRenderer.invoke("ai:list-models", { baseUrl, apiKey, nutaanKey }),
+  providerListModels: (baseUrl, apiKey, type) => ipcRenderer.invoke("provider:list-models", { baseUrl, apiKey, type }),
   testModels: (payload) => ipcRenderer.invoke("ai:test-models", payload),
   validateNutaanKey: (key) => ipcRenderer.invoke("nutaan:validate-key", key),
   listDir: (root, relPath) => ipcRenderer.invoke("fs:list-dir", root, relPath),
