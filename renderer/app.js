@@ -2657,11 +2657,21 @@
   }
 
   // ---------- Status ----------
+  const cloudChip = el("cloudChip");
+  const cloudLabel = el("cloudLabel");
   function setStatus(ok, text, title) {
     statusDot.className = "status-dot " + (ok === null ? "" : ok ? "online" : "offline");
     statusText.textContent = text;
     statusText.title = title || "";
+    // The cloud chip reflects the real backend link — models run through nutaan.com, so this is
+    // where the user sees whether that connection is live, not just a label.
+    if (cloudChip) {
+      cloudChip.classList.toggle("connected", ok === true);
+      cloudChip.classList.toggle("offline", ok === false);
+      if (cloudLabel) cloudLabel.textContent = ok === true ? "Nutaan Cloud" : ok === false ? "Nutaan Cloud · offline" : "Nutaan Cloud";
+    }
   }
+  cloudChip?.addEventListener("click", () => window.nutaan.openExternal("https://nutaan.com/dev-console"));
 
   // ---------- Models ----------
   async function refreshModels() {
@@ -4874,7 +4884,12 @@
     count.textContent = autonomous.unread ? `${autonomous.unread} new` : "";
     feed.innerHTML = "";
     if (!autonomous.updates.length) {
-      feed.innerHTML = `<div class="page-empty">Nothing yet. When a worker runs, its update appears here — headline first, then the facts and the sources it used.</div>`;
+      feed.innerHTML =
+        `<div class="updates-empty">` +
+        `<div class="ue-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></div>` +
+        `<div class="ue-title">No updates yet</div>` +
+        `<div class="ue-sub">When a worker runs, its report lands here — the headline first, then the facts and the sources it used. You'll get a desktop notification too.</div>` +
+        `</div>`;
       return;
     }
     let lastDay = "";
