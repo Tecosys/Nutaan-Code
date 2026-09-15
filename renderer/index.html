@@ -128,6 +128,12 @@
         <span class="status-dot" id="statusDot"></span>
         <span class="status-text" id="statusText">Not connected</span>
         <div style="flex:1"></div>
+        <button class="status-branch" id="statusBranch" type="button" hidden title="Switch branch">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="8" r="2.4"/><path d="M6 8.4v7.2M8.4 6H14a4 4 0 0 1 4 4"/></svg>
+          <span id="statusBranchName">main</span>
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+          <div class="branch-menu status-branch-menu" id="statusBranchMenu" hidden></div>
+        </button>
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="1.9" stroke-linecap="round"><path d="M7 18h10a3.6 3.6 0 0 0 .3-7.2A5.4 5.4 0 0 0 6.6 11 3.5 3.5 0 0 0 7 18z"/></svg>
         <span class="cloud-label">Nutaan Cloud</span>
       </div>
