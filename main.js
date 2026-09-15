@@ -516,8 +516,14 @@ function toolGuidance() {
   const canva = toolRegistry.status("canva");
   if (canva?.connected) {
     parts.push(
-      "The user's Canva account is connected. Make ONE finished design and see it through — never " +
-      "stop at generate-design candidates, and never hand back a list of blank candidate links.\n" +
+      "The user's Canva account is connected. ANY request to make a carousel, a document, a " +
+      "presentation, a poster, a social post — anything designable — goes through the Canva MCP " +
+      "tools, directly. Do NOT open canva.com in the browser, do NOT drive the Canva website by " +
+      "clicking, and do NOT use web tools to build the design: the MCP tools do it natively and far " +
+      "better. The browser is only for reading a page the user linked, never for making the design.\n" +
+      "Make ONE finished, stunning design and see it through — never stop at generate-design " +
+      "candidates, and never hand back a list of blank candidate links. Real headline and body copy " +
+      "on every page, a fitting image on each (upload-asset-from-url), a coherent look end to end.\n" +
       "\n" +
       "For a multi-page design — a carousel, a presentation, a multi-slide doc — do NOT use a brand " +
       "template unless the user named one. Brand-template IDs cannot be guessed: inventing one is " +
