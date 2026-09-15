@@ -16,6 +16,11 @@ const CANONICAL_STORE_DIR = path.join(app.getPath("appData"), "Nutaan Code");
 const LEGACY_STORE_DIR = path.join(app.getPath("appData"), "nutaan-code");
 app.setPath("userData", CANONICAL_STORE_DIR);
 
+// Windows shows the taskbar icon for whatever "app" it thinks owns the window; without an explicit
+// AppUserModelID a dev run is just "electron.exe" and gets Electron's default icon instead of ours.
+// Pinning it to the packaged appId makes the taskbar and window use the Nutaan mark in both.
+if (process.platform === "win32") { try { app.setAppUserModelId("com.tecosys.nutaancode"); } catch {} }
+
 const STORE_PATH = path.join(CANONICAL_STORE_DIR, "settings.json");
 const LEGACY_STORE_PATH = path.join(LEGACY_STORE_DIR, "settings.json");
 
@@ -112,7 +117,9 @@ function createWindow() {
     minWidth: 860,
     minHeight: 560,
     title: "Nutaan Code",
-    icon: path.join(__dirname, "assets", "logo.png"),
+    // The .ico carries all the Windows sizes, so the taskbar and window get a crisp mark; other
+    // platforms use the PNG.
+    icon: path.join(__dirname, "assets", process.platform === "win32" ? "icon.ico" : "logo.png"),
     backgroundColor: "#0f1117",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
