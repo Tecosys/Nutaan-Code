@@ -4,7 +4,10 @@
 
 # Nutaan Code
 
-**An AI coding agent that understands your whole project — and the rest of your computer.**
+**An open-source AI co-worker for your computer.**
+
+Give it a project, a task, or a goal. It understands your files, writes and edits code, uses your
+browser, runs commands, generates assets, remembers your preferences, and works alongside you.
 
 Windows · macOS · Linux
 
