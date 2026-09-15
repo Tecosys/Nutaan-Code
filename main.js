@@ -5,6 +5,7 @@ const fs = require("node:fs/promises");
 const { exec, spawn, spawnSync } = require("node:child_process");
 const { autoUpdater } = require("electron-updater");
 const arsenal = require("./arsenal");
+const mitmManager = require("./arsenal/mitm");
 
 // Electron derives userData from app.getName(), which is package.json's `name` when run from
 // source ("nutaan-code") but `productName` once packaged ("Nutaan Code"). Left alone, the
@@ -344,6 +345,18 @@ async function fetchModels(baseUrl, apiKey) {
 // /chat/completions route, so offering them in the model picker only produces confusing errors.
 const NON_CHAT_MODEL_RE = /embed|rerank|nemoretriever|nemotron-parse|reward|content-safety|safety-guard/i;
 
+// Never infer that an unpriced model is free. Gateways such as OmniRoute/OpenRouter commonly
+// expose a price object or an explicit free flag; accepting only those signals prevents a user
+// who selected "free only" from accidentally sending work to a billable model.
+function isExplicitlyFreeModel(model) {
+  if (model?.free === true || model?.is_free === true || model?.tier === "free") return true;
+  if (/:free$/i.test(String(model?.id || ""))) return true;
+  const price = model?.pricing || model?.price || {};
+  const values = [price.prompt, price.completion, price.input, price.output, price.request, price.image]
+    .filter((value) => value !== undefined && value !== null);
+  return values.length > 0 && values.every((value) => Number(value) === 0);
+}
+
 // The agent loop is useless without OpenAI-style tool calling, and the provider catalog lists
 // far more models than actually support it — picking one of those produced a "Function <id>:
 // Not supported" failure on every turn. This is the set that was probed and confirmed working,
@@ -418,15 +431,12 @@ ipcMain.handle("ai:list-models", async (_e, payload) => {
   try {
     const catalog = await fetchCatalog(backend.baseUrl, backend.apiKey);
     let models = catalog.models
-      .filter((m) => !isImageOnlyModel(m) && !NON_CHAT_MODEL_RE.test(m.id))
+      .filter((m) => isExplicitlyFreeModel(m) && !isImageOnlyModel(m) && !NON_CHAT_MODEL_RE.test(m.id))
       .map((m) => m.id);
-    if (isKnownBackend(backend.baseUrl)) {
-      const usable = models.filter((id) => agentRank(id) !== Number.MAX_SAFE_INTEGER);
-      // Only narrow to the verified set when the backend actually offers some of it — never
-      // hand back an empty picker because the catalog moved on.
-      if (usable.length) models = usable.sort((a, b) => agentRank(a) - agentRank(b));
-    }
-    const imageModels = catalog.models.filter(isImageOnlyModel).map((m) => m.id);
+    // Keep the picker truthful: every non-image chat model advertised by the selected backend
+    // is shown. The live test marks which ones respond; the agent retry/fallback path still
+    // handles models that later reject a tool call or are temporarily rate-limited.
+    const imageModels = catalog.models.filter((m) => isExplicitlyFreeModel(m) && isImageOnlyModel(m)).map((m) => m.id);
     const defaultModel = catalog.defaultModel && models.includes(catalog.defaultModel)
       ? catalog.defaultModel
       : models.includes(FALLBACK_MODEL) ? FALLBACK_MODEL : models[0] || "";
@@ -437,6 +447,35 @@ ipcMain.handle("ai:list-models", async (_e, payload) => {
     const causeCode = err.cause?.code;
     return { ok: false, error: causeCode ? `${err.message} (${causeCode})` : err.message };
   }
+});
+
+// A deliberately tiny non-streaming completion verifies the route, credential, and model id.
+// It is opt-in from Settings because even a one-token request can count against a provider quota.
+ipcMain.handle("ai:test-models", async (_e, payload) => {
+  const backend = await activeBackend(payload || {});
+  const models = [...new Set((payload?.models || []).map(String).filter(Boolean))].slice(0, 500);
+  if (!models.length) return { ok: true, results: [] };
+  const testOne = async (model) => {
+    try {
+      const res = await fetch(buildEndpointUrl(backend.baseUrl, "/chat/completions"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...buildAuthHeaders(backend.baseUrl, backend.apiKey) },
+        body: JSON.stringify({ model, messages: [{ role: "user", content: "Reply with OK." }], max_tokens: 2, temperature: 0, stream: false }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        return { model, ok: false, error: String(data?.error?.message || `HTTP ${res.status}`).slice(0, 160) };
+      }
+      return { model, ok: true };
+    } catch (err) {
+      return { model, ok: false, error: String(err.message || "Request failed").slice(0, 160) };
+    }
+  };
+  // Three at a time makes a large catalog practical without creating a rate-limit burst.
+  const results = [];
+  for (let i = 0; i < models.length; i += 3) results.push(...await Promise.all(models.slice(i, i + 3).map(testOne)));
+  return { ok: true, results };
 });
 
 ipcMain.handle("fs:list-dir", async (_e, root, relPath) => {
@@ -1695,6 +1734,50 @@ ipcMain.handle("git:push", async (_e, root) => {
     return { ok: false, error: detail };
   }
   return { ok: true, output: (res.stderr || res.stdout || "").trim().slice(0, 300) };
+});
+
+// ---------- AgentBridge MITM Proxy ----------
+
+ipcMain.handle("mitm:status", async () => {
+  try {
+    return await mitmManager.getStatus();
+  } catch (err) {
+    return { running: false, error: err.message };
+  }
+});
+
+ipcMain.handle("mitm:detect-agents", async () => {
+  try {
+    return mitmManager.detectAgents();
+  } catch (err) {
+    return { error: err.message };
+  }
+});
+
+ipcMain.handle("mitm:start", async (_e, payload = {}) => {
+  try {
+    const store = await readStore();
+    const nutaanKey = payload.nutaanKey || store.nutaanKey || "";
+    const agentMap  = payload.agentMap  || (store.agentBridge ? store.agentBridge.agentMap : undefined) || {};
+    const result = await mitmManager.start({
+      nutaanKey,
+      nutaanBaseUrl: NUTAAN_LLM_BASE,
+      agentMap,
+      userBypass: payload.userBypass || [],
+    });
+    return { ok: true, ...result };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle("mitm:stop", async () => {
+  try {
+    const result = await mitmManager.stop();
+    return { ok: true, ...result };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 });
 
 // ---------- Agent loop (tool-calling) ----------

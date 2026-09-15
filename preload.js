@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld("nutaan", {
   prepareAttachment: (payload) => ipcRenderer.invoke("attach:prepare", payload),
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
   listModels: (baseUrl, apiKey, nutaanKey) => ipcRenderer.invoke("ai:list-models", { baseUrl, apiKey, nutaanKey }),
+  testModels: (payload) => ipcRenderer.invoke("ai:test-models", payload),
   validateNutaanKey: (key) => ipcRenderer.invoke("nutaan:validate-key", key),
   listDir: (root, relPath) => ipcRenderer.invoke("fs:list-dir", root, relPath),
   readFile: (root, relPath) => ipcRenderer.invoke("fs:read-file", root, relPath),
@@ -54,6 +55,14 @@ contextBridge.exposeInMainWorld("nutaan", {
     const listener = (_e, data) => callback(data);
     ipcRenderer.on("app:update-status", listener);
     return () => ipcRenderer.removeListener("app:update-status", listener);
+  },
+
+  // AgentBridge MITM proxy
+  mitm: {
+    status: () => ipcRenderer.invoke("mitm:status"),
+    start: (payload) => ipcRenderer.invoke("mitm:start", payload),
+    stop: () => ipcRenderer.invoke("mitm:stop"),
+    detectAgents: () => ipcRenderer.invoke("mitm:detect-agents"),
   },
 
   sendAgentMessage: (payload) => ipcRenderer.send("agent:send", payload),

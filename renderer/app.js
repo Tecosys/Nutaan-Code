@@ -3647,20 +3647,224 @@
     }
   });
 
-  // ---------- Settings ----------
-  function openSettings() {
-    baseUrlInput.value = settings.baseUrl || "";
-    apiKeyInput.value = settings.apiKey || "";
-    imageModelInput.value = settings.imageModel || "";
-    const composite = (settings.modelProviderId || "") + "::" + settings.model;
-    if ([...modelSelectSettings.options].some((o) => o.value === composite)) {
-      modelSelectSettings.value = composite;
-    }
+  // ---------- Settings (multi-tab) ----------
+  let _settingsActiveTab = "account";
+
+  function openSettings(tabId) {
+    if (baseUrlInput) baseUrlInput.value = settings.baseUrl || "";
+    if (apiKeyInput) apiKeyInput.value = settings.apiKey || "";
+    if (imageModelInput) imageModelInput.value = settings.imageModel || "";
+
+    const advBase = el("advBaseUrl");
+    const advKey = el("advApiKey");
+    if (advBase) advBase.value = settings.baseUrl || "";
+    if (advKey) advKey.value = settings.apiKey || "";
+
+    const autoToggle = el("autoFallbackToggle");
+    if (autoToggle) autoToggle.checked = settings.autoModelFallback !== false;
+
     renderAccountRow();
     renderUsagePanel();
     renderProviders();
+    switchSettingsTab(tabId || _settingsActiveTab || "account");
     settingsOverlay.hidden = false;
   }
+
+  function switchSettingsTab(tabId) {
+    _settingsActiveTab = tabId;
+    document.querySelectorAll(".settings-tab").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.tab === tabId);
+    });
+    document.querySelectorAll(".settings-page").forEach((page) => {
+      page.hidden = page.dataset.page !== tabId;
+    });
+    const titles = { account: "Account", models: "Models", providers: "Providers", agentbridge: "AgentBridge", advanced: "Advanced" };
+    const titleEl = el("settingsPageTitle");
+    if (titleEl) titleEl.textContent = titles[tabId] || tabId;
+
+    if (tabId === "models") renderModelTable();
+    if (tabId === "agentbridge") renderAgentBridgeTab();
+  }
+
+  document.querySelectorAll(".settings-tab").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      switchSettingsTab(btn.dataset.tab);
+    });
+  });
+
+  function renderModelTable() {
+    const tbody = el("modelTableBody");
+    if (!tbody) return;
+    if (!aggregatedModels || !aggregatedModels.length) {
+      tbody.innerHTML = `<tr><td colspan="4" class="model-table-empty">No models loaded. Click Refresh above.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = "";
+    for (const m of aggregatedModels) {
+      const pId = m.providerId === "nutaan" ? "" : (m.providerId || "");
+      const healthKey = modelHealthKey(pId, m.id);
+      const health = (settings.modelHealth || {})[healthKey];
+      const statusHtml = health
+        ? (health.ok
+            ? `<span class="model-status-chip ok">✓ OK</span>`
+            : `<span class="model-status-chip fail" title="${escapeHtml(health.error || '')}">✗ Failed</span>`)
+        : `<span class="model-status-chip untested">— Untested</span>`;
+
+      const isActive = m.id === settings.model && (pId === (settings.modelProviderId || ""));
+      const tr = document.createElement("tr");
+      tr.className = isActive ? "model-row active-model" : "model-row";
+      tr.innerHTML = `
+        <td class="model-id-cell" title="${escapeHtml(m.id)}">${escapeHtml(m.id)}</td>
+        <td>${escapeHtml(m.providerName || "Nutaan")}</td>
+        <td>${statusHtml}</td>
+        <td>
+          <button type="button" class="model-select-btn${isActive ? " active" : ""}">
+            ${isActive ? "Active" : "Use"}
+          </button>
+        </td>`;
+      const btn = tr.querySelector(".model-select-btn");
+      btn.addEventListener("click", async () => {
+        await selectModel(m.id, pId);
+        renderModelTable();
+      });
+      tbody.appendChild(tr);
+    }
+  }
+
+  el("refreshModelsBtn")?.addEventListener("click", async () => {
+    const btn = el("refreshModelsBtn");
+    if (btn) { btn.disabled = true; btn.textContent = "Refreshing…"; }
+    await refreshModels();
+    renderModelTable();
+    if (btn) { btn.disabled = false; btn.textContent = "Refresh"; }
+  });
+
+  el("autoFallbackToggle")?.addEventListener("change", async (e) => {
+    settings.autoModelFallback = e.target.checked;
+    await window.nutaan.setSettings(settings);
+  });
+
+  let _abBusy = false;
+  async function renderAgentBridgeTab() {
+    const statusDotEl = el("abStatusDot");
+    const statusTextEl = el("abStatusText");
+    const startBtn = el("abStartBtn");
+    const stopBtn = el("abStopBtn");
+    const certChip = el("abCertChip");
+    const dnsChip = el("abDnsChip");
+    const agentsEl = el("abAgents");
+
+    let status = { running: false };
+    if (window.nutaan && window.nutaan.mitm) {
+      try { status = await window.nutaan.mitm.status(); } catch {}
+    }
+
+    if (statusDotEl) statusDotEl.className = "ab-status-dot" + (status.running ? " running" : "");
+    if (statusTextEl) statusTextEl.textContent = status.running ? `Running (PID ${status.pid || "?"})` : "Stopped";
+    if (startBtn) startBtn.hidden = !!status.running;
+    if (stopBtn) stopBtn.hidden = !status.running;
+
+    if (certChip) {
+      certChip.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8.5 11V8a3.5 3.5 0 0 1 7 0v3"/></svg> Root CA: ${status.certTrusted ? "✓ Trusted" : status.certExists ? "⚠ Not trusted" : "✗ Missing"}`;
+    }
+    if (dnsChip) {
+      dnsChip.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3.4 9.5h17.2M3.4 14.5h17.2M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg> DNS: ${status.dnsConfigured ? "✓ Configured" : "✗ Not configured"}`;
+    }
+
+    if (agentsEl && window.nutaan && window.nutaan.mitm) {
+      try {
+        const detected = await window.nutaan.mitm.detectAgents();
+        const targets = [
+          { key: "antigravity", name: "Antigravity IDE", detail: detected.antigravity },
+          { key: "kiro", name: "Kiro IDE", detail: detected.kiro },
+        ];
+        agentsEl.innerHTML = "";
+        for (const t of targets) {
+          const row = document.createElement("div");
+          row.className = "ab-agent-row";
+          const isInstalled = t.detail && t.detail.installed;
+          const dot = isInstalled ? "🟢" : "⚫";
+          const installText = isInstalled
+            ? `<span class="ab-agent-path" title="${escapeHtml(t.detail.path || '')}">Installed</span>`
+            : `<span class="ab-agent-path not-found">Not detected</span>`;
+
+          const ab = settings.agentBridge || {};
+          const modelKey = t.key + "Model";
+          const mapped = ab[modelKey] || settings.model || "";
+          const options = (aggregatedModels || []).slice(0, 40).map((m) =>
+            `<option value="${escapeHtml(m.id)}"${m.id === mapped ? " selected" : ""}>${escapeHtml(m.id)}</option>`
+          ).join("");
+
+          row.innerHTML = `
+            <div class="ab-agent-info">
+              <span class="ab-agent-dot">${dot}</span>
+              <span class="ab-agent-name">${escapeHtml(t.name)}</span>
+              ${installText}
+            </div>
+            <div class="ab-agent-model">
+              <label style="font-size:12px;color:#6b7280;">Route to</label>
+              <select class="ab-model-select" data-agent="${escapeHtml(t.key)}">
+                ${options}
+              </select>
+            </div>`;
+          agentsEl.appendChild(row);
+
+          row.querySelector("select")?.addEventListener("change", async (e) => {
+            settings.agentBridge = settings.agentBridge || {};
+            settings.agentBridge[modelKey] = e.target.value;
+            await window.nutaan.setSettings(settings);
+          });
+        }
+      } catch {}
+    }
+  }
+
+  el("abStartBtn")?.addEventListener("click", async () => {
+    if (_abBusy) return;
+    _abBusy = true;
+    const btn = el("abStartBtn");
+    if (btn) { btn.disabled = true; btn.textContent = "Starting…"; }
+    const errEl = el("abError");
+    if (errEl) errEl.hidden = true;
+    try {
+      const ab = settings.agentBridge || {};
+      const agentMap = {
+        antigravity: { model: ab.antigravityModel || settings.model || "" },
+        kiro: { model: ab.kiroModel || settings.model || "" },
+      };
+      const res = await window.nutaan.mitm.start({ nutaanKey: settings.nutaanKey, agentMap });
+      if (!res.ok && errEl) {
+        errEl.textContent = res.error || "Could not start AgentBridge";
+        errEl.hidden = false;
+      }
+      await renderAgentBridgeTab();
+    } catch (err) {
+      if (errEl) { errEl.textContent = String(err.message || err); errEl.hidden = false; }
+    } finally {
+      _abBusy = false;
+      if (btn) { btn.disabled = false; btn.textContent = "Start AgentBridge"; }
+    }
+  });
+
+  el("abStopBtn")?.addEventListener("click", async () => {
+    if (_abBusy) return;
+    _abBusy = true;
+    const btn = el("abStopBtn");
+    if (btn) { btn.disabled = true; btn.textContent = "Stopping…"; }
+    try {
+      await window.nutaan.mitm.stop();
+      await renderAgentBridgeTab();
+    } catch {}
+    finally {
+      _abBusy = false;
+      if (btn) { btn.disabled = false; btn.textContent = "Stop AgentBridge"; }
+    }
+  });
+
+  window.nutaan?.onAgentEvent("agent:model-switched", ({ from, to }) => {
+    if (to) appendBubble("error", `⚡ Auto-switched model: ${from} → ${to}`);
+  });
 
   function fmtNum(n) {
     n = n || 0;
@@ -3860,21 +4064,36 @@
     await refreshModels();
   });
 
-  settingsBtn.addEventListener("click", openSettings);
+  settingsBtn.addEventListener("click", () => openSettings());
   settingsCancel.addEventListener("click", () => { settingsOverlay.hidden = true; });
+  el("settingsCloseX")?.addEventListener("click", () => { settingsOverlay.hidden = true; });
   settingsOverlay.addEventListener("click", (e) => {
     if (e.target === settingsOverlay) settingsOverlay.hidden = true;
   });
+  el("useBuiltInBtnAdv")?.addEventListener("click", async () => {
+    if (baseUrlInput) baseUrlInput.value = "";
+    if (apiKeyInput) apiKeyInput.value = "";
+    const advBase = el("advBaseUrl");
+    const advKey = el("advApiKey");
+    if (advBase) advBase.value = "";
+    if (advKey) advKey.value = "";
+    settings.baseUrl = "";
+    settings.apiKey = "";
+    await window.nutaan.setSettings(settings);
+    await refreshModels();
+  });
   settingsSave.addEventListener("click", async () => {
-    settings.baseUrl = baseUrlInput.value.trim();
-    settings.apiKey = apiKeyInput.value.trim();
-    const sel = modelSelectSettings.value || "";
+    const advBase = el("advBaseUrl");
+    const advKey = el("advApiKey");
+    settings.baseUrl = (advBase ? advBase.value : (baseUrlInput ? baseUrlInput.value : "")).trim();
+    settings.apiKey = (advKey ? advKey.value : (apiKeyInput ? apiKeyInput.value : "")).trim();
+    const sel = modelSelectSettings ? (modelSelectSettings.value || "") : "";
     if (sel.includes("::")) {
       const i = sel.indexOf("::");
       settings.modelProviderId = sel.slice(0, i);
       settings.model = sel.slice(i + 2) || settings.model;
     }
-    settings.imageModel = imageModelInput.value.trim();
+    if (imageModelInput) settings.imageModel = imageModelInput.value.trim();
     await window.nutaan.setSettings(settings);
     settingsOverlay.hidden = true;
     updateModelBadge();
