@@ -746,18 +746,10 @@
   }
 
   // ---------- Git chip ----------
-  function setStatusBranch(name) {
-    const sb = el("statusBranch"), sbn = el("statusBranchName");
-    if (!sb) return;
-    if (name) { sb.hidden = false; if (sbn) sbn.textContent = name; }
-    else sb.hidden = true;
-  }
-
   async function refreshGit() {
     if (!activePath) {
       branchChip.hidden = true;
       panelBranch.textContent = "";
-      setStatusBranch(null);
       return;
     }
     let st;
@@ -765,18 +757,15 @@
       st = await window.nutaan.gitStatus(activePath);
     } catch {
       branchChip.hidden = true;
-      setStatusBranch(null);
       return;
     }
     if (!st || !st.repo) {
       branchChip.hidden = true;
       panelBranch.innerHTML = "";
-      setStatusBranch(null);
       return;
     }
     branchChip.hidden = false;
     branchName.textContent = st.branch;
-    setStatusBranch(st.branch);
     syncDot.classList.toggle("dirty", st.dirty > 0);
     syncLabel.textContent = st.dirty > 0 ? `${st.dirty} changed` : "Clean";
     const showPush = st.hasUpstream && st.ahead > 0;
@@ -787,18 +776,13 @@
       escapeHtml(st.branch);
   }
 
-  // ---------- Branch switcher (in the top git chip and the bottom status bar) ----------
+  // ---------- Branch switcher (the top git chip) ----------
   const branchSwitch = el("branchSwitch");
   const branchMenu = el("branchMenu");
-  const statusBranch = el("statusBranch");
-  const statusBranchName = el("statusBranchName");
-  const statusBranchMenu = el("statusBranchMenu");
 
   async function openBranchMenu(menuEl) {
     if (!activePath || !menuEl) return;
     if (!menuEl.hidden) { menuEl.hidden = true; return; }
-    // Close the other menu so only one is open.
-    [branchMenu, statusBranchMenu].forEach((m) => { if (m && m !== menuEl) m.hidden = true; });
     menuEl.innerHTML = `<div class="branch-menu-loading">Loading branches…</div>`;
     menuEl.hidden = false;
     let res;
@@ -820,7 +804,6 @@
 
   async function switchBranch(name) {
     if (branchMenu) branchMenu.hidden = true;
-    if (statusBranchMenu) statusBranchMenu.hidden = true;
     let res;
     try { res = await window.nutaan.gitSwitchBranch(activePath, name); } catch (e) { res = { ok: false, error: e.message }; }
     if (!res.ok) {
@@ -834,10 +817,8 @@
   }
 
   branchSwitch?.addEventListener("click", (e) => { e.stopPropagation(); openBranchMenu(branchMenu); });
-  statusBranch?.addEventListener("click", (e) => { e.stopPropagation(); openBranchMenu(statusBranchMenu); });
   document.addEventListener("click", (e) => {
     if (branchMenu && !branchMenu.hidden && !e.target.closest(".branch-chip")) branchMenu.hidden = true;
-    if (statusBranchMenu && !statusBranchMenu.hidden && !e.target.closest(".status-branch")) statusBranchMenu.hidden = true;
   });
 
   // ---------- Git commit & push ----------

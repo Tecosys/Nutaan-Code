@@ -133,6 +133,17 @@ function createWindow() {
     },
   });
   win.setMenuBarVisibility(false);
+  // Belt-and-suspenders for the taskbar icon: a dev run is electron.exe, and Windows will happily
+  // keep showing Electron's own icon there. Setting it again after the window exists, from the
+  // native image, forces the taskbar button to adopt the Nutaan mark. (The packaged .exe embeds it,
+  // so this matters mainly when running from source.)
+  if (process.platform === "win32") {
+    try {
+      const { nativeImage } = require("electron");
+      const ico = nativeImage.createFromPath(path.join(__dirname, "assets", "icon.ico"));
+      if (!ico.isEmpty()) win.setIcon(ico);
+    } catch {}
+  }
   win.webContents.on("console-message", (event) => {
     const levels = ["LOG", "WARN", "ERROR"];
     console.log(`[renderer:${levels[event.level] || event.level}] ${event.message} (${event.sourceId}:${event.lineNumber})`);
