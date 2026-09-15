@@ -436,6 +436,7 @@
     coworker: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="17.5" cy="10" r="2.2"/><path d="M15 19a4 4 0 0 1 5.8-3.6"/></svg>',
     workers: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/><path d="M4 4l2 2M20 4l-2 2"/></svg>',
     health: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h3l2.5 6 5-13 2.5 7H21"/></svg>',
+    studio: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5.5" width="14" height="13" rx="2.5"/><path d="M16.5 10.5l5-3v9l-5-3z"/></svg>',
   };
 
   function renderNav() {
@@ -447,6 +448,7 @@
       { id: "coworker", label: "Co-worker", icon: "coworker", badge: "" },
       { id: "workers", label: "Workers", icon: "workers", badge: autonomous.unread ? String(autonomous.unread) : "", hot: autonomous.unread > 0 },
       { id: "health", label: "Health", icon: "health", badge: autonomous.openIncidents ? String(autonomous.openIncidents) : "", hot: autonomous.openIncidents > 0, warn: true },
+      { id: "studio", label: "Demo Studio", icon: "studio", badge: "" },
       { id: "settings", label: "Settings", icon: "gear", badge: "" },
     ];
     navList.innerHTML = "";
@@ -475,9 +477,10 @@
 
   function renderExplorer() {
     const isFiles = sidebarView === "files";
+    const isStudio = sidebarView === "studio";
     filesView.hidden = !isFiles;
-    chatsView.hidden = isFiles;
-    explorerLabel.textContent = isFiles ? "Explorer" : sidebarView === "chats" ? "Chats" : sidebarView === "workers" ? "Workers" : sidebarView === "health" ? "Health" : "Co-worker";
+    chatsView.hidden = isFiles || isStudio;
+    explorerLabel.textContent = isFiles ? "Explorer" : sidebarView === "chats" ? "Chats" : sidebarView === "workers" ? "Workers" : sidebarView === "health" ? "Health" : isStudio ? "Demo Studio" : "Co-worker";
     if (sidebarView === "chats") renderChatsView();
     if (sidebarView === "coworker") renderCoWorkerView();
     if (sidebarView === "workers") renderWorkersSidebar();
@@ -4643,6 +4646,8 @@
   // =====================================================================================
   const workersPage = el("workersPage");
   const healthPage = el("healthPage");
+  const studioPage = el("studioPage");
+  const composerWrap = document.querySelector(".composer-wrap");
   const todaySection = el("todaySection");
   const todayGrid = el("todayGrid");
   const outcomeChips = el("outcomeChips");
@@ -4678,12 +4683,37 @@
   function renderPages() {
     const showWorkers = sidebarView === "workers";
     const showHealth = sidebarView === "health";
+    // The Studio is a full-bleed editor rather than a page above the composer — a timeline and a
+    // chat box fighting for the same bottom strip helps nobody.
+    const showStudio = sidebarView === "studio";
     workersPage.hidden = !showWorkers;
     healthPage.hidden = !showHealth;
-    threadScroll.hidden = showWorkers || showHealth;
+    if (studioPage) studioPage.hidden = !showStudio;
+    if (composerWrap) composerWrap.hidden = showStudio;
+    threadScroll.hidden = showWorkers || showHealth || showStudio;
     if (showWorkers) renderWorkersPage();
-    if (showHealth) renderHealthPage();
+    if (showHealth) {
+      renderHealthPage();
+      if (window.NutaanMonitor) window.NutaanMonitor.onShowHealth();
+    }
+    // The Studio is a full-bleed editor — a stage, an inspector and a timeline do not fit beside
+    // the code/browser panel. Fold the panel away while it is open and put it back on the way out,
+    // exactly as the user left it.
+    if (showStudio && !panel.hidden) {
+      studioFoldedPanel = true;
+      panel.hidden = true;
+      resizer.hidden = true;
+    } else if (!showStudio && studioFoldedPanel) {
+      studioFoldedPanel = false;
+      panel.hidden = false;
+      resizer.hidden = false;
+    }
+    if (window.NutaanStudio) {
+      if (showStudio) window.NutaanStudio.onShow();
+      else window.NutaanStudio.onHide();
+    }
   }
+  let studioFoldedPanel = false;
 
   // ---------- Workers ----------
   async function loadWorkers() {

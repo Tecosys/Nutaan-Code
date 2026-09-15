@@ -101,14 +101,49 @@ contextBridge.exposeInMainWorld("nutaan", {
     clear: () => ipcRenderer.invoke("healer:clear"),
     signal: (sig) => ipcRenderer.send("healer:signal", sig),
   },
+  monitor: {
+    view: (opts) => ipcRenderer.invoke("monitor:view", opts),
+    addSite: (payload) => ipcRenderer.invoke("monitor:add-site", payload),
+    removeSite: (id) => ipcRenderer.invoke("monitor:remove-site", id),
+    updateSite: (id, patch) => ipcRenderer.invoke("monitor:update-site", id, patch),
+    checkSite: (id) => ipcRenderer.invoke("monitor:check-site", id),
+    scanNow: () => ipcRenderer.invoke("monitor:scan-now"),
+    setEnabled: (on) => ipcRenderer.invoke("monitor:set-enabled", on),
+    markRead: () => ipcRenderer.invoke("monitor:mark-read"),
+    clearEvents: () => ipcRenderer.invoke("monitor:clear-events"),
+    cleanup: (opts) => ipcRenderer.invoke("storage:cleanup", opts),
+  },
   today: (payload) => ipcRenderer.invoke("today:build", payload),
   projectOpened: (root) => ipcRenderer.send("project:opened", root),
   onAutonomousEvent: (channel, callback) => {
-    const valid = ["workers:changed", "workers:update", "workers:run", "swarm:event", "swarm:launched", "healer:changed", "healer:incident", "healer:activity", "healer:health", "healer:repair-done"];
+    const valid = ["workers:changed", "workers:update", "workers:run", "swarm:event", "swarm:launched", "healer:changed", "healer:incident", "healer:activity", "healer:health", "healer:repair-done", "monitor:changed"];
     if (!valid.includes(channel)) return () => {};
     const listener = (_e, data) => callback(data);
     ipcRenderer.on(channel, listener);
     return () => ipcRenderer.removeListener(channel, listener);
+  },
+
+  // ---- Demo Studio ----
+  studio: {
+    sources: () => ipcRenderer.invoke("studio:sources"),
+    cursorStart: (payload) => ipcRenderer.invoke("studio:cursor-start", payload),
+    cursorStop: (session) => ipcRenderer.invoke("studio:cursor-stop", session),
+    hotkeys: (on) => ipcRenderer.invoke("studio:hotkeys", on),
+    window: (action) => ipcRenderer.invoke("studio:window", action),
+    recBar: (show) => ipcRenderer.invoke("studio:recbar", { show }),
+    recBarState: (state) => ipcRenderer.send("studio:recbar-state", state),
+    saveTake: (payload) => ipcRenderer.invoke("studio:save-take", payload),
+    saveProject: (project) => ipcRenderer.invoke("studio:save-project", project),
+    listProjects: () => ipcRenderer.invoke("studio:list-projects"),
+    loadProject: (id) => ipcRenderer.invoke("studio:load-project", id),
+    deleteProject: (id) => ipcRenderer.invoke("studio:delete-project", id),
+    export: (payload) => ipcRenderer.invoke("studio:export", payload),
+    reveal: (target) => ipcRenderer.invoke("studio:reveal", target),
+    onHotkey: (callback) => {
+      const listener = (_e, data) => callback(data);
+      ipcRenderer.on("studio:hotkey", listener);
+      return () => ipcRenderer.removeListener("studio:hotkey", listener);
+    },
   },
 
   sendAgentMessage: (payload) => ipcRenderer.send("agent:send", payload),

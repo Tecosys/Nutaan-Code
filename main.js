@@ -44,7 +44,10 @@ const MAX_AGENT_ITERATIONS = 50;
 const BROWSER_ACTION_TIMEOUT_MS = 45_000;
 const MAX_RESPONSE_TOKENS = 16_000;
 const STREAM_IDLE_TIMEOUT_MS = 45_000;
-const COMPACT_THRESHOLD_TOKENS = 60_000;
+// The conversation is only part of a request: the tool schemas and the standing system messages
+// add several thousand tokens on top of whatever this counts, and every tool round-trip pays it
+// again. Compacting at 32k keeps a long session's per-call cost roughly halved.
+const COMPACT_THRESHOLD_TOKENS = 32_000;
 const KEEP_RECENT_MESSAGES = 10;
 
 // Every model is reached through one endpoint on nutaan.com, authenticated with the user's own
@@ -117,6 +120,9 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       webviewTag: true,
+      // A screen recording minimises this window on purpose, and a throttled renderer would stall
+      // the timers and the frame loop the Demo Studio records and exports with.
+      backgroundThrottling: false,
     },
   });
   win.setMenuBarVisibility(false);
@@ -3733,6 +3739,29 @@ async function tryCliAgentFallback(sender, chatMessages, root, signal) {
   return true;
 }
 
+// A tool result is re-sent in full on every remaining iteration of the turn, even though the model
+// has already read it and acted on it. The recent ones stay whole; older ones are clipped to their
+// head, which is where a directory listing or a command's first error lines actually live. The
+// stored conversation is untouched — only what goes over the wire is trimmed.
+const KEEP_FULL_TOOL_RESULTS = 6;
+const STALE_TOOL_RESULT_CHARS = 900;
+
+function trimStaleToolResults(msgs) {
+  let seen = 0;
+  let out = null;
+  for (let i = msgs.length - 1; i >= 1; i--) {
+    const m = msgs[i];
+    if (m.role !== "tool") continue;
+    if (++seen <= KEEP_FULL_TOOL_RESULTS) continue;
+    const c = typeof m.content === "string" ? m.content : "";
+    if (c.length <= STALE_TOOL_RESULT_CHARS) continue;
+    if (!out) out = msgs.slice();
+    out[i] = { ...m, content: c.slice(0, STALE_TOOL_RESULT_CHARS) + `
+… [${c.length - STALE_TOOL_RESULT_CHARS} characters trimmed — ask again if you need the rest]` };
+  }
+  return out || msgs;
+}
+
 async function compactIfNeeded(sender, chatMessages, { baseUrl, apiKey, model }) {
   if (estimateTokens(chatMessages) < COMPACT_THRESHOLD_TOKENS) return chatMessages;
   if (chatMessages.length <= KEEP_RECENT_MESSAGES + 2) return chatMessages;
@@ -4040,6 +4069,64 @@ function flattenToolHistory(msgs) {
   return merged;
 }
 
+// ---------- Tool gating ----------
+// Every schema in `tools` is re-sent on every model call, and an agent turn makes one call per
+// tool round-trip — so 45 schemas is several thousand prompt tokens paid over and over. The core
+// coding tools are always offered; the specialist families only join once the conversation gives a
+// reason, and they stay for the rest of it. Re-evaluated per call against the whole conversation,
+// so the moment the user says "screenshot the page" the browser tools are there.
+const TOOL_FAMILIES = {
+  browser: {
+    names: ["browser_navigate", "browser_read_page", "browser_click", "browser_type", "browser_scroll",
+            "browser_screenshot", "browser_resize", "browser_execute_script"],
+    re: /\b(browser|screenshot|web ?page|webpage|website|localhost|url|click|scroll|login|log in|sign in|form|render|preview|ui|dev server)\b|https?:\/\/|\.(com|dev|io|ai|net|org|app)\b/i,
+  },
+  osint: {
+    names: ["osint_search_tools", "osint_dns_recon", "osint_ip_lookup", "osint_subdomain_enum",
+            "osint_http_recon", "osint_dork_generator", "vuln_static_scan"],
+    re: /\b(osint|recon|arsenal|vulnerab\w*|pentest|exploit|breach|ransomware|infostealer|dark ?web|dork|cve|security|audit|exposed?|leak|hsts|csp|samesite|httponly|subdomain|whois|dns|threat)\b/i,
+  },
+  os: {
+    names: ["os_search", "os_read", "os_open", "os_launch_app", "os_system_stats", "os_kill_process"],
+    re: /\b(my (computer|pc|laptop|machine|files|downloads|desktop|documents)|this (computer|pc|machine)|open (the )?app|launch|installed?|process|task manager|cpu|ram|memory|disk|storage|battery|antivirus|defender|system|organise|organize|folder|recycle)\b|clean ?up/i,
+  },
+  media: {
+    names: ["generate_image", "view_image", "map_route"],
+    re: /\b(image|picture|photo|logo|icon|diagram|screenshot|png|jpe?g|svg|map|route|distance|directions|travel|km|miles)\b/i,
+  },
+  knowledge: {
+    names: ["kb_add", "kb_search"],
+    re: /\b(knowledge ?base|kb|docs?|documentation|reference|ingest)\b|index (this|the)|remember this/i,
+  },
+  storage: {
+    names: ["cleanup_storage"],
+    re: /\b(storage|junk|cache)\b|disk space|free up|clean ?up|temp files/i,
+  },
+};
+
+function gateTools(list, chatMessages) {
+  // What the conversation is about: the user's own words, plus the tools already called — a family
+  // that has been used once must never vanish mid-task.
+  const parts = [];
+  const used = new Set();
+  for (const m of chatMessages) {
+    if (m.role === "user") {
+      if (typeof m.content === "string") parts.push(m.content);
+      else if (Array.isArray(m.content)) {
+        for (const part of m.content) if (part && part.type === "text") parts.push(part.text);
+      }
+    }
+    if (m.tool_calls) for (const tc of m.tool_calls) if (tc.function?.name) used.add(tc.function.name);
+  }
+  const text = parts.join(" \n ");
+  const drop = new Set();
+  for (const fam of Object.values(TOOL_FAMILIES)) {
+    if (fam.re.test(text) || fam.names.some((n) => used.has(n))) continue;
+    for (const n of fam.names) drop.add(n);
+  }
+  return drop.size ? list.filter((t) => !drop.has(t.function.name)) : list;
+}
+
 async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model, chatMessages, flattenHistory, forcedTool, allowedTools }) {
   // A swarm role or a worker only gets the tools its job needs — a Researcher cannot write
   // files, a Planner cannot run commands — so the model can't wander outside its remit. The
@@ -4047,7 +4134,7 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
   const offered = [...TOOLS, ...toolRegistry.agentTools(), ...EXTRA_TOOLS];
   const toolList = allowedTools
     ? offered.filter((t) => allowedTools.has(t.function.name))
-    : offered.filter((t) => !HEADLESS_ONLY_TOOLS.has(t.function.name));
+    : gateTools(offered.filter((t) => !HEADLESS_ONLY_TOOLS.has(t.function.name)), chatMessages);
   const res = await fetch(buildEndpointUrl(baseUrl, "/chat/completions"), {
     method: "POST",
     signal: controller.signal,
@@ -4326,7 +4413,7 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
     ];
     // Sanitising for thought_signature happens inside streamChatCompletion, which knows which
     // model is actually being called even after a mid-turn switch.
-    const requestMessages = [chatMessages[0], ...extraSystemMessages, ...chatMessages.slice(1)];
+    const requestMessages = trimStaleToolResults([chatMessages[0], ...extraSystemMessages, ...chatMessages.slice(1)]);
 
     // Force the audit/lookup tool only on the first model call after the user's request — when
     // the conversation still ends with their message and nothing has run yet this turn. Once a
@@ -4738,6 +4825,7 @@ const { WorkerScheduler, describeSchedule } = require("./agents/workers");
 const { Swarm } = require("./agents/swarm");
 const { Healer } = require("./agents/healer");
 const { Today } = require("./agents/today");
+const { Monitor } = require("./agents/monitor");
 
 async function headlessBackend(model) {
   const s = await refreshSettingsCache();
@@ -4880,6 +4968,18 @@ const healer = new Healer({
 });
 const today = new Today({ userDataDir, complete, log: (m) => console.log("[today]", m) });
 
+// Device + web-app monitoring: the traffic light in the title bar, the watched URLs, and the
+// twice-weekly security scan. It reads the same live system probe the os_system_stats tool uses,
+// and runs its scans through the same arsenal the agent does — no second, weaker implementation.
+const monitor = new Monitor({
+  userDataDir,
+  notify: notifyDesktop,
+  emit: emitToWindow,
+  arsenal,
+  systemStats,
+  log: (m) => console.log("[monitor]", m),
+});
+
 // Background-task output feeds the healer: a crash line in the dev server is an incident.
 bgTaskListeners.push({
   output: (task, stream, line) => healer.onBgOutput(task, stream, line),
@@ -4887,8 +4987,9 @@ bgTaskListeners.push({
 });
 
 app.whenReady().then(async () => {
-  await Promise.all([workers.load(), swarm.load(), healer.load()]).catch(() => {});
+  await Promise.all([workers.load(), swarm.load(), healer.load(), monitor.load()]).catch(() => {});
   workers.start();
+  monitor.start();
   // Waking from sleep is exactly when a 07:30 briefing is most wanted — tick right away.
   try {
     const { powerMonitor } = require("electron");
@@ -4954,6 +5055,363 @@ ipcMain.handle("today:build", async (_e, { root, lastChat, force }) => {
 });
 ipcMain.on("project:opened", (_e, root) => {
   if (!root) return;
+  monitor.projectOpened(root);
   healer.projectOpened(root);
   workers.projectOpened(root).catch(() => {});
 });
+
+// ---------- Demo Studio (screen recording → interactive product demos) ----------
+// The capture itself happens in the renderer (MediaRecorder over a desktopCapturer stream), because
+// that is the only place Chromium hands over frames. What has to live here is everything the
+// renderer cannot see: the list of capturable screens and windows, where the real mouse pointer is
+// while this window is minimised, global hotkeys that still fire when another app has focus, and
+// the files a finished demo is made of.
+const { desktopCapturer, screen: electronScreen, globalShortcut } = require("electron");
+
+const DEMO_DIR = path.join(CANONICAL_STORE_DIR, "demos");
+const CURSOR_HZ = 60;
+// Windows rounds timers up to the ~15.6 ms system tick, so asking for 16 ms lands on the *second*
+// tick and halves the rate. Ask for less than one tick and every tick fires: measured ~60-64 Hz.
+const CURSOR_INTERVAL_MS = process.platform === "win32" ? 8 : Math.round(1000 / CURSOR_HZ);
+const CURSOR_MAX_SAMPLES = 70 * CURSOR_HZ * 60; // an hour of recording, then it stops growing
+
+function demoDir() {
+  fsSync.mkdirSync(DEMO_DIR, { recursive: true });
+  return DEMO_DIR;
+}
+function newDemoId() {
+  return "demo-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7);
+}
+function safeDemoId(id) {
+  // Ids are generated here, but they come back over IPC — never let one walk out of the folder.
+  return typeof id === "string" && /^[a-z0-9-]{4,64}$/i.test(id) ? id : null;
+}
+
+ipcMain.handle("studio:sources", async () => {
+  let sources = [];
+  try {
+    sources = await desktopCapturer.getSources({
+      types: ["screen", "window"],
+      thumbnailSize: { width: 480, height: 300 },
+      fetchWindowIcons: true,
+    });
+  } catch (err) {
+    return { ok: false, error: err.message, sources: [] };
+  }
+  const displays = electronScreen.getAllDisplays();
+  const primaryId = String(electronScreen.getPrimaryDisplay().id);
+  const selfTitle = win ? win.getTitle() : "";
+  const out = [];
+  for (const s of sources) {
+    const isScreen = s.id.startsWith("screen:");
+    // A window with no title is a hidden helper window, not something anyone meant to record.
+    if (!isScreen && !String(s.name || "").trim()) continue;
+    const display = isScreen ? displays.find((d) => String(d.id) === String(s.display_id)) || null : null;
+    let thumbnail = "";
+    try { thumbnail = s.thumbnail && !s.thumbnail.isEmpty() ? s.thumbnail.toDataURL() : ""; } catch {}
+    let icon = "";
+    try { icon = s.appIcon && !s.appIcon.isEmpty() ? s.appIcon.toDataURL() : ""; } catch {}
+    out.push({
+      id: s.id,
+      name: s.name,
+      kind: isScreen ? "screen" : "window",
+      thumbnail,
+      icon,
+      isSelf: !isScreen && !!selfTitle && s.name === selfTitle,
+      displayId: display ? String(display.id) : null,
+      // Pixel size of the display, so the picker can say "2560 × 1440" before anything is recorded.
+      width: display ? Math.round(display.size.width * display.scaleFactor) : 0,
+      height: display ? Math.round(display.size.height * display.scaleFactor) : 0,
+      primary: display ? String(display.id) === primaryId : false,
+    });
+  }
+  out.sort((a, b) => (a.kind === b.kind ? (b.primary ? 1 : 0) - (a.primary ? 1 : 0) : a.kind === "screen" ? -1 : 1));
+  return { ok: true, sources: out };
+});
+
+// ---- Pointer path ----
+// Sampled here rather than in the renderer because during a recording this window is usually
+// minimised, and a hidden renderer gets no mouse events at all. Positions are normalised against
+// the recorded display, so the editor can map them onto the video whatever its resolution is.
+let cursorTimer = null;
+let cursorSamples = [];
+let cursorOverflow = false;
+let cursorSession = 0;
+
+function stopCursorSampling() {
+  if (cursorTimer) clearInterval(cursorTimer);
+  cursorTimer = null;
+}
+
+ipcMain.handle("studio:cursor-start", (_e, { displayId } = {}) => {
+  stopCursorSampling();
+  cursorSamples = [];
+  cursorOverflow = false;
+  // Each run gets a token. A stop that quotes an older one — a stale retry, a second Studio view —
+  // is answered without touching the buffer the live recording is still filling.
+  cursorSession++;
+  const displays = electronScreen.getAllDisplays();
+  const d = displays.find((x) => String(x.id) === String(displayId)) || electronScreen.getPrimaryDisplay();
+  const b = d.bounds;
+  cursorTimer = setInterval(() => {
+    try {
+      if (cursorSamples.length >= CURSOR_MAX_SAMPLES) { cursorOverflow = true; return; }
+      const p = electronScreen.getCursorScreenPoint();
+      cursorSamples.push([
+        Date.now(),
+        Math.round(((p.x - b.x) / b.width) * 10000) / 10000,
+        Math.round(((p.y - b.y) / b.height) * 10000) / 10000,
+      ]);
+    } catch {}
+  }, CURSOR_INTERVAL_MS);
+  return {
+    ok: true,
+    session: cursorSession,
+    display: { id: String(d.id), width: b.width, height: b.height, scaleFactor: d.scaleFactor },
+  };
+});
+
+ipcMain.handle("studio:cursor-stop", (_e, session) => {
+  if (session != null && session !== cursorSession) return { ok: false, stale: true, samples: [] };
+  stopCursorSampling();
+  const samples = cursorSamples;
+  cursorSamples = [];
+  return { ok: true, samples, truncated: cursorOverflow };
+});
+
+// ---- Global hotkeys, live only while a recording is running ----
+// F-keys with two modifiers: a recording is usually of some other app, and Ctrl+Shift+Z or
+// Ctrl+Shift+S would be taken out of that app's hands the moment the user hit record.
+const STUDIO_KEYS = [
+  { accel: "CommandOrControl+Shift+F9", action: "stop" },
+  { accel: "CommandOrControl+Shift+F10", action: "pause" },
+  { accel: "CommandOrControl+Shift+F8", action: "zoom" },
+];
+
+function clearStudioKeys() {
+  for (const k of STUDIO_KEYS) { try { globalShortcut.unregister(k.accel); } catch {} }
+}
+
+ipcMain.handle("studio:hotkeys", (_e, on) => {
+  clearStudioKeys();
+  if (!on) return { ok: true, registered: [] };
+  const registered = [];
+  for (const k of STUDIO_KEYS) {
+    try {
+      // Another app may already own the combination; report what stuck rather than promising keys
+      // that will never fire.
+      const got = globalShortcut.register(k.accel, () => {
+        win?.webContents.send("studio:hotkey", { action: k.action, at: Date.now() });
+      });
+      if (got) registered.push(k.action);
+    } catch {}
+  }
+  return { ok: true, registered };
+});
+
+ipcMain.handle("studio:window", (_e, action) => {
+  if (!win) return { ok: false };
+  try {
+    if (action === "minimize") win.minimize();
+    else if (action === "restore") { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+  } catch {}
+  return { ok: true };
+});
+
+// ---- Floating recording controller ----
+// Once the main window is out of the way there is nothing left to click, and the global hotkeys may
+// have been taken by another app. This little always-on-top bar is the reliable way to stop.
+// setContentProtection keeps it out of the capture itself, so it never lands in the demo.
+let recBarWin = null;
+
+function closeRecBar() {
+  if (recBarWin && !recBarWin.isDestroyed()) { try { recBarWin.destroy(); } catch {} }
+  recBarWin = null;
+}
+
+function openRecBar() {
+  closeRecBar();
+  const display = electronScreen.getPrimaryDisplay();
+  const width = 330;
+  const height = 60;
+  recBarWin = new BrowserWindow({
+    width, height,
+    x: Math.round(display.workArea.x + (display.workArea.width - width) / 2),
+    y: Math.round(display.workArea.y + display.workArea.height - height - 28),
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    focusable: true,
+    hasShadow: false,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, "renderer", "recbar-preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false,
+    },
+  });
+  recBarWin.setAlwaysOnTop(true, "screen-saver");
+  try { recBarWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch {}
+  try { recBarWin.setContentProtection(true); } catch {}
+  recBarWin.loadFile(path.join(__dirname, "renderer", "recbar.html"));
+  recBarWin.once("ready-to-show", () => { try { recBarWin.showInactive(); } catch {} });
+  recBarWin.on("closed", () => { recBarWin = null; });
+}
+
+ipcMain.handle("studio:recbar", (_e, { show } = {}) => {
+  if (show) openRecBar(); else closeRecBar();
+  return { ok: true };
+});
+
+ipcMain.on("studio:recbar-state", (_e, state) => {
+  if (recBarWin && !recBarWin.isDestroyed()) recBarWin.webContents.send("studio:recbar-state", state || {});
+});
+
+// The bar speaks the same language as the global hotkeys, so the renderer needs no second path.
+ipcMain.on("studio:recbar-action", (_e, action) => {
+  if (["stop", "pause", "zoom"].includes(action)) win?.webContents.send("studio:hotkey", { action, at: Date.now() });
+});
+
+// ---- Takes and projects on disk ----
+// The raw capture is written straight out as its own file; the project is a small JSON sidecar
+// pointing at it. Re-opening a demo weeks later then costs nothing but reading one video back.
+ipcMain.handle("studio:save-take", async (_e, { id, data, kind }) => {
+  try {
+    const dir = demoDir();
+    const safe = safeDemoId(id) || newDemoId();
+    const file = path.join(dir, `${safe}${kind === "camera" ? "-cam" : ""}.webm`);
+    await fs.writeFile(file, Buffer.from(data));
+    const st = await fs.stat(file);
+    return { ok: true, id: safe, path: file, bytes: st.size };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle("studio:save-project", async (_e, project) => {
+  try {
+    const dir = demoDir();
+    const safe = safeDemoId(project?.id);
+    if (!safe) return { ok: false, error: "bad project id" };
+    const file = path.join(dir, `${safe}.json`);
+    await fs.writeFile(file, JSON.stringify({ ...project, savedAt: Date.now() }, null, 2), "utf8");
+    return { ok: true, path: file };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle("studio:list-projects", async () => {
+  const dir = demoDir();
+  let names = [];
+  try { names = await fs.readdir(dir); } catch { return { ok: true, projects: [] }; }
+  const projects = [];
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      const p = JSON.parse(await fs.readFile(path.join(dir, name), "utf8"));
+      let bytes = 0;
+      let missing = true;
+      if (p.mediaPath) {
+        try { bytes = (await fs.stat(p.mediaPath)).size; missing = false; } catch {}
+      }
+      projects.push({
+        id: p.id, name: p.name, createdAt: p.createdAt, savedAt: p.savedAt,
+        duration: p.duration, width: p.width, height: p.height,
+        poster: p.poster || "", bytes, missing,
+      });
+    } catch {}
+  }
+  projects.sort((a, b) => (b.savedAt || b.createdAt || 0) - (a.savedAt || a.createdAt || 0));
+  return { ok: true, projects };
+});
+
+ipcMain.handle("studio:load-project", async (_e, id) => {
+  try {
+    const safe = safeDemoId(id);
+    if (!safe) return { ok: false, error: "bad project id" };
+    const p = JSON.parse(await fs.readFile(path.join(demoDir(), `${safe}.json`), "utf8"));
+    // Hand back an ArrayBuffer of exactly the file — a Buffer's own .buffer can be a shared pool.
+    const exact = async (f) => {
+      const b = await fs.readFile(f);
+      return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+    };
+    let media = null;
+    let camera = null;
+    if (p.mediaPath) media = await exact(p.mediaPath);
+    if (p.cameraPath && fsSync.existsSync(p.cameraPath)) camera = await exact(p.cameraPath);
+    return { ok: true, project: p, media, camera };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle("studio:delete-project", async (_e, id) => {
+  try {
+    const safe = safeDemoId(id);
+    if (!safe) return { ok: false, error: "bad project id" };
+    const dir = demoDir();
+    let mediaPaths = [];
+    try {
+      const p = JSON.parse(await fs.readFile(path.join(dir, `${safe}.json`), "utf8"));
+      mediaPaths = [p.mediaPath, p.cameraPath].filter(Boolean);
+    } catch {}
+    for (const f of [path.join(dir, `${safe}.json`), ...mediaPaths]) {
+      try { await fs.unlink(f); } catch {}
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle("studio:export", async (_e, { data, suggestedName, ext }) => {
+  try {
+    const filters = ext === "gif"
+      ? [{ name: "Animated GIF", extensions: ["gif"] }]
+      : ext === "mp4"
+        ? [{ name: "MP4 video", extensions: ["mp4"] }]
+        : [{ name: "WebM video", extensions: ["webm"] }];
+    let base = app.getPath("downloads");
+    try { base = app.getPath("videos") || base; } catch {}
+    const res = await dialog.showSaveDialog(win, {
+      title: "Export demo",
+      defaultPath: path.join(base, suggestedName || `demo.${ext}`),
+      filters,
+    });
+    if (res.canceled || !res.filePath) return { ok: false, canceled: true };
+    await fs.writeFile(res.filePath, Buffer.from(data));
+    const st = await fs.stat(res.filePath);
+    return { ok: true, path: res.filePath, bytes: st.size };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle("studio:reveal", (_e, target) => {
+  try { shell.showItemInFolder(target); return { ok: true }; } catch (err) { return { ok: false, error: err.message }; }
+});
+
+app.on("will-quit", () => { stopCursorSampling(); clearStudioKeys(); closeRecBar(); });
+
+// ---- IPC: device + web-app monitor ----
+ipcMain.handle("monitor:view", async (_e, opts) => {
+  if (opts && opts.refresh) await monitor.readDevice(true).catch(() => {});
+  return monitor.view();
+});
+ipcMain.handle("monitor:add-site", (_e, payload) => monitor.addSite(payload || {}));
+ipcMain.handle("monitor:remove-site", (_e, id) => monitor.removeSite(id));
+ipcMain.handle("monitor:update-site", (_e, id, patch) => monitor.updateSite(id, patch || {}));
+ipcMain.handle("monitor:check-site", async (_e, id) => { await monitor.checkSite(id); return monitor.view(); });
+ipcMain.handle("monitor:scan-now", async () => { await monitor.runScan("manual"); return monitor.view(); });
+ipcMain.handle("monitor:set-enabled", (_e, on) => monitor.setEnabled(on));
+ipcMain.handle("monitor:mark-read", () => { monitor.markEventsRead(); return monitor.view(); });
+ipcMain.handle("monitor:clear-events", () => { monitor.clearEvents(); return monitor.view(); });
