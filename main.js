@@ -6,6 +6,7 @@ const { exec, spawn, spawnSync } = require("node:child_process");
 const { autoUpdater } = require("electron-updater");
 const arsenal = require("./arsenal");
 const mitmManager = require("./arsenal/mitm");
+const gatewayManager = require("./arsenal/gateway");
 
 // Electron derives userData from app.getName(), which is package.json's `name` when run from
 // source ("nutaan-code") but `productName` once packaged ("Nutaan Code"). Left alone, the
@@ -126,12 +127,22 @@ function createWindow() {
   win.loadFile(path.join(__dirname, "renderer", "index.html"));
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  try {
+    await gatewayManager.start({ port: 20128 });
+  } catch (err) {
+    console.warn("[omniroute] auto-start:", err.message);
+  }
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
   setupAutoUpdate();
+});
+
+app.on("will-quit", () => {
+  try { gatewayManager.stop(); } catch {}
+  try { mitmManager.stop(); } catch {}
 });
 
 function setupAutoUpdate() {
@@ -1759,9 +1770,11 @@ ipcMain.handle("mitm:start", async (_e, payload = {}) => {
     const store = await readStore();
     const nutaanKey = payload.nutaanKey || store.nutaanKey || "";
     const agentMap  = payload.agentMap  || (store.agentBridge ? store.agentBridge.agentMap : undefined) || {};
+    // Ensure the local gateway is running so intercepted traffic can be routed internally
+    await gatewayManager.start({ port: 20128 });
     const result = await mitmManager.start({
       nutaanKey,
-      nutaanBaseUrl: NUTAAN_LLM_BASE,
+      nutaanBaseUrl: "http://127.0.0.1:20128",
       agentMap,
       userBypass: payload.userBypass || [],
     });
@@ -1777,6 +1790,48 @@ ipcMain.handle("mitm:stop", async () => {
     return { ok: true, ...result };
   } catch (err) {
     return { ok: false, error: err.message };
+  }
+});
+
+// ---------- Nutaan OmniRoute Gateway Handlers ----------
+
+ipcMain.handle("gateway:status", async () => {
+  try {
+    return gatewayManager.getStatus();
+  } catch (err) {
+    return { running: false, error: err.message };
+  }
+});
+
+ipcMain.handle("gateway:start", async (_e, options = {}) => {
+  try {
+    return await gatewayManager.start(options);
+  } catch (err) {
+    return { status: "error", error: err.message };
+  }
+});
+
+ipcMain.handle("gateway:stop", async () => {
+  try {
+    return gatewayManager.stop();
+  } catch (err) {
+    return { status: "error", error: err.message };
+  }
+});
+
+ipcMain.handle("gateway:get-models", async () => {
+  try {
+    return gatewayManager.getModels();
+  } catch (err) {
+    return { error: err.message };
+  }
+});
+
+ipcMain.handle("gateway:save-config", async (_e, config) => {
+  try {
+    return await gatewayManager.saveConfig(config);
+  } catch (err) {
+    return { status: "error", error: err.message };
   }
 });
 

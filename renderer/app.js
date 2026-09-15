@@ -2207,13 +2207,68 @@
     rebuildModels();
   }
 
-  // Combine the Nutaan catalog with every user-managed provider's models into one grouped list,
-  // and repaint the settings picker. Each entry carries its providerId so selection can route.
+  let _omniCatalogCache = [];
+  let _omniCombosCache = {};
+  let _omniModelsLoaded = false;
+
+  function getProviderLogo(providerId) {
+    const id = (providerId || "").toLowerCase();
+    if (id.includes("anthropic") || id.includes("claude")) return "providers/anthropic.png";
+    if (id.includes("deepseek")) return "providers/deepseek.png";
+    if (id.includes("groq")) return "providers/groq.png";
+    if (id.includes("cerebras")) return "providers/cerebras.svg";
+    if (id.includes("samba")) return "providers/sambanova.svg";
+    if (id.includes("gemini") || id.includes("google")) return "providers/google.png";
+    if (id.includes("openrouter")) return "providers/openrouter.png";
+    if (id.includes("mistral") || id.includes("codestral")) return "providers/mistral.png";
+    if (id.includes("openai") || id.includes("gpt") || id.includes("o3") || id.includes("o1")) return "providers/openai.png";
+    if (id.includes("together")) return "providers/together.png";
+    if (id.includes("xai") || id.includes("grok")) return "providers/xai.png";
+    if (id.includes("ollama") || id.includes("local")) return "providers/ollama.svg";
+    return "providers/nutaan.png";
+  }
+
+  async function loadOmniRouteCatalog() {
+    if (_omniModelsLoaded || !window.nutaan || !window.nutaan.gateway) return;
+    try {
+      const res = await window.nutaan.gateway.getModels();
+      if (res && res.models) {
+        _omniCatalogCache = res.models;
+        _omniCombosCache = res.combos || {};
+        _omniModelsLoaded = true;
+        rebuildModels();
+      }
+    } catch (e) {
+      console.warn("OmniRoute catalog fetch:", e);
+    }
+  }
+
+  // Combine the Nutaan catalog with OmniRoute models and user-managed provider models
   function rebuildModels() {
     aggregatedModels = [];
     for (const id of nutaanModels) aggregatedModels.push({ id, providerId: "", providerName: "Nutaan", providerType: "nutaan" });
     for (const p of settings.customProviders || []) {
       for (const id of p.models || []) aggregatedModels.push({ id, providerId: p.id, providerName: p.name, providerType: p.type });
+    }
+    // Inject OmniRoute 1,000+ Models Catalog
+    if (_omniCatalogCache && _omniCatalogCache.length) {
+      for (const m of _omniCatalogCache) {
+        if (!aggregatedModels.some((existing) => existing.id === m.id)) {
+          aggregatedModels.push({
+            id: m.id,
+            name: m.name,
+            providerId: m.provider,
+            providerName: (m.provider || "OmniRoute").toUpperCase(),
+            providerType: m.provider,
+            tier: m.tier,
+            category: m.category,
+            context_window: m.contextWindow ? (m.contextWindow >= 1000000 ? (m.contextWindow / 1000000) + "M" : Math.round(m.contextWindow / 1000) + "k") : "",
+            speed: m.speed,
+            description: m.description,
+            capabilities: m.capabilities
+          });
+        }
+      }
     }
     if (!modelSelectSettings) return;
     modelSelectSettings.innerHTML = "";
@@ -3649,8 +3704,10 @@
 
   // ---------- Settings (multi-tab) ----------
   let _settingsActiveTab = "account";
+  let _modelSearchTerm = "";
+  let _modelFilterCategory = "all";
 
-  function openSettings(tabId) {
+  async function openSettings(tabId) {
     if (baseUrlInput) baseUrlInput.value = settings.baseUrl || "";
     if (apiKeyInput) apiKeyInput.value = settings.apiKey || "";
     if (imageModelInput) imageModelInput.value = settings.imageModel || "";
@@ -3666,6 +3723,7 @@
     renderAccountRow();
     renderUsagePanel();
     renderProviders();
+    await loadOmniRouteCatalog();
     switchSettingsTab(tabId || _settingsActiveTab || "account");
     settingsOverlay.hidden = false;
   }
@@ -3678,10 +3736,18 @@
     document.querySelectorAll(".settings-page").forEach((page) => {
       page.hidden = page.dataset.page !== tabId;
     });
-    const titles = { account: "Account", models: "Models", providers: "Providers", agentbridge: "AgentBridge", advanced: "Advanced" };
+    const titles = {
+      account: "Account",
+      omniroute: "OmniRoute Universal Gateway",
+      models: "Models Catalog",
+      providers: "Model Providers",
+      agentbridge: "AgentBridge (Internal MITM)",
+      advanced: "Advanced Settings"
+    };
     const titleEl = el("settingsPageTitle");
     if (titleEl) titleEl.textContent = titles[tabId] || tabId;
 
+    if (tabId === "omniroute") renderOmniRouteTab();
     if (tabId === "models") renderModelTable();
     if (tabId === "agentbridge") renderAgentBridgeTab();
   }
@@ -3693,15 +3759,165 @@
     });
   });
 
+  // ---------- OmniRoute Gateway Controller ----------
+  let _orPollInterval = null;
+
+  async function renderOmniRouteTab() {
+    const dot = el("orStatusDot");
+    const startBtn = el("orStartBtn");
+    const stopBtn = el("orStopBtn");
+    const epCode = el("orEndpointUrl");
+    const copyBtn = el("orCopyEndpointBtn");
+    const comboSelect = el("orActiveCombo");
+    const freePoolToggle = el("orFreePoolToggle");
+    const agBadge = el("orAgStatusBadge");
+    const kiroBadge = el("orKiroStatusBadge");
+    const statReq = el("orStatReq");
+    const statOk = el("orStatOk");
+    const statFb = el("orStatFb");
+    const statModels = el("orStatModels");
+
+    async function updateStatus() {
+      if (!window.nutaan || !window.nutaan.gateway) return;
+      try {
+        const st = await window.nutaan.gateway.status();
+        const isRunning = Boolean(st.running);
+        if (dot) dot.className = "or-status-dot" + (isRunning ? " running" : "");
+        if (startBtn) startBtn.hidden = isRunning;
+        if (stopBtn) stopBtn.hidden = !isRunning;
+        if (epCode) epCode.textContent = `http://127.0.0.1:${st.port || 20128}/v1`;
+
+        if (st.stats) {
+          if (statReq) statReq.textContent = st.stats.totalRequests || 0;
+          if (statOk) statOk.textContent = st.stats.successfulRequests || 0;
+          if (statFb) statFb.textContent = st.stats.fallbacksTriggered || 0;
+        }
+        if (statModels) statModels.textContent = `${(aggregatedModels && aggregatedModels.length) || 1200}+`;
+      } catch (err) {
+        console.warn("Error fetching gateway status:", err);
+      }
+
+      // Check MITM interception status
+      if (window.nutaan && window.nutaan.mitm) {
+        try {
+          const mitmSt = await window.nutaan.mitm.status();
+          if (agBadge) {
+            agBadge.textContent = mitmSt.running ? "✓ Actively Intercepted" : "Ready to Intercept";
+            agBadge.style.color = mitmSt.running ? "#34d399" : "#94a3b8";
+          }
+          if (kiroBadge) {
+            kiroBadge.textContent = mitmSt.running ? "✓ Actively Intercepted" : "Ready to Intercept";
+            kiroBadge.style.color = mitmSt.running ? "#34d399" : "#94a3b8";
+          }
+        } catch {}
+      }
+    }
+
+    if (startBtn && !startBtn._bound) {
+      startBtn._bound = true;
+      startBtn.addEventListener("click", async () => {
+        startBtn.disabled = true;
+        startBtn.textContent = "Starting…";
+        try {
+          await window.nutaan.gateway.start({ port: 20128 });
+          await updateStatus();
+        } finally {
+          startBtn.disabled = false;
+          startBtn.textContent = "Start Gateway";
+        }
+      });
+    }
+
+    if (stopBtn && !stopBtn._bound) {
+      stopBtn._bound = true;
+      stopBtn.addEventListener("click", async () => {
+        stopBtn.disabled = true;
+        stopBtn.textContent = "Stopping…";
+        try {
+          await window.nutaan.gateway.stop();
+          await updateStatus();
+        } finally {
+          stopBtn.disabled = false;
+          stopBtn.textContent = "Stop Gateway";
+        }
+      });
+    }
+
+    if (copyBtn && !copyBtn._bound) {
+      copyBtn._bound = true;
+      copyBtn.addEventListener("click", () => {
+        navigator.clipboard.writeText("http://127.0.0.1:20128/v1");
+        copyBtn.textContent = "Copied!";
+        setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
+      });
+    }
+
+    await updateStatus();
+  }
+
+  // ---------- Enhanced Model Table Rendering ----------
   function renderModelTable() {
     const tbody = el("modelTableBody");
     if (!tbody) return;
+
+    // Search and filter listeners
+    const searchInput = el("modelSearchInput");
+    if (searchInput && !searchInput._bound) {
+      searchInput._bound = true;
+      searchInput.addEventListener("input", (e) => {
+        _modelSearchTerm = (e.target.value || "").toLowerCase().trim();
+        renderModelTable();
+      });
+    }
+
+    const chipsContainer = el("modelFilterChips");
+    if (chipsContainer && !chipsContainer._bound) {
+      chipsContainer._bound = true;
+      chipsContainer.querySelectorAll(".m-chip").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          chipsContainer.querySelectorAll(".m-chip").forEach((b) => b.classList.remove("active"));
+          btn.classList.add("active");
+          _modelFilterCategory = btn.dataset.filter || "all";
+          renderModelTable();
+        });
+      });
+    }
+
     if (!aggregatedModels || !aggregatedModels.length) {
-      tbody.innerHTML = `<tr><td colspan="4" class="model-table-empty">No models loaded. Click Refresh above.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="5" class="model-table-empty">Loading 1,000+ models from OmniRoute catalog…</td></tr>`;
       return;
     }
+
+    // Filter models
+    let filtered = aggregatedModels;
+    if (_modelSearchTerm) {
+      filtered = filtered.filter((m) =>
+        (m.id && m.id.toLowerCase().includes(_modelSearchTerm)) ||
+        (m.name && m.name.toLowerCase().includes(_modelSearchTerm)) ||
+        (m.providerName && m.providerName.toLowerCase().includes(_modelSearchTerm))
+      );
+    }
+
+    if (_modelFilterCategory === "free") {
+      filtered = filtered.filter((m) => m.tier === "free" || (m.id && m.id.includes(":free")));
+    } else if (_modelFilterCategory === "coding") {
+      filtered = filtered.filter((m) => m.category === "coding" || (m.id && (m.id.includes("code") || m.id.includes("qwen"))));
+    } else if (_modelFilterCategory === "reasoning") {
+      filtered = filtered.filter((m) => m.category === "reasoning" || (m.id && (m.id.includes("r1") || m.id.includes("reason") || m.id.includes("thinking") || m.id.includes("o3"))));
+    } else if (_modelFilterCategory === "local") {
+      filtered = filtered.filter((m) => m.tier === "local" || (m.providerType && m.providerType.includes("ollama")));
+    }
+
+    if (!filtered.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="model-table-empty">No models match "${escapeHtml(_modelSearchTerm)}"</td></tr>`;
+      return;
+    }
+
     tbody.innerHTML = "";
-    for (const m of aggregatedModels) {
+    // Display up to 150 items to keep DOM super responsive
+    const slice = filtered.slice(0, 150);
+
+    for (const m of slice) {
       const pId = m.providerId === "nutaan" ? "" : (m.providerId || "");
       const healthKey = modelHealthKey(pId, m.id);
       const health = (settings.modelHealth || {})[healthKey];
@@ -3712,17 +3928,32 @@
         : `<span class="model-status-chip untested">— Untested</span>`;
 
       const isActive = m.id === settings.model && (pId === (settings.modelProviderId || ""));
+      const isFreePool = m.tier === "free" || (m.id && m.id.includes(":free"));
+
       const tr = document.createElement("tr");
       tr.className = isActive ? "model-row active-model" : "model-row";
       tr.innerHTML = `
-        <td class="model-id-cell" title="${escapeHtml(m.id)}">${escapeHtml(m.id)}</td>
-        <td>${escapeHtml(m.providerName || "Nutaan")}</td>
+        <td class="model-id-cell">
+          <b>${escapeHtml(m.name || m.id)}</b>${isFreePool ? ' <span class="free-pool-badge">1.6B Pool</span>' : ''}
+          <div style="font-size:11px;color:var(--text-muted);font-family:var(--mono);margin-top:2px;">${escapeHtml(m.id)}</div>
+        </td>
+        <td>
+          <div class="provider-logo-cell">
+            <img class="provider-logo-img" src="${getProviderLogo(m.providerId || m.providerType)}" alt="" />
+            <span>${escapeHtml(m.providerName || "Nutaan")}</span>
+          </div>
+        </td>
+        <td>
+          <span class="context-badge">${m.context_window || "128k"}</span>
+          ${m.speed ? `<span class="speed-badge">${escapeHtml(m.speed)}</span>` : ""}
+        </td>
         <td>${statusHtml}</td>
         <td>
           <button type="button" class="model-select-btn${isActive ? " active" : ""}">
             ${isActive ? "Active" : "Use"}
           </button>
         </td>`;
+
       const btn = tr.querySelector(".model-select-btn");
       btn.addEventListener("click", async () => {
         await selectModel(m.id, pId);
@@ -3886,17 +4117,20 @@
 
   // User-managed provider presets. Any OpenAI-compatible endpoint works; "custom" covers the rest.
   const PROVIDER_PRESETS = [
+    { type: "cerebras", name: "Cerebras (2000 tps Free)", baseUrl: "https://api.cerebras.ai/v1", color: "#f54734", mark: "Cb" },
+    { type: "sambanova", name: "SambaNova (DeepSeek-R1 Free)", baseUrl: "https://api.sambanova.ai/v1", color: "#f97316", mark: "SN" },
+    { type: "groq", name: "Groq (Free Tier)", baseUrl: "https://api.groq.com/openai/v1", color: "#f55036", mark: "gq" },
+    { type: "google", name: "Google Gemini (Free Tier)", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", color: "#4285f4", mark: "G" },
+    { type: "openrouter", name: "OpenRouter (Free + Paid)", baseUrl: "https://openrouter.ai/api/v1", color: "#6467f2", mark: "OR" },
+    { type: "deepseek", name: "DeepSeek (Official)", baseUrl: "https://api.deepseek.com/v1", color: "#4d6bfe", mark: "DS" },
     { type: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", color: "#10a37f", mark: "AI" },
-    { type: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", color: "#6467f2", mark: "OR" },
-    { type: "together", name: "Together AI", baseUrl: "https://api.together.xyz/v1", color: "#0f6fff", mark: "T" },
-    { type: "nvidia", name: "NVIDIA NIM", baseUrl: "https://integrate.api.nvidia.com/v1", color: "#76b900", mark: "NV" },
-    { type: "google", name: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", color: "#4285f4", mark: "G" },
-    { type: "azure", name: "Azure OpenAI", baseUrl: "", color: "#0a84ff", mark: "Az" },
-    { type: "groq", name: "Groq", baseUrl: "https://api.groq.com/openai/v1", color: "#f55036", mark: "gq" },
-    { type: "mistral", name: "Mistral", baseUrl: "https://api.mistral.ai/v1", color: "#fa5310", mark: "M" },
-    { type: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", color: "#4d6bfe", mark: "DS" },
-    { type: "xai", name: "xAI (Grok)", baseUrl: "https://api.x.ai/v1", color: "#111827", mark: "x" },
     { type: "anthropic", name: "Anthropic", baseUrl: "https://api.anthropic.com/v1", color: "#d97757", mark: "A" },
+    { type: "together", name: "Together AI", baseUrl: "https://api.together.xyz/v1", color: "#0f6fff", mark: "T" },
+    { type: "mistral", name: "Mistral", baseUrl: "https://api.mistral.ai/v1", color: "#fa5310", mark: "M" },
+    { type: "ollama", name: "Ollama (Local Offline)", baseUrl: "http://127.0.0.1:11434/v1", color: "#1e293b", mark: "OL" },
+    { type: "nvidia", name: "NVIDIA NIM", baseUrl: "https://integrate.api.nvidia.com/v1", color: "#76b900", mark: "NV" },
+    { type: "azure", name: "Azure OpenAI", baseUrl: "", color: "#0a84ff", mark: "Az" },
+    { type: "xai", name: "xAI (Grok)", baseUrl: "https://api.x.ai/v1", color: "#111827", mark: "x" },
     { type: "custom", name: "Custom (OpenAI-compatible)", baseUrl: "", color: "#6b7280", mark: "•" },
   ];
   const presetFor = (type) => PROVIDER_PRESETS.find((p) => p.type === type) || PROVIDER_PRESETS.find((p) => p.type === "custom");
@@ -3905,7 +4139,7 @@
     const logo = document.createElement("span");
     logo.className = "provider-logo";
     const img = document.createElement("img");
-    img.src = "providers/" + type + ".png";
+    img.src = getProviderLogo(type);
     img.alt = "";
     img.onerror = () => { logo.textContent = mark || "•"; logo.style.background = color || "#6b7280"; logo.style.color = "#fff"; };
     logo.appendChild(img);

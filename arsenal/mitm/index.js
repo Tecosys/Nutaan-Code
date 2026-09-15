@@ -181,7 +181,7 @@ async function _startInternal(opts) {
 
   // 4. Spawn the MITM server child process
   const serverScript = path.join(__dirname, "server.js");
-  const nutaanBaseUrl = opts.nutaanBaseUrl || "https://nutaan.com/api/v1";
+  const nutaanBaseUrl = opts.nutaanBaseUrl || "http://127.0.0.1:20128";
   const agentMap  = opts.agentMap  || {};
   const userBypass = opts.userBypass || [];
   const port = opts.port || 443;

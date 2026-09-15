@@ -433,6 +433,10 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/></svg>
         Account
       </button>
+      <button class="settings-tab" data-tab="omniroute" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        OmniRoute
+      </button>
       <button class="settings-tab" data-tab="models" type="button">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="9" ry="4"/><ellipse cx="12" cy="12" rx="4" ry="9"/></svg>
         Models
@@ -490,6 +494,100 @@
           </div>
         </div>
 
+        <!-- TAB: OMNIROUTE (UNIVERSAL AI GATEWAY) -->
+        <div class="settings-page" data-page="omniroute" hidden>
+          <div class="or-hero-card">
+            <div class="or-hero-head">
+              <div class="or-title-row">
+                <span class="or-status-dot" id="orStatusDot"></span>
+                <span class="or-title">Nutaan OmniRoute</span>
+                <span class="or-badge">1.6B Free Tokens Pool</span>
+              </div>
+              <div class="or-hero-actions">
+                <button class="btn-primary" id="orStartBtn" type="button">Start Gateway</button>
+                <button class="btn-secondary" id="orStopBtn" type="button" hidden>Stop Gateway</button>
+              </div>
+            </div>
+            <p class="or-hero-desc">
+              Universal local AI gateway running directly inside Nutaan Code. Automatically routes, aggregates, and load-balances 1,000+ models across 30+ providers with zero-downtime fallback cascades.
+            </p>
+            <div class="or-endpoint-row">
+              <span class="or-ep-label">Local Endpoint:</span>
+              <code class="or-ep-code" id="orEndpointUrl">http://127.0.0.1:20128/v1</code>
+              <button class="btn-secondary tiny" id="orCopyEndpointBtn" type="button">Copy</button>
+            </div>
+          </div>
+
+          <!-- 1.6B Free Tokens Aggregator -->
+          <section class="settings-section">
+            <div class="settings-section-title">1.6 Billion Free Tokens Aggregator</div>
+            <div class="or-feature-card">
+              <div class="or-feature-row">
+                <div>
+                  <div class="or-feature-title">Unlimited Free-Tier Pooling</div>
+                  <div class="note">Aggregates monthly free quotas from Groq, Cerebras (2000 tps), SambaNova (DeepSeek-R1), Google Gemini (1M TPM), and OpenRouter (:free) for endless coding with 0 costs.</div>
+                </div>
+                <label class="toggle-label">
+                  <input type="checkbox" id="orFreePoolToggle" checked />
+                  <span class="switch-track"><span class="switch-knob"></span></span>
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <!-- Auto-Fallback & Combo Chains -->
+          <section class="settings-section">
+            <div class="settings-section-title">Auto-Fallback Combos (0 Downtime)</div>
+            <div class="field">
+              <label for="orActiveCombo">Active Routing Combo</label>
+              <select id="orActiveCombo" class="or-select">
+                <option value="nutaan-auto-coding" selected>Nutaan Auto-Coding (Groq ➔ Cerebras ➔ Gemini ➔ OpenRouter)</option>
+                <option value="nutaan-reasoning-flow">Nutaan Reasoning Flow (SambaNova R1 ➔ Gemini Thinking ➔ DeepSeek R1 ➔ o3-mini)</option>
+                <option value="nutaan-1.6b-free-pool">1.6B Free Tokens Pool (Unlimited Round-Robin)</option>
+              </select>
+              <div class="note">When your active model hits a rate-limit (429) or temporary server error, OmniRoute automatically fails over to the next capable model in milliseconds.</div>
+            </div>
+          </section>
+
+          <!-- Intercepted IDEs & MITM Integration -->
+          <section class="settings-section">
+            <div class="settings-section-title">Internal MITM Interception</div>
+            <div class="or-intercept-grid">
+              <div class="or-intercept-card">
+                <div class="or-intercept-head">
+                  <span class="or-agent-icon">⚡</span>
+                  <div>
+                    <div class="or-agent-name">Antigravity IDE</div>
+                    <div class="or-agent-route">Intercepts <code>cloudcode-pa.googleapis.com</code></div>
+                  </div>
+                </div>
+                <span class="or-agent-badge" id="orAgStatusBadge">Routed Internally</span>
+              </div>
+              <div class="or-intercept-card">
+                <div class="or-intercept-head">
+                  <span class="or-agent-icon">🔮</span>
+                  <div>
+                    <div class="or-agent-name">Kiro / Claude Code</div>
+                    <div class="or-agent-route">Intercepts <code>api.anthropic.com</code></div>
+                  </div>
+                </div>
+                <span class="or-agent-badge" id="orKiroStatusBadge">Routed Internally</span>
+              </div>
+            </div>
+          </section>
+
+          <!-- Live Metrics & Telemetry -->
+          <section class="settings-section">
+            <div class="settings-section-title">Live Gateway Telemetry</div>
+            <div class="usage-grid">
+              <div class="usage-tile"><div class="usage-num" id="orStatReq">0</div><div class="usage-lbl">Total Queries</div></div>
+              <div class="usage-tile"><div class="usage-num" id="orStatOk">0</div><div class="usage-lbl">Successful</div></div>
+              <div class="usage-tile"><div class="usage-num" id="orStatFb">0</div><div class="usage-lbl">Fallbacks Used</div></div>
+              <div class="usage-tile"><div class="usage-num" id="orStatModels">1,200+</div><div class="usage-lbl">Available Models</div></div>
+            </div>
+          </section>
+        </div>
+
         <!-- TAB: MODELS -->
         <div class="settings-page" data-page="models" hidden>
           <div class="model-page-head">
@@ -507,17 +605,27 @@
             <label class="toggle-label">
               <input type="checkbox" id="autoFallbackToggle" />
               <span class="switch-track"><span class="switch-knob"></span></span>
-              <span class="toggle-text">Auto-switch model on failure</span>
+              <span class="toggle-text">Auto-switch model on failure (OmniRoute Cascades)</span>
             </label>
             <span class="note" style="margin-left:32px;">When enabled, the agent automatically tries the next available model if the active one fails or is rate-limited.</span>
+          </div>
+          <div class="model-filter-row">
+            <input type="text" id="modelSearchInput" class="model-search-input" placeholder="Search 1,000+ models (e.g. DeepSeek, Groq, Cerebras, Claude, Gemini)..." />
+            <div class="model-chips" id="modelFilterChips">
+              <button type="button" class="m-chip active" data-filter="all">All Models</button>
+              <button type="button" class="m-chip" data-filter="free">1.6B Free Pool</button>
+              <button type="button" class="m-chip" data-filter="coding">Coding</button>
+              <button type="button" class="m-chip" data-filter="reasoning">Reasoning</button>
+              <button type="button" class="m-chip" data-filter="local">Local (Ollama)</button>
+            </div>
           </div>
           <div class="model-table-wrap">
             <table class="model-table" id="modelTable">
               <thead>
-                <tr><th>Model</th><th>Provider</th><th>Status</th><th>Active</th></tr>
+                <tr><th>Model</th><th>Provider</th><th>Context & Speed</th><th>Status</th><th>Active</th></tr>
               </thead>
               <tbody id="modelTableBody">
-                <tr><td colspan="4" class="model-table-empty">Loading models…</td></tr>
+                <tr><td colspan="5" class="model-table-empty">Loading models…</td></tr>
               </tbody>
             </table>
           </div>

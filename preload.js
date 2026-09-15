@@ -65,6 +65,15 @@ contextBridge.exposeInMainWorld("nutaan", {
     detectAgents: () => ipcRenderer.invoke("mitm:detect-agents"),
   },
 
+  // Nutaan OmniRoute Universal AI Gateway
+  gateway: {
+    status: () => ipcRenderer.invoke("gateway:status"),
+    start: (options) => ipcRenderer.invoke("gateway:start", options),
+    stop: () => ipcRenderer.invoke("gateway:stop"),
+    getModels: () => ipcRenderer.invoke("gateway:get-models"),
+    saveConfig: (cfg) => ipcRenderer.invoke("gateway:save-config", cfg),
+  },
+
   sendAgentMessage: (payload) => ipcRenderer.send("agent:send", payload),
   stopAgent: () => ipcRenderer.send("agent:stop"),
   respondToPermission: (id, approved) => ipcRenderer.send("agent:permission-response", { id, approved }),
