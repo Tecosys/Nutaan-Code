@@ -714,7 +714,11 @@
               <span class="term-spacer"></span>
               <button class="icon-btn tiny" id="termStopBtn" title="Stop this task" hidden>Stop</button>
             </div>
-            <pre class="term-output" id="termOutput"><div class="term-empty" id="termEmpty">No background tasks yet. When the agent (or you) start one with run_background, it shows here live.</div></pre>
+            <pre class="term-output" id="termOutput"><div class="term-empty" id="termEmpty">No background tasks yet. Type a command below, or the agent starts one with run_background.</div></pre>
+            <form class="term-input-row" id="termForm">
+              <span class="term-prompt">$</span>
+              <input type="text" id="termInput" class="term-input" placeholder="Run a command…" autocomplete="off" spellcheck="false" />
+            </form>
           </div>
         </div>
       </div>

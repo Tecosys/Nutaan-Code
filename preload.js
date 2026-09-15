@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld("nutaan", {
     quickRecon: (target, type) => ipcRenderer.invoke("arsenal:quick-recon", target, type),
   },
   bgTasks: {
+    start: (root, command) => ipcRenderer.invoke("bgtask:start", root, command),
     list: () => ipcRenderer.invoke("bgtask:list"),
     get: (id) => ipcRenderer.invoke("bgtask:get", id),
     stop: (id) => ipcRenderer.invoke("bgtask:stop", id),

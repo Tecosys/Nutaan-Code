@@ -1333,6 +1333,21 @@
     }
   }
 
+  // Run a command the user typed straight into the terminal — it becomes a background task and
+  // streams in the panel like any other. Uses the open project's folder, else the home directory.
+  el("termForm")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const input = el("termInput");
+    const cmd = input.value.trim();
+    if (!cmd) return;
+    input.value = "";
+    try {
+      const res = await window.nutaan.bgTasks.start(activePath || null, cmd);
+      if (res && res.id) { termSelectedId = res.id; }
+    } catch {}
+    refreshTerminal();
+  });
+
   async function renderTermOutput() {
     if (!termSelectedId) {
       termOutput.innerHTML = `<div class="term-empty">No background tasks yet. When the agent (or you) start one with run_background, it shows here live.</div>`;

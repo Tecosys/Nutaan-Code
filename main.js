@@ -2373,6 +2373,7 @@ app.on("before-quit", () => {
 });
 
 ipcMain.handle("bgtask:list", () => listBgTasks());
+ipcMain.handle("bgtask:start", (_e, root, command) => startBackgroundTask(root || os.homedir(), String(command || "").trim()));
 ipcMain.handle("bgtask:get", (_e, id) => bgTaskView(id, 300));
 ipcMain.handle("bgtask:stop", (_e, id) => stopBgTask(id));
 
