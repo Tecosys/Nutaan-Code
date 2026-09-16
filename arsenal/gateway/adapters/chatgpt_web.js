@@ -132,6 +132,7 @@ class ChatGptWebAdapter {
 
   async imageGeneration({ apiKey, targetModel, prompt, n = 1, size, response_format, ...extra }) {
     // 1. Send the prompt to ChatGPT Web as a normal chat request, asking it to generate an image
+    const headers = this._headers(apiKey);
     const body = {
       action: "next",
       messages: [{
