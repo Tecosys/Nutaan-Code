@@ -97,7 +97,11 @@ async function interceptServiceLogin(provider) {
               const newProjBtn = btns.find(b => b.innerText.toLowerCase().includes('new project'));
               if (newProjBtn) newProjBtn.click();
 
-              // 4. Auto-accept Terms if they pop up
+              // 4. Click the 'Create key' button inside the confirmation modal!
+              const modalCreateBtn = btns.find(b => b.innerText.trim().toLowerCase() === 'create key');
+              if (modalCreateBtn) modalCreateBtn.click();
+
+              // 5. Auto-accept Terms if they pop up
               const termsCheck = document.querySelector('input[type="checkbox"]');
               if (termsCheck && !termsCheck.checked) termsCheck.click();
               const continueBtn = btns.find(b => b.innerText.toLowerCase().includes('continue'));
