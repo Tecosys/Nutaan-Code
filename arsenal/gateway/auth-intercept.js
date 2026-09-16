@@ -5,18 +5,26 @@ async function interceptServiceLogin(provider) {
     let url = "";
     let capturedToken = null;
 
-    if (provider === "chatgpt" || provider === "openai") {
-      url = "https://chatgpt.com/";
-    } else if (provider === "gemini" || provider === "google") {
-      url = "https://gemini.google.com/";
-    } else if (provider === "claude" || provider === "anthropic") {
-      url = "https://claude.ai/login";
-    } else {
+    const targetUrls = {
+      "chatgpt": "https://chatgpt.com/",
+      "openai": "https://chatgpt.com/",
+      "gemini": "https://gemini.google.com/",
+      "google": "https://gemini.google.com/",
+      "claude": "https://claude.ai/login",
+      "anthropic": "https://claude.ai/login",
+      "groq": "https://groq.com/",
+      "deepseek": "https://chat.deepseek.com/",
+      "mistral": "https://chat.mistral.ai/",
+      "perplexity": "https://www.perplexity.ai/"
+    };
+
+    url = targetUrls[provider];
+    if (!url) {
       return reject(new Error("Unknown provider for auth interception"));
     }
 
     const win = new BrowserWindow({
-      width: 800,
+      width: 900,
       height: 800,
       title: `Login to ${provider} to link with Nutaan`,
       webPreferences: {
@@ -71,6 +79,32 @@ async function interceptServiceLogin(provider) {
                 }
              } catch(e) {}
           }, 3000);
+        }
+      });
+    } else {
+      // Generic fallback for Groq, DeepSeek, Mistral, Perplexity
+      // Sniff 'Authorization: Bearer' headers on API calls
+      ses.webRequest.onBeforeSendHeaders((details, callback) => {
+        const authHeader = details.requestHeaders['Authorization'] || details.requestHeaders['authorization'];
+        if (authHeader && authHeader.toLowerCase().startsWith('bearer ') && !capturedToken) {
+          // Ignore telemetry or analytics endpoints to ensure we capture the real API token
+          if (!details.url.includes("telemetry") && !details.url.includes("analytics") && !details.url.includes("sentry")) {
+            capturedToken = authHeader.substring(7); // Extract token after "Bearer "
+            setTimeout(() => {
+              if (!win.isDestroyed()) win.close();
+            }, 1500);
+          }
+        }
+        callback({ requestHeaders: details.requestHeaders });
+      });
+
+      // Monitor potential cookies as a backup (e.g. __session for Groq or similar platforms)
+      ses.cookies.on('changed', (event, cookie, cause, removed) => {
+        if (!removed && !capturedToken) {
+          if (provider === 'groq' && cookie.name === '__session') {
+            capturedToken = cookie.value;
+            setTimeout(() => { if (!win.isDestroyed()) win.close(); }, 1500);
+          }
         }
       });
     }

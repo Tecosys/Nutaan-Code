@@ -4692,7 +4692,7 @@
     await refreshGatewayConnections();
   });
 
-  ['ChatGPT', 'Google', 'Claude'].forEach(provider => {
+  ['ChatGPT', 'Google', 'Claude', 'Groq', 'DeepSeek', 'Mistral', 'Perplexity'].forEach(provider => {
     el(`btnLogin${provider}`)?.addEventListener('click', async () => {
       const msg = el("orInterceptMessage");
       msg.textContent = `Waiting for login in ${provider}... Please authenticate in the popup window.`;
