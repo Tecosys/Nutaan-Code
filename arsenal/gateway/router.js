@@ -146,21 +146,57 @@ class OmniRouter {
         continue;
       }
 
-      const startTime = Date.now();
+      let response = null;
+      let latencyMs = 0;
+      let attempt = 0;
+      let maxAttempts = 3; // Initial + 2 retries
+      let retryError = null;
+
+      while (attempt < maxAttempts) {
+        attempt++;
+        const startTime = Date.now();
+        try {
+          response = await adapter.chatCompletion({
+            apiKey,
+            targetModel: modelDef.targetModel,
+            messages: reqBody.messages || [],
+            temperature: reqBody.temperature,
+            max_tokens: reqBody.max_tokens,
+            stream: Boolean(reqBody.stream),
+            tools: reqBody.tools
+          });
+
+          latencyMs = Date.now() - startTime;
+
+          // Advanced Retry Logic for 429 Burst Limits
+          if (response.status === 429) {
+            const clone = response.clone();
+            const errText = await clone.text().catch(()=>"");
+            if (errText.toLowerCase().includes("usage limit") || errText.toLowerCase().includes("quota")) {
+              break; // Hard limit reached, do not retry, just let it cascade
+            }
+            if (attempt < maxAttempts) {
+              await new Promise(r => setTimeout(r, attempt * 2500)); // Exponential backoff: 2.5s, 5s
+              continue;
+            }
+          }
+          break; // Success or non-retriable error
+        } catch (err) {
+          retryError = err;
+          latencyMs = Date.now() - startTime;
+          break; // Network error, handled below
+        }
+      }
+
+      if (retryError) {
+        this.recordModelStat(modelDef.id, latencyMs, false);
+        this.stats.fallbacksTriggered++;
+        fallbackCount++;
+        lastError = retryError;
+        continue;
+      }
 
       try {
-        const response = await adapter.chatCompletion({
-          apiKey,
-          targetModel: modelDef.targetModel,
-          messages: reqBody.messages || [],
-          temperature: reqBody.temperature,
-          max_tokens: reqBody.max_tokens,
-          stream: Boolean(reqBody.stream),
-          tools: reqBody.tools
-        });
-
-        const latencyMs = Date.now() - startTime;
-
         // If rate limited (429) or temporary error (500, 502, 503, 504), trigger auto-fallback!
         if (response.status === 429 || (response.status >= 500 && response.status <= 504)) {
           const errText = await response.text();

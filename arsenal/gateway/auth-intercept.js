@@ -63,29 +63,38 @@ async function interceptServiceLogin(provider) {
         }
       }, 2000);
     } else if (provider === "claude" || provider === "anthropic") {
-      ses.cookies.on('changed', (event, cookie, cause, removed) => {
-        if (!removed && cookie.domain && cookie.domain.includes('claude.ai') && cookie.name === 'sessionKey') {
-          capturedToken = cookie.value;
-          win.close();
-        }
-      });
+      const checkClaude = async () => {
+        if (win.isDestroyed() || capturedToken) return;
+        try {
+          const cookies = await ses.cookies.get({ domain: 'claude.ai', name: 'sessionKey' });
+          if (cookies && cookies.length > 0) {
+            capturedToken = cookies[0].value;
+            win.close();
+          }
+        } catch(e) {}
+      };
+      ses.cookies.on('changed', checkClaude);
+      const poll = setInterval(checkClaude, 2000);
+      win.on('closed', () => clearInterval(poll));
+
     } else if (provider === "gemini" || provider === "google") {
-      ses.cookies.on('changed', (event, cookie, cause, removed) => {
-        if (!removed && cookie.domain && cookie.domain.includes('google.com') && cookie.name === '__Secure-1PSID') {
-          setTimeout(async () => {
-             try {
-                const cookies = await ses.cookies.get({ domain: '.google.com' });
-                const psid = cookies.find(c => c.name === '__Secure-1PSID')?.value;
-                const psidts = cookies.find(c => c.name === '__Secure-1PSIDTS')?.value;
-                if (psid) {
-                   capturedToken = `__Secure-1PSID=${psid};`;
-                   if (psidts) capturedToken += ` __Secure-1PSIDTS=${psidts};`;
-                   win.close();
-                }
-             } catch(e) {}
-          }, 3000);
-        }
-      });
+      const checkGemini = async () => {
+        if (win.isDestroyed() || capturedToken) return;
+        try {
+          const cookies = await ses.cookies.get({ domain: '.google.com' });
+          const psid = cookies.find(c => c.name === '__Secure-1PSID')?.value;
+          const psidts = cookies.find(c => c.name === '__Secure-1PSIDTS')?.value;
+          if (psid) {
+            capturedToken = `__Secure-1PSID=${psid};`;
+            if (psidts) capturedToken += ` __Secure-1PSIDTS=${psidts};`;
+            win.close();
+          }
+        } catch(e) {}
+      };
+      ses.cookies.on('changed', checkGemini);
+      const poll = setInterval(checkGemini, 2000);
+      win.on('closed', () => clearInterval(poll));
+
     } else {
       // Generic fallback for Groq, DeepSeek, Mistral, Perplexity
       // Sniff 'Authorization: Bearer' headers on API calls
