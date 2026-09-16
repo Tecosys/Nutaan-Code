@@ -4692,6 +4692,28 @@
     await refreshGatewayConnections();
   });
 
+  ['ChatGPT', 'Google', 'Claude'].forEach(provider => {
+    el(`btnLogin${provider}`)?.addEventListener('click', async () => {
+      const msg = el("orInterceptMessage");
+      msg.textContent = `Waiting for login in ${provider}... Please authenticate in the popup window.`;
+      el(`btnLogin${provider}`).disabled = true;
+      try {
+        const result = await window.nutaan.gateway.authIntercept(provider.toLowerCase());
+        if (result.ok) {
+           msg.textContent = `✅ Successfully intercepted token for ${provider}! The models are now unlocked in the Gateway.`;
+           await refreshGatewayConnections();
+        } else {
+           msg.textContent = `❌ Login failed or window closed: ${result.error}`;
+        }
+      } catch (err) {
+        msg.textContent = `❌ Error: ${err.message}`;
+      } finally {
+        el(`btnLogin${provider}`).disabled = false;
+      }
+    });
+  });
+
+
   async function testModelConnections(selectedOnly) {
     const buttons = [el("testModelsBtn"), el("testSelectedModelBtn")];
     buttons.forEach(button => { button.disabled = true; });

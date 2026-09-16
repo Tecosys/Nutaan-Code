@@ -103,6 +103,7 @@ contextBridge.exposeInMainWorld("nutaan", {
     stop: () => ipcRenderer.invoke("gateway:stop"),
     getModels: () => ipcRenderer.invoke("gateway:get-models"),
     saveConfig: (cfg) => ipcRenderer.invoke("gateway:save-config", cfg),
+    authIntercept: (provider) => ipcRenderer.invoke("gateway:auth-intercept", provider),
   },
 
   // ---- autonomous layer ----

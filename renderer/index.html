@@ -1012,31 +1012,43 @@
             <div class="or-hero-actions"><button class="btn-secondary" id="orSaveClientKey" type="button">Save connection</button><button class="btn-secondary" id="orRefreshProviders" type="button">Sync connected models</button></div>
             <p class="note" id="orConnectionMessage" role="status"></p>
           </section>
-          <!-- Intercepted IDEs & MITM Integration -->
+          <!-- Service Logins (Token Interception) -->
           <section class="settings-section">
-            <div class="settings-section-title">Internal MITM Interception</div>
-            <div class="or-intercept-grid">
-              <div class="or-intercept-card">
+            <div class="settings-section-title">Direct Service Logins (Token Interception)</div>
+            <p class="note">Log in directly to these services. Nutaan Code will securely intercept your session token to provide free models natively in the gateway.</p>
+            <div class="or-intercept-grid" style="display: flex; gap: 10px; flex-wrap: wrap;">
+              <div class="or-intercept-card" style="flex: 1; min-width: 250px;">
                 <div class="or-intercept-head">
-                  <span class="or-agent-icon">⚡</span>
+                  <span class="or-agent-icon">🟢</span>
                   <div>
-                    <div class="or-agent-name">Antigravity IDE</div>
-                    <div class="or-agent-route">Intercepts <code>cloudcode-pa.googleapis.com</code></div>
+                    <div class="or-agent-name">ChatGPT (OpenAI)</div>
+                    <div class="or-agent-route">Intercepts accessToken</div>
                   </div>
                 </div>
-                <span class="or-agent-badge" id="orAgStatusBadge">Routed Internally</span>
+                <button class="btn-secondary" id="btnLoginChatGPT" type="button" style="margin-top:10px; width:100%">Login to ChatGPT</button>
               </div>
-              <div class="or-intercept-card">
+              <div class="or-intercept-card" style="flex: 1; min-width: 250px;">
                 <div class="or-intercept-head">
-                  <span class="or-agent-icon">🔮</span>
+                  <span class="or-agent-icon">🔵</span>
                   <div>
-                    <div class="or-agent-name">Kiro / Claude Code</div>
-                    <div class="or-agent-route">Intercepts <code>api.anthropic.com</code></div>
+                    <div class="or-agent-name">Google Gemini</div>
+                    <div class="or-agent-route">Intercepts Session Cookies</div>
                   </div>
                 </div>
-                <span class="or-agent-badge" id="orKiroStatusBadge">Routed Internally</span>
+                <button class="btn-secondary" id="btnLoginGoogle" type="button" style="margin-top:10px; width:100%">Login to Google</button>
+              </div>
+              <div class="or-intercept-card" style="flex: 1; min-width: 250px;">
+                <div class="or-intercept-head">
+                  <span class="or-agent-icon">🟣</span>
+                  <div>
+                    <div class="or-agent-name">Claude (Anthropic)</div>
+                    <div class="or-agent-route">Intercepts sessionKey</div>
+                  </div>
+                </div>
+                <button class="btn-secondary" id="btnLoginClaude" type="button" style="margin-top:10px; width:100%">Login to Claude</button>
               </div>
             </div>
+            <p class="note" id="orInterceptMessage" role="status" style="margin-top: 10px; font-weight: bold;"></p>
           </section>
 
           <!-- Live Metrics & Telemetry -->
