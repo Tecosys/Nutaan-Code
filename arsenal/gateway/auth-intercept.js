@@ -8,8 +8,8 @@ async function interceptServiceLogin(provider) {
     const targetUrls = {
       "chatgpt": "https://chatgpt.com/",
       "openai": "https://chatgpt.com/",
-      "gemini": "https://gemini.google.com/",
-      "google": "https://gemini.google.com/",
+      "gemini": "https://aistudio.google.com/app/apikey",
+      "google": "https://aistudio.google.com/app/apikey",
       "claude": "https://claude.ai/login",
       "anthropic": "https://claude.ai/login",
       "groq": "https://groq.com/",
@@ -81,19 +81,35 @@ async function interceptServiceLogin(provider) {
       const checkGemini = async () => {
         if (win.isDestroyed() || capturedToken) return;
         try {
-          const cookies = await ses.cookies.get({ domain: '.google.com' });
-          const psid = cookies.find(c => c.name === '__Secure-1PSID')?.value;
-          const psidts = cookies.find(c => c.name === '__Secure-1PSIDTS')?.value;
-          if (psid) {
-            capturedToken = `__Secure-1PSID=${psid};`;
-            if (psidts) capturedToken += ` __Secure-1PSIDTS=${psidts};`;
+          // Poll the page text for any AIza key
+          const script = `
+            (() => {
+              const text = document.body ? document.body.innerText : "";
+              const match = text.match(/AIzaSy[0-9a-zA-Z-_]{33}/);
+              if (match) return match[0];
+              // Also check input values just in case
+              const inputs = Array.from(document.querySelectorAll('input'));
+              for (const input of inputs) {
+                const valMatch = input.value.match(/AIzaSy[0-9a-zA-Z-_]{33}/);
+                if (valMatch) return valMatch[0];
+              }
+              return null;
+            })();
+          `;
+          const result = await win.webContents.executeJavaScript(script);
+          if (result) {
+            capturedToken = result;
             win.close();
           }
         } catch(e) {}
       };
-      ses.cookies.on('changed', checkGemini);
-      const poll = setInterval(checkGemini, 2000);
+      const poll = setInterval(checkGemini, 1500);
       win.on('closed', () => clearInterval(poll));
+
+      // Also sniff network for AIza keys in API responses just in case it's not rendered yet
+      ses.webRequest.onCompleted(async (details) => {
+         // Not strictly necessary since the DOM script works, but good fallback
+      });
 
     } else {
       // Generic fallback for Groq, DeepSeek, Mistral, Perplexity
