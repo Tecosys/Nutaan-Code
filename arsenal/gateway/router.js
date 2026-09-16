@@ -129,8 +129,17 @@ class OmniRouter {
       if (!modelDef) continue;
 
       const providerId = modelDef.provider;
-      const adapter = this.adapters[providerId];
+      let adapter = this.adapters[providerId];
       const apiKey = this.getKey(providerId);
+
+      // Dynamic override for ChatGPT Web tokens
+      if (providerId === "openai" && apiKey && apiKey.startsWith("eyJ")) {
+        if (!this.adapters["chatgpt_web"]) {
+          const { ChatGptWebAdapter } = require("./adapters/chatgpt_web");
+          this.adapters["chatgpt_web"] = new ChatGptWebAdapter(PROVIDERS["openai"]);
+        }
+        adapter = this.adapters["chatgpt_web"];
+      }
 
       // If provider requires key and none exists, skip unless it's local or free
       if (!apiKey && modelDef.tier === "paid") {
