@@ -2808,6 +2808,27 @@ ipcMain.handle("gateway:save-config", async (_e, config) => {
   }
 });
 
+ipcMain.handle("gateway:auth-intercept", async (_e, provider) => {
+  try {
+    const interceptor = require("./arsenal/gateway/auth-intercept");
+    const result = await interceptor.interceptServiceLogin(provider);
+    if (result && result.ok && result.token) {
+      let gatewayKeyName = provider;
+      if (provider === "google" || provider === "gemini") gatewayKeyName = "gemini";
+      if (provider === "chatgpt" || provider === "openai") gatewayKeyName = "openai";
+      if (provider === "claude" || provider === "anthropic") gatewayKeyName = "anthropic";
+
+      const config = { keys: {} };
+      config.keys[gatewayKeyName] = result.token;
+      await gatewayManager.saveConfig(config);
+    }
+    return result;
+  } catch (err) {
+    console.error("[gateway:auth-intercept] error:", err);
+    return { ok: false, error: err.message };
+  }
+});
+
 // ---------- Agent loop (tool-calling) ----------
 
 const TOOLS = [

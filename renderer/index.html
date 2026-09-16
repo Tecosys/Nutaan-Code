@@ -1016,69 +1016,76 @@
           <section class="settings-section">
             <div class="settings-section-title">Direct Service Logins (Token Interception)</div>
             <p class="note">Log in directly to these services. Nutaan Code will securely intercept your session token to provide free models natively in the gateway.</p>
-            <div class="or-intercept-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px;">
+            <div class="or-intercept-grid">
               <div class="or-intercept-card">
                 <div class="or-intercept-head">
-                  <span class="or-agent-icon">🟢</span>
+                  <img src="providers/openai.png" class="or-provider-logo" alt="ChatGPT" />
                   <div>
-                    <div class="or-agent-name">ChatGPT (OpenAI)</div>
+                    <div class="or-agent-name">ChatGPT</div>
+                    <div class="or-agent-route">OpenAI Web Session</div>
                   </div>
                 </div>
-                <button class="btn-secondary" id="btnLoginChatGPT" type="button" style="margin-top:10px; width:100%">Login to ChatGPT</button>
+                <button class="btn-secondary tiny" id="btnLoginChatGPT" type="button">Connect</button>
               </div>
               <div class="or-intercept-card">
                 <div class="or-intercept-head">
-                  <span class="or-agent-icon">🔵</span>
+                  <img src="providers/google.png" class="or-provider-logo" alt="Google Gemini" />
                   <div>
                     <div class="or-agent-name">Google Gemini</div>
+                    <div class="or-agent-route">Google Web Session</div>
                   </div>
                 </div>
-                <button class="btn-secondary" id="btnLoginGoogle" type="button" style="margin-top:10px; width:100%">Login to Google</button>
+                <button class="btn-secondary tiny" id="btnLoginGoogle" type="button">Connect</button>
               </div>
               <div class="or-intercept-card">
                 <div class="or-intercept-head">
-                  <span class="or-agent-icon">🟣</span>
+                  <img src="providers/anthropic.png" class="or-provider-logo" alt="Claude" />
                   <div>
-                    <div class="or-agent-name">Claude (Anthropic)</div>
+                    <div class="or-agent-name">Claude</div>
+                    <div class="or-agent-route">Anthropic Web Session</div>
                   </div>
                 </div>
-                <button class="btn-secondary" id="btnLoginClaude" type="button" style="margin-top:10px; width:100%">Login to Claude</button>
+                <button class="btn-secondary tiny" id="btnLoginClaude" type="button">Connect</button>
               </div>
               <div class="or-intercept-card">
                 <div class="or-intercept-head">
-                  <span class="or-agent-icon">⚡</span>
+                  <img src="providers/groq.png" class="or-provider-logo" alt="Groq" />
                   <div>
                     <div class="or-agent-name">Groq</div>
+                    <div class="or-agent-route">Web Session / Bearer</div>
                   </div>
                 </div>
-                <button class="btn-secondary" id="btnLoginGroq" type="button" style="margin-top:10px; width:100%">Login to Groq</button>
+                <button class="btn-secondary tiny" id="btnLoginGroq" type="button">Connect</button>
               </div>
               <div class="or-intercept-card">
                 <div class="or-intercept-head">
-                  <span class="or-agent-icon">🐋</span>
+                  <img src="providers/deepseek.png" class="or-provider-logo" alt="DeepSeek" />
                   <div>
                     <div class="or-agent-name">DeepSeek</div>
+                    <div class="or-agent-route">Chat Web Session</div>
                   </div>
                 </div>
-                <button class="btn-secondary" id="btnLoginDeepSeek" type="button" style="margin-top:10px; width:100%">Login to DeepSeek</button>
+                <button class="btn-secondary tiny" id="btnLoginDeepSeek" type="button">Connect</button>
               </div>
               <div class="or-intercept-card">
                 <div class="or-intercept-head">
-                  <span class="or-agent-icon">🌪️</span>
+                  <img src="providers/mistral.png" class="or-provider-logo" alt="Mistral" />
                   <div>
                     <div class="or-agent-name">Mistral</div>
+                    <div class="or-agent-route">La Plateforme Session</div>
                   </div>
                 </div>
-                <button class="btn-secondary" id="btnLoginMistral" type="button" style="margin-top:10px; width:100%">Login to Mistral</button>
+                <button class="btn-secondary tiny" id="btnLoginMistral" type="button">Connect</button>
               </div>
               <div class="or-intercept-card">
                 <div class="or-intercept-head">
-                  <span class="or-agent-icon">🔍</span>
+                  <img src="providers/perplexity.svg" class="or-provider-logo" alt="Perplexity" />
                   <div>
                     <div class="or-agent-name">Perplexity</div>
+                    <div class="or-agent-route">Search Web Session</div>
                   </div>
                 </div>
-                <button class="btn-secondary" id="btnLoginPerplexity" type="button" style="margin-top:10px; width:100%">Login to Perplexity</button>
+                <button class="btn-secondary tiny" id="btnLoginPerplexity" type="button">Connect</button>
               </div>
             </div>
             <p class="note" id="orInterceptMessage" role="status" style="margin-top: 10px; font-weight: bold;"></p>

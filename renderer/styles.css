@@ -3760,9 +3760,9 @@ body.resizing webview { pointer-events: none; }
 
 .or-intercept-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 12px;
-  margin-top: 8px;
+  margin-top: 10px;
 }
 
 .or-intercept-card {
@@ -3773,12 +3773,32 @@ body.resizing webview { pointer-events: none; }
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 10px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.or-intercept-card:hover {
+  border-color: rgba(168, 85, 247, 0.4);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .or-intercept-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+.or-provider-logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  object-fit: contain;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 3px;
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .or-agent-icon {

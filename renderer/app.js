@@ -4693,22 +4693,26 @@
   });
 
   ['ChatGPT', 'Google', 'Claude', 'Groq', 'DeepSeek', 'Mistral', 'Perplexity'].forEach(provider => {
-    el(`btnLogin${provider}`)?.addEventListener('click', async () => {
+    const btn = el(`btnLogin${provider}`);
+    btn?.addEventListener('click', async () => {
       const msg = el("orInterceptMessage");
-      msg.textContent = `Waiting for login in ${provider}... Please authenticate in the popup window.`;
-      el(`btnLogin${provider}`).disabled = true;
+      if (msg) msg.textContent = `Waiting for login in ${provider}... Please authenticate in the popup window.`;
+      btn.disabled = true;
       try {
         const result = await window.nutaan.gateway.authIntercept(provider.toLowerCase());
-        if (result.ok) {
-           msg.textContent = `✅ Successfully intercepted token for ${provider}! The models are now unlocked in the Gateway.`;
+        if (result && result.ok) {
+           if (msg) msg.textContent = `✅ Successfully connected ${provider}! Tokens intercepted and active in gateway.`;
+           btn.textContent = "Connected";
+           btn.classList.remove("btn-secondary");
+           btn.classList.add("btn-primary");
            await refreshGatewayConnections();
         } else {
-           msg.textContent = `❌ Login failed or window closed: ${result.error}`;
+           if (msg) msg.textContent = `❌ ${result?.error || "Login window closed before token was captured"}`;
         }
       } catch (err) {
-        msg.textContent = `❌ Error: ${err.message}`;
+        if (msg) msg.textContent = `❌ Error: ${err.message}`;
       } finally {
-        el(`btnLogin${provider}`).disabled = false;
+        btn.disabled = false;
       }
     });
   });
