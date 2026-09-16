@@ -8,8 +8,8 @@ async function interceptServiceLogin(provider) {
     const targetUrls = {
       "chatgpt": "https://chatgpt.com/",
       "openai": "https://chatgpt.com/",
-      "gemini": "https://aistudio.google.com/app/apikey",
-      "google": "https://aistudio.google.com/app/apikey",
+      "gemini": "https://gemini.google.com/",
+      "google": "https://gemini.google.com/",
       "claude": "https://claude.ai/login",
       "anthropic": "https://claude.ai/login",
       "groq": "https://groq.com/",
@@ -18,8 +18,9 @@ async function interceptServiceLogin(provider) {
       "perplexity": "https://www.perplexity.ai/"
     };
 
-    url = targetUrls[provider];
-    if (!url) {
+    if (targetUrls[provider]) {
+      url = targetUrls[provider];
+    } else {
       return reject(new Error("Unknown provider for auth interception"));
     }
 
@@ -35,40 +36,38 @@ async function interceptServiceLogin(provider) {
       autoHideMenuBar: true
     });
 
+    // Spoof User-Agent to prevent Google "Suspicious Browser" blocks
+    const userAgent = win.webContents.getUserAgent().replace(/Electron\/[0-9\.]+\s/, '').replace(/NutaanCode\/[0-9\.]+\s/, '');
+    win.webContents.setUserAgent(userAgent);
+
     const ses = win.webContents.session;
 
+    win.loadURL(url);
+
     if (provider === "chatgpt" || provider === "openai") {
-      // Modern ChatGPT may not trigger a network request to /api/auth/session that we can intercept easily.
-      // Instead, we poll the page context every 2 seconds to check if a valid session exists.
-      const pollInterval = setInterval(async () => {
-        if (win.isDestroyed()) {
-          clearInterval(pollInterval);
-          return;
-        }
+      const checkChatGpt = async () => {
+        if (win.isDestroyed() || capturedToken) return;
         try {
-          const script = `
-            fetch('/api/auth/session')
-              .then(r => r.json())
-              .then(d => d.accessToken)
-              .catch(e => null)
-          `;
-          const token = await win.webContents.executeJavaScript(script);
-          if (token && typeof token === 'string' && token.length > 50) {
-            clearInterval(pollInterval);
-            capturedToken = token;
-            if (!win.isDestroyed()) win.close();
+          const cookies = await ses.cookies.get({ domain: '.chatgpt.com' });
+          const tokenCookie = cookies.find(c => c.name === '__Secure-next-auth.session-token');
+          if (tokenCookie) {
+            capturedToken = tokenCookie.value;
+            win.close();
           }
-        } catch (e) {
-          // Ignore execution context errors (e.g., during navigation)
-        }
-      }, 2000);
+        } catch(e) {}
+      };
+      ses.cookies.on('changed', checkChatGpt);
+      const poll = setInterval(checkChatGpt, 2000);
+      win.on('closed', () => clearInterval(poll));
+
     } else if (provider === "claude" || provider === "anthropic") {
       const checkClaude = async () => {
         if (win.isDestroyed() || capturedToken) return;
         try {
-          const cookies = await ses.cookies.get({ domain: 'claude.ai', name: 'sessionKey' });
-          if (cookies && cookies.length > 0) {
-            capturedToken = cookies[0].value;
+          const cookies = await ses.cookies.get({ domain: '.claude.ai' });
+          const tokenCookie = cookies.find(c => c.name === 'sessionKey');
+          if (tokenCookie) {
+            capturedToken = tokenCookie.value;
             win.close();
           }
         } catch(e) {}
@@ -81,43 +80,16 @@ async function interceptServiceLogin(provider) {
       const checkGemini = async () => {
         if (win.isDestroyed() || capturedToken) return;
         try {
-          const script = `
-            (() => {
-              // 1. Check if key is on screen
-              const text = document.body ? document.body.innerText : "";
-              const match = text.match(/AIzaSy[0-9a-zA-Z-_]{33}/);
-              if (match) return match[0];
-
-              // 2. Auto-click 'Create API Key' button to generate one magically
-              const btns = Array.from(document.querySelectorAll('button'));
-              const createBtn = btns.find(b => b.innerText.toLowerCase().includes('create api key'));
-              if (createBtn) createBtn.click();
-              
-              // 3. Auto-click 'Create API key in new project'
-              const newProjBtn = btns.find(b => b.innerText.toLowerCase().includes('new project'));
-              if (newProjBtn) newProjBtn.click();
-
-              // 4. Click the 'Create key' button inside the confirmation modal!
-              const modalCreateBtn = btns.find(b => b.innerText.trim().toLowerCase() === 'create key');
-              if (modalCreateBtn) modalCreateBtn.click();
-
-              // 5. Auto-accept Terms if they pop up
-              const termsCheck = document.querySelector('input[type="checkbox"]');
-              if (termsCheck && !termsCheck.checked) termsCheck.click();
-              const continueBtn = btns.find(b => b.innerText.toLowerCase().includes('continue'));
-              if (continueBtn) continueBtn.click();
-
-              return null;
-            })();
-          `;
-          const result = await win.webContents.executeJavaScript(script);
-          if (result) {
-            capturedToken = result;
+          const cookies = await ses.cookies.get({ domain: '.google.com' });
+          const psid = cookies.find(c => c.name === '__Secure-1PSID')?.value;
+          if (psid) {
+            capturedToken = `__Secure-1PSID=${psid}`;
             win.close();
           }
         } catch(e) {}
       };
-      const poll = setInterval(checkGemini, 1500);
+      ses.cookies.on('changed', checkGemini);
+      const poll = setInterval(checkGemini, 2000);
       win.on('closed', () => clearInterval(poll));
 
     } else {
