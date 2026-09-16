@@ -30,7 +30,7 @@ async function interceptServiceLogin(provider) {
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
-        partition: `persist:${provider}-auth` // separate partition to ensure clean login
+        partition: `persist:omniroute-auth` // Shared partition so user only logs into Google once
       },
       autoHideMenuBar: true
     });
