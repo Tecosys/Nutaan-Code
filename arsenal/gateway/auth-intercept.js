@@ -81,18 +81,28 @@ async function interceptServiceLogin(provider) {
       const checkGemini = async () => {
         if (win.isDestroyed() || capturedToken) return;
         try {
-          // Poll the page text for any AIza key
           const script = `
             (() => {
+              // 1. Check if key is on screen
               const text = document.body ? document.body.innerText : "";
               const match = text.match(/AIzaSy[0-9a-zA-Z-_]{33}/);
               if (match) return match[0];
-              // Also check input values just in case
-              const inputs = Array.from(document.querySelectorAll('input'));
-              for (const input of inputs) {
-                const valMatch = input.value.match(/AIzaSy[0-9a-zA-Z-_]{33}/);
-                if (valMatch) return valMatch[0];
-              }
+
+              // 2. Auto-click 'Create API Key' button to generate one magically
+              const btns = Array.from(document.querySelectorAll('button'));
+              const createBtn = btns.find(b => b.innerText.toLowerCase().includes('create api key'));
+              if (createBtn) createBtn.click();
+              
+              // 3. Auto-click 'Create API key in new project'
+              const newProjBtn = btns.find(b => b.innerText.toLowerCase().includes('new project'));
+              if (newProjBtn) newProjBtn.click();
+
+              // 4. Auto-accept Terms if they pop up
+              const termsCheck = document.querySelector('input[type="checkbox"]');
+              if (termsCheck && !termsCheck.checked) termsCheck.click();
+              const continueBtn = btns.find(b => b.innerText.toLowerCase().includes('continue'));
+              if (continueBtn) continueBtn.click();
+
               return null;
             })();
           `;
@@ -105,11 +115,6 @@ async function interceptServiceLogin(provider) {
       };
       const poll = setInterval(checkGemini, 1500);
       win.on('closed', () => clearInterval(poll));
-
-      // Also sniff network for AIza keys in API responses just in case it's not rendered yet
-      ses.webRequest.onCompleted(async (details) => {
-         // Not strictly necessary since the DOM script works, but good fallback
-      });
 
     } else {
       // Generic fallback for Groq, DeepSeek, Mistral, Perplexity

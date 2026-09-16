@@ -25,27 +25,35 @@ class ChatGptWebAdapter {
     const match = base64Str.match(/^data:(image\/[a-zA-Z]+);base64,(.*)$/);
     if (!match) return null;
     const mimeType = match[1];
-    const b64 = match[2];
-    const buffer = Buffer.from(b64, "base64");
-    const blob = new Blob([buffer], { type: mimeType });
+    const buffer = Buffer.from(match[2], "base64");
 
-    const formData = new FormData();
-    formData.append("purpose", "vision");
-    formData.append("file", blob, "image.jpg");
+    const boundary = "----WebKitFormBoundary" + crypto.randomBytes(8).toString("hex");
+    const bodyData = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="purpose"\r\n\r\nvision\r\n`),
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="image.jpg"\r\nContent-Type: ${mimeType}\r\n\r\n`),
+      buffer,
+      Buffer.from(`\r\n--${boundary}--\r\n`)
+    ]);
 
-    // Clone headers but DELETE Content-Type so FormData generates the correct boundary
     const uploadHeaders = { ...headers };
-    delete uploadHeaders["Content-Type"];
-    delete uploadHeaders["content-type"];
+    uploadHeaders["Content-Type"] = `multipart/form-data; boundary=${boundary}`;
 
-    const res = await netFetch(`${this.webBaseUrl}/files`, {
+    const res = await fetch(`${this.webBaseUrl}/files`, {
       method: "POST",
       headers: uploadHeaders,
-      body: formData
+      body: bodyData,
+      dispatcher: new (require('undici').Agent)({ connect: { rejectUnauthorized: false } }) // in case of cert issues
+    }).catch(async () => {
+       // fallback to netFetch if global fetch fails
+       return netFetch(`${this.webBaseUrl}/files`, {
+         method: "POST",
+         headers: uploadHeaders,
+         body: bodyData
+       });
     });
 
-    if (!res.ok) {
-      console.error("ChatGPT Web image upload failed:", await res.text());
+    if (!res || !res.ok) {
+      console.error("ChatGPT Web image upload failed:", res ? await res.text() : "Network error");
       return null;
     }
     const data = await res.json();
