@@ -25,6 +25,16 @@ const {
   translateOpenAiSseToAnthropic
 } = require("./translator");
 
+let netFetch = global.fetch;
+if (typeof process !== "undefined" && process.versions && process.versions.electron) {
+  try {
+    const { net } = require("electron");
+    if (net && typeof net.fetch === "function") {
+      netFetch = (...args) => net.fetch(...args);
+    }
+  } catch (err) {}
+}
+
 class OmniRouteServer {
   constructor(options = {}) {
     this.port = options.port || 20128;
@@ -321,7 +331,7 @@ class OmniRouteServer {
       };
       
       const fetchUrl = `https://chatgpt.com/backend-api/files/${encodeURIComponent(fileId)}/download`;
-      const proxyRes = await fetch(fetchUrl, { headers });
+      const proxyRes = await netFetch(fetchUrl, { headers });
       
       if (!proxyRes.ok) {
         res.writeHead(proxyRes.status, { "Content-Type": "text/plain" });

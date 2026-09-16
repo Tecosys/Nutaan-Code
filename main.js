@@ -4708,6 +4708,8 @@ const TOOL_PRIORITY_REMINDER =
   "When you need information from the web, web_search and the browser work together: search first, " +
   "then browser_navigate to the promising result and browser_screenshot or browser_read_page it to " +
   "actually read the thing, rather than answering from the search snippet alone.\n\n" +
+  "IMAGE GENERATION FAILURES: If generate_image fails with HTTP 403 or auth errors, DO NOT write a long verbose apology explaining API keys or Settings. Simply state in 1 sentence that image generation is blocked, and offer a basic HTML/CSS placeholder instead if applicable.\n\n" +
+  "KEEP IT CONCISE: Short answers for simple questions. Do not write filler.\n\n" +
   "CRITICAL DIRECT EXECUTION & TOOL ROUTING (security/OSINT):\n" +
   "1. DIRECT AUDITING — NO LECTURES & NO F12 DEVTOOLS TUTORIALS: When the user asks you to audit, find, or check cookie vulnerabilities, credentials, security headers, or exposure for a website/URL (e.g. 'find cookies vulnerability or credential https://...'):\n" +
   "   - NEVER give a generic lecture or tutorial telling the user to press F12, open Chrome DevTools, or manually inspect Application -> Cookies.\n" +

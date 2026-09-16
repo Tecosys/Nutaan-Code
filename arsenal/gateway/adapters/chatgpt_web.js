@@ -2,6 +2,18 @@
 
 const crypto = require("node:crypto");
 
+let netFetch = global.fetch;
+if (typeof process !== "undefined" && process.versions && process.versions.electron) {
+  try {
+    const { net } = require("electron");
+    if (net && typeof net.fetch === "function") {
+      netFetch = (...args) => net.fetch(...args);
+    }
+  } catch (err) {
+    // fallback to global fetch
+  }
+}
+
 class ChatGptWebAdapter {
   constructor(providerConfig) {
     this.name = providerConfig.name;
@@ -46,8 +58,8 @@ class ChatGptWebAdapter {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     };
 
-    // Note: Node's native fetch
-    const res = await fetch(this.baseUrl, {
+    // Note: Node's native fetch gets blocked by Cloudflare, so we use Electron's net.fetch
+    const res = await netFetch(this.baseUrl, {
       method: "POST",
       headers,
       body: JSON.stringify(body)
@@ -150,13 +162,18 @@ class ChatGptWebAdapter {
       history_and_training_disabled: false
     };
 
-    const res = await fetch(this.baseUrl, {
+    const res = await netFetch(this.baseUrl, {
       method: "POST",
       headers,
       body: JSON.stringify(body)
     });
 
-    if (!res.ok) return res;
+    if (!res.ok) {
+      const errTxt = await res.text().catch(() => "");
+      return new Response(JSON.stringify({
+        error: { message: `ChatGPT Web rejected image request (HTTP ${res.status}): ${errTxt.slice(0, 150)}... This usually means the account requires ChatGPT Plus, or Cloudflare blocked the headless request.` }
+      }), { status: res.status, headers: { "Content-Type": "application/json" } });
+    }
 
     const text = await res.text();
     const events = this._parseSseJson(text);
@@ -196,7 +213,9 @@ class ChatGptWebAdapter {
       "Authorization": `Bearer ${apiKey}`,
       "Content-Type": "application/json",
       "Accept": "text/event-stream",
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      "OAI-Device-Id": crypto.randomUUID(),
+      "OAI-Language": "en-US"
     };
   }
 
