@@ -38,25 +38,30 @@ async function interceptServiceLogin(provider) {
     const ses = win.webContents.session;
 
     if (provider === "chatgpt" || provider === "openai") {
-      ses.webRequest.onCompleted({ urls: ["https://chatgpt.com/api/auth/session"] }, async (details) => {
-        if (details.statusCode === 200) {
-          try {
-            const script = `
-              fetch('/api/auth/session')
-                .then(r => r.json())
-                .then(d => d.accessToken)
-                .catch(e => null)
-            `;
-            const token = await win.webContents.executeJavaScript(script);
-            if (token) {
-              capturedToken = token;
-              win.close();
-            }
-          } catch (e) {
-            console.error("Failed to extract ChatGPT token:", e);
-          }
+      // Modern ChatGPT may not trigger a network request to /api/auth/session that we can intercept easily.
+      // Instead, we poll the page context every 2 seconds to check if a valid session exists.
+      const pollInterval = setInterval(async () => {
+        if (win.isDestroyed()) {
+          clearInterval(pollInterval);
+          return;
         }
-      });
+        try {
+          const script = `
+            fetch('/api/auth/session')
+              .then(r => r.json())
+              .then(d => d.accessToken)
+              .catch(e => null)
+          `;
+          const token = await win.webContents.executeJavaScript(script);
+          if (token && typeof token === 'string' && token.length > 50) {
+            clearInterval(pollInterval);
+            capturedToken = token;
+            if (!win.isDestroyed()) win.close();
+          }
+        } catch (e) {
+          // Ignore execution context errors (e.g., during navigation)
+        }
+      }, 2000);
     } else if (provider === "claude" || provider === "anthropic") {
       ses.cookies.on('changed', (event, cookie, cause, removed) => {
         if (!removed && cookie.domain && cookie.domain.includes('claude.ai') && cookie.name === 'sessionKey') {
