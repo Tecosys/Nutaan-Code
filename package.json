@@ -1,6 +1,6 @@
 {
   "name": "nutaan-code",
-  "version": "0.1.40",
+  "version": "0.1.41",
   "description": "Nutaan Code — a personal AI coding agent desktop app",
   "main": "main.js",
   "private": true,
@@ -63,8 +63,7 @@
         {
           "target": "nsis",
           "arch": [
-            "x64",
-            "ia32"
+            "x64"
           ]
         }
       ],

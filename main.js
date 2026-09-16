@@ -65,6 +65,7 @@ const KEEP_RECENT_MESSAGES = 10;
 const NUTAAN_API_BASE = "https://nutaan.com/api";
 const NUTAAN_LLM_BASE = `${NUTAAN_API_BASE}/v1`;
 const FALLBACK_MODEL = "nvidia/nemotron-3-super-120b-a12b";
+const RELEASES_URL = "https://github.com/Tecosys/Nutaan-Code/releases/latest";
 
 // No model-provider credential ships inside this app — that is the entire point of the gateway.
 // Requests go to nutaan.com authenticated with the user's own API key, and the provider keys
@@ -608,6 +609,9 @@ app.on("will-quit", () => {
 
 function setupAutoUpdate() {
   autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.allowPrerelease = false;
+  autoUpdater.allowDowngrade = false;
 
   autoUpdater.on("checking-for-update", () => {
     win?.webContents.send("app:update-status", { status: "checking" });
@@ -634,16 +638,37 @@ function setupAutoUpdate() {
       });
   });
   autoUpdater.on("error", (err) => {
-    console.log("[auto-update] error:", err.message);
-    win?.webContents.send("app:update-status", { status: "error", message: err.message });
+    const message = cleanUpdateError(err);
+    console.log("[auto-update] error:", message);
+    win?.webContents.send("app:update-status", { status: "error", message, releasesUrl: RELEASES_URL });
   });
 
   if (!app.isPackaged) return; // auto-checks only meaningful for installed builds, not `npm start`
+  if (!canUseBuiltInAutoUpdater()) {
+    win?.webContents.send("app:update-status", {
+      status: "unsupported",
+      message: "Automatic in-app updates are available for Windows, macOS, and Linux AppImage builds. For deb/rpm installs, download the latest package from Releases.",
+      releasesUrl: RELEASES_URL,
+    });
+    return;
+  }
 
   autoUpdater.checkForUpdates().catch((err) => console.log("[auto-update] check failed:", err.message));
   setInterval(() => {
     autoUpdater.checkForUpdates().catch(() => {});
   }, 4 * 60 * 60 * 1000); // re-check every 4h for a long-running session
+}
+
+function canUseBuiltInAutoUpdater() {
+  if (process.platform === "win32" || process.platform === "darwin") return true;
+  // electron-updater can replace Linux AppImages in-place. deb/rpm packages need the OS package
+  // manager, so the app should offer the Releases page instead of repeatedly failing silently.
+  if (process.platform === "linux") return Boolean(process.env.APPIMAGE);
+  return false;
+}
+
+function cleanUpdateError(err) {
+  return String(err?.message || "Update check failed").split("\n")[0].slice(0, 180);
 }
 
 ipcMain.handle("app:get-version", () => app.getVersion());
@@ -652,15 +677,26 @@ ipcMain.handle("app:check-for-updates", async () => {
   if (!app.isPackaged) {
     return { ok: false, message: "Updates only run in the installed app, not in dev mode." };
   }
+  if (!canUseBuiltInAutoUpdater()) {
+    return {
+      ok: false,
+      message: "This Linux package cannot update itself in-app. Open Releases and install the latest deb/rpm package.",
+      releasesUrl: RELEASES_URL,
+    };
+  }
   try {
     await autoUpdater.checkForUpdates();
     return { ok: true };
   } catch (err) {
     // electron-updater's error message can embed the raw HTTP response (headers, cookies, body) of a
     // failed feed request — never surface that verbatim in the UI. Keep just the first line/sentence.
-    const short = String(err.message || "Update check failed").split("\n")[0].slice(0, 160);
-    return { ok: false, message: short };
+    return { ok: false, message: cleanUpdateError(err), releasesUrl: RELEASES_URL };
   }
+});
+
+ipcMain.handle("app:open-releases", async () => {
+  await shell.openExternal(RELEASES_URL);
+  return { ok: true };
 });
 
 app.on("window-all-closed", () => {

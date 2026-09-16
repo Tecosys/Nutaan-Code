@@ -82,6 +82,7 @@ contextBridge.exposeInMainWorld("nutaan", {
   gitCommit: (payload) => ipcRenderer.invoke("git:commit", payload),
   getVersion: () => ipcRenderer.invoke("app:get-version"),
   checkForUpdates: () => ipcRenderer.invoke("app:check-for-updates"),
+  openReleases: () => ipcRenderer.invoke("app:open-releases"),
   onUpdateStatus: (callback) => {
     const listener = (_e, data) => callback(data);
     ipcRenderer.on("app:update-status", listener);

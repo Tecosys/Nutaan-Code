@@ -149,10 +149,13 @@ jobs:
             dist/*.AppImage
             dist/*.deb
             dist/*.rpm
+            dist/*.yml
+            dist/*.yaml
+            dist/*.blockmap
 
-  # electron-builder publishes as a draft, which is invisible to everyone but the maintainers —
-  # that is why a green release run still showed no new version. Flipping it once every platform
-  # has uploaded means the release appears complete, rather than Windows-only for ten minutes.
+  # The release starts as a draft so parallel upload jobs do not race each other. Publish it only
+  # after every platform has uploaded its installer plus update metadata, otherwise existing users
+  # can see a new version that their platform cannot actually install yet.
   publish:
     needs: [prepare, build]
     if: needs.prepare.result == 'success' && needs.build.result == 'success'
@@ -164,6 +167,30 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           tag="${{ needs.prepare.outputs.tag }}"
+          assets="$(gh release view "$tag" --json assets --jq '.assets[].name')"
+          echo "$assets"
+
+          required=(
+            "latest.yml"
+            "latest-mac.yml"
+            "latest-linux.yml"
+          )
+          missing=()
+          for name in "${required[@]}"; do
+            if ! grep -Fxq "$name" <<<"$assets"; then
+              missing+=("$name")
+            fi
+          done
+          if ! grep -Eq '\.exe$' <<<"$assets"; then missing+=("Windows .exe installer"); fi
+          if ! grep -Eq '\.dmg$' <<<"$assets"; then missing+=("macOS .dmg installer"); fi
+          if ! grep -Eq '\.zip$' <<<"$assets"; then missing+=("macOS .zip updater asset"); fi
+          if ! grep -Eq '\.AppImage$' <<<"$assets"; then missing+=("Linux .AppImage updater asset"); fi
+          if ((${#missing[@]})); then
+            printf 'Release %s is missing updater assets:\n' "$tag"
+            printf ' - %s\n' "${missing[@]}"
+            exit 1
+          fi
+
           for attempt in 1 2 3 4 5; do
             if gh release edit "$tag" --draft=false --latest; then
               exit 0

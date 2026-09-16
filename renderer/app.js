@@ -147,6 +147,7 @@
   let panelMode = "code";
   let contextFiles = null; // cached flat file list for the Add Context menu
   let contextFilesForPath = null;
+  let updateButtonOpensReleases = false;
   // Autonomous layer state (workers, swarm, self-healing, today). Declared up here because
   // renderNav reads the badges.
   const autonomous = { unread: 0, openIncidents: 0, workers: [], templates: [], updates: [], health: null, swarmRoles: {}, swarmRuns: new Map(), today: null };
@@ -5559,11 +5560,16 @@
 
   if (checkUpdatesBtn) {
     checkUpdatesBtn.addEventListener("click", async () => {
+      if (updateButtonOpensReleases) {
+        await window.nutaan.openReleases?.();
+        return;
+      }
       checkUpdatesBtn.disabled = true;
       checkUpdatesBtn.textContent = "Checking…";
       const res = await window.nutaan.checkForUpdates();
       if (!res.ok) {
-        checkUpdatesBtn.textContent = "Check for updates";
+        updateButtonOpensReleases = Boolean(res.releasesUrl);
+        checkUpdatesBtn.textContent = updateButtonOpensReleases ? "Open releases" : "Check for updates";
         checkUpdatesBtn.disabled = false;
         appVersionText.textContent = String(res.message || "Could not check for updates.").slice(0, 160);
       }
@@ -5572,6 +5578,7 @@
   if (window.nutaan.onUpdateStatus) {
     window.nutaan.onUpdateStatus((data) => {
       if (data.status === "checking") {
+        updateButtonOpensReleases = false;
         checkUpdatesBtn.textContent = "Checking…";
         checkUpdatesBtn.disabled = true;
       } else if (data.status === "available") {
@@ -5579,12 +5586,20 @@
       } else if (data.status === "downloaded") {
         checkUpdatesBtn.textContent = "Restart to update";
       } else if (data.status === "not-available") {
+        updateButtonOpensReleases = false;
         checkUpdatesBtn.textContent = "You're up to date";
         checkUpdatesBtn.disabled = false;
         setTimeout(() => { checkUpdatesBtn.textContent = "Check for updates"; }, 3000);
-      } else if (data.status === "error") {
-        checkUpdatesBtn.textContent = "Check for updates";
+      } else if (data.status === "unsupported") {
+        updateButtonOpensReleases = true;
+        checkUpdatesBtn.textContent = "Open releases";
         checkUpdatesBtn.disabled = false;
+        appVersionText.textContent = String(data.message || "Install the latest package from Releases.").slice(0, 160);
+      } else if (data.status === "error") {
+        updateButtonOpensReleases = Boolean(data.releasesUrl);
+        checkUpdatesBtn.textContent = updateButtonOpensReleases ? "Open releases" : "Check for updates";
+        checkUpdatesBtn.disabled = false;
+        if (data.message) appVersionText.textContent = String(data.message).slice(0, 160);
       }
     });
   }
