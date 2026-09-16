@@ -41,9 +41,8 @@ class ChatGptWebAdapter {
     const res = await fetch(`${this.webBaseUrl}/files`, {
       method: "POST",
       headers: uploadHeaders,
-      body: bodyData,
-      dispatcher: new (require('undici').Agent)({ connect: { rejectUnauthorized: false } }) // in case of cert issues
-    }).catch(async () => {
+      body: bodyData
+    }).catch(async (e) => {
        // fallback to netFetch if global fetch fails
        return netFetch(`${this.webBaseUrl}/files`, {
          method: "POST",
