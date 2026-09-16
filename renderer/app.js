@@ -2819,6 +2819,7 @@
     if (id.includes("together")) return "providers/together.png";
     if (id.includes("xai") || id.includes("grok")) return "providers/xai.png";
     if (id.includes("ollama") || id.includes("local")) return "providers/ollama.svg";
+    if (id.includes("perplexity") || id.includes("sonar")) return "providers/perplexity.svg";
     return "providers/nutaan.png";
   }
 
@@ -4664,6 +4665,8 @@
     message.textContent = "Syncing models from OmniRoute…";
     const result = await window.nutaan.gateway.getModels();
     if (result.error) { message.textContent = result.error; return; }
+    _omniProviders = result.providers || [];
+    _omniCombosCache = result.combos || {};
     _omniCatalogCache = result.models || [];
     _omniModelsLoaded = true;
     rebuildModels();
