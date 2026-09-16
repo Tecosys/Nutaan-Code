@@ -21,26 +21,78 @@ class ChatGptWebAdapter {
     this.webBaseUrl = "https://chatgpt.com/backend-api";
   }
 
+  async _uploadImage(base64Str, headers) {
+    const match = base64Str.match(/^data:(image\/[a-zA-Z]+);base64,(.*)$/);
+    if (!match) return null;
+    const mimeType = match[1];
+    const b64 = match[2];
+    const buffer = Buffer.from(b64, "base64");
+    const blob = new Blob([buffer], { type: mimeType });
+
+    const formData = new FormData();
+    formData.append("purpose", "vision");
+    formData.append("file", blob, "image.jpg");
+
+    // Clone headers but DELETE Content-Type so FormData generates the correct boundary
+    const uploadHeaders = { ...headers };
+    delete uploadHeaders["Content-Type"];
+    delete uploadHeaders["content-type"];
+
+    const res = await netFetch(`${this.webBaseUrl}/files`, {
+      method: "POST",
+      headers: uploadHeaders,
+      body: formData
+    });
+
+    if (!res.ok) {
+      console.error("ChatGPT Web image upload failed:", await res.text());
+      return null;
+    }
+    const data = await res.json();
+    return data.file_id;
+  }
+
   async chatCompletion({ apiKey, targetModel, messages, temperature, max_tokens, stream = false }) {
-    // 1. Map messages to ChatGPT Web backend format
-    const mappedMessages = messages.map(m => {
-      let textContent = "";
+    const headers = {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "Accept": "text/event-stream",
+      "OAI-Language": "en-US",
+      "OAI-Device-Id": crypto.randomUUID(),
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    };
+
+    // 1. Map messages to ChatGPT Web backend format (supporting multimodal)
+    const mappedMessages = [];
+    for (const m of messages) {
+      let content_type = "text";
+      let parts = [];
+
       if (typeof m.content === "string") {
-        textContent = m.content;
+        parts = [m.content];
       } else if (Array.isArray(m.content)) {
-        textContent = m.content.map(c => {
-          if (c.type === "text") return c.text;
-          if (c.type === "image_url") return "[Image omitted: ChatGPT Web adapter currently only supports text prompts]";
-          return "";
-        }).join("\n");
+        content_type = "multimodal_text";
+        for (const c of m.content) {
+          if (c.type === "text") {
+            parts.push(c.text);
+          } else if (c.type === "image_url") {
+            const fileId = await this._uploadImage(c.image_url.url, headers);
+            if (fileId) {
+              parts.push({
+                content_type: "image_asset_pointer",
+                asset_pointer: `file-service://${fileId}`
+              });
+            }
+          }
+        }
       }
-      return {
+      mappedMessages.push({
         id: crypto.randomUUID(),
         author: { role: m.role === "assistant" ? "assistant" : "user" },
-        content: { content_type: "text", parts: [textContent] },
+        content: { content_type, parts },
         metadata: {}
-      };
-    });
+      });
+    }
 
     const body = {
       action: "next",
@@ -49,13 +101,6 @@ class ChatGptWebAdapter {
       model: targetModel,
       timezone_offset_min: -330,
       history_and_training_disabled: false
-    };
-
-    const headers = {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "Accept": "text/event-stream",
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     };
 
     // Note: Node's native fetch gets blocked by Cloudflare, so we use Electron's net.fetch

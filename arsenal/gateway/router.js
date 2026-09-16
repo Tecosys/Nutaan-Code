@@ -141,6 +141,11 @@ class OmniRouter {
         adapter = this.adapters["chatgpt_web"];
       }
 
+      if (providerId === "gemini" && apiKey && !apiKey.startsWith("AIza")) {
+        // If it's a leftover web cookie from old version, ignore it!
+        apiKey = "";
+      }
+
       // If provider requires key and none exists, skip unless it's local or free
       if (!apiKey && modelDef.tier === "paid") {
         continue;

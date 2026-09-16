@@ -46,7 +46,8 @@ class GeminiAdapter {
    */
   async chatCompletion({ apiKey, targetModel, messages, temperature, max_tokens, stream = false }) {
     const action = stream ? "streamGenerateContent?alt=sse" : "generateContent";
-    const url = `${this.baseUrl}/models/${targetModel}:${action}&key=${apiKey || ""}`;
+    const delimiter = action.includes("?") ? "&" : "?";
+    const url = `${this.baseUrl}/models/${targetModel}:${action}${delimiter}key=${apiKey || ""}`;
 
     const { systemInstruction, contents } = this._formatContents(messages);
 
