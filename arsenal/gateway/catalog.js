@@ -418,6 +418,21 @@ const CATALOG = [
     speed: "fast",
     description: "Specialized code generation & refactoring model"
   },
+  {
+    id: "chatgpt/gpt-image",
+    name: "ChatGPT Image Generation",
+    provider: "openai",
+    targetModel: "gpt-4o",
+    contextWindow: 0,
+    maxOutput: 0,
+    capabilities: ["image"],
+    type: "image",
+    output_modalities: ["image"],
+    tier: "paid",
+    category: "image",
+    speed: "medium",
+    description: "Best-effort image generation through a ChatGPT Web token, or OpenAI image passthrough when using an OpenAI API key"
+  },
 
   // -------------------------------------------------------------
   // Premier Coding & Reasoning Models (Direct Providers)

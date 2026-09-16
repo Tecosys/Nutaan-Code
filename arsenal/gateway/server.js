@@ -5,6 +5,7 @@
  * Exposes:
  *   - Local Web UI Dashboard: http://127.0.0.1:20128/
  *   - OpenAI Compatible API:   http://127.0.0.1:20128/v1/chat/completions
+ *   - OpenAI Images API:       http://127.0.0.1:20128/v1/images/generations
  *   - OpenAI Models Catalog:   http://127.0.0.1:20128/v1/models
  *   - Anthropic Messages API:  http://127.0.0.1:20128/v1/messages
  *   - Stats & Health:          http://127.0.0.1:20128/api/stats
@@ -115,6 +116,8 @@ class OmniRouteServer {
               parent: null,
               description: m.description,
               context_window: m.contextWindow,
+              type: m.type,
+              output_modalities: m.output_modalities,
               tier: m.tier
             }))
           ];
@@ -160,11 +163,28 @@ class OmniRouteServer {
         }
 
         // -------------------------------------------------------------
+        // OpenAI Image Generations (/v1/images/generations)
+        // -------------------------------------------------------------
+        if (url.pathname === "/v1/images/generations" && req.method === "POST") {
+          const body = await this._readBodyJson(req);
+          await this._handleImageGenerations(req, res, body);
+          return;
+        }
+
+        // -------------------------------------------------------------
         // Anthropic Messages API (/v1/messages)
         // -------------------------------------------------------------
         if (url.pathname === "/v1/messages" && req.method === "POST") {
           const body = await this._readBodyJson(req);
           await this._handleAnthropicMessages(req, res, body);
+          return;
+        }
+
+        // -------------------------------------------------------------
+        // Image Proxy Router (/v1/image-proxy)
+        // -------------------------------------------------------------
+        if (url.pathname === "/v1/image-proxy" && req.method === "GET") {
+          await this._handleImageProxy(req, res, url);
           return;
         }
 
@@ -221,6 +241,16 @@ class OmniRouteServer {
     }
   }
 
+  async _handleImageGenerations(req, res, body) {
+    const result = await this.router.routeImageGeneration(body);
+    const routedResponse = result.response || result;
+    const data = await routedResponse.json().catch(async () => ({
+      error: { message: await routedResponse.text() }
+    }));
+    res.writeHead(routedResponse.status || 200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(data));
+  }
+
   async _handleAnthropicMessages(req, res, body) {
     const isStream = Boolean(body.stream);
     const openAiBody = anthropicToOpenAiPayload(body);
@@ -264,6 +294,60 @@ class OmniRouteServer {
       const anthropicJson = openAiToAnthropicResponse(openAiJson, body.model);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(anthropicJson));
+    }
+  }
+
+  async _handleImageProxy(req, res, url) {
+    const fileId = url.searchParams.get("id");
+    const providerId = url.searchParams.get("provider");
+    
+    if (!fileId || !providerId) {
+      res.writeHead(400, { "Content-Type": "text/plain" });
+      res.end("Missing id or provider parameter");
+      return;
+    }
+
+    const token = this.router.getKey(providerId);
+    if (!token) {
+      res.writeHead(401, { "Content-Type": "text/plain" });
+      res.end("No token available for provider " + providerId);
+      return;
+    }
+
+    try {
+      const headers = {
+        "Authorization": `Bearer ${token}`,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      };
+      
+      const fetchUrl = `https://chatgpt.com/backend-api/files/${encodeURIComponent(fileId)}/download`;
+      const proxyRes = await fetch(fetchUrl, { headers });
+      
+      if (!proxyRes.ok) {
+        res.writeHead(proxyRes.status, { "Content-Type": "text/plain" });
+        res.end(await proxyRes.text());
+        return;
+      }
+
+      res.writeHead(200, {
+        "Content-Type": proxyRes.headers.get("content-type") || "image/png",
+        "Cache-Control": "public, max-age=31536000"
+      });
+
+      if (proxyRes.body) {
+        const reader = proxyRes.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          res.write(Buffer.from(value));
+        }
+        res.end();
+      } else {
+        res.end();
+      }
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end("Image Proxy Error: " + err.message);
     }
   }
 

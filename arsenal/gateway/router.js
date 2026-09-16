@@ -220,6 +220,63 @@ class OmniRouter {
     this.stats.failedRequests++;
     throw lastError || new Error("All models in the Nutaan OmniRoute cascade failed or were unconfigured.");
   }
+
+  async routeImageGeneration(reqBody) {
+    this.stats.totalRequests++;
+    const requestedModel = reqBody.model || "chatgpt/gpt-image";
+    const resolved = resolveModel(requestedModel);
+    const modelDef = resolved && !resolved.isCombo
+      ? resolved
+      : CATALOG.find((m) => m.id === "chatgpt/gpt-image");
+
+    if (!modelDef) throw new Error(`Image model ${requestedModel} is not configured.`);
+
+    const providerId = modelDef.provider;
+    let adapter = this.adapters[providerId];
+    const apiKey = this.getKey(providerId);
+
+    if (providerId === "openai" && apiKey && apiKey.startsWith("eyJ")) {
+      if (!this.adapters["chatgpt_web"]) {
+        const { ChatGptWebAdapter } = require("./adapters/chatgpt_web");
+        this.adapters["chatgpt_web"] = new ChatGptWebAdapter(PROVIDERS["openai"]);
+      }
+      adapter = this.adapters["chatgpt_web"];
+    }
+
+    if (!adapter || typeof adapter.imageGeneration !== "function") {
+      throw new Error(`${PROVIDERS[providerId]?.name || providerId} does not support image generation through this gateway.`);
+    }
+    if (!apiKey && modelDef.tier === "paid") {
+      throw new Error(`${PROVIDERS[providerId]?.name || providerId} requires an API key for image generation.`);
+    }
+
+    const startTime = Date.now();
+    const response = await adapter.imageGeneration({
+      apiKey,
+      targetModel: modelDef.targetModel,
+      prompt: reqBody.prompt,
+      n: reqBody.n,
+      size: reqBody.size,
+      response_format: reqBody.response_format
+    });
+    const latencyMs = Date.now() - startTime;
+
+    if (!response.ok) {
+      const errText = await response.text();
+      this.recordModelStat(modelDef.id, latencyMs, false);
+      this.stats.failedRequests++;
+      this.logRequest({ model: modelDef.id, status: response.status, image: true, reason: errText.slice(0, 300) });
+      return new Response(errText, {
+        status: response.status,
+        headers: { "Content-Type": response.headers.get("content-type") || "application/json" }
+      });
+    }
+
+    this.stats.successfulRequests++;
+    this.recordModelStat(modelDef.id, latencyMs, true);
+    this.logRequest({ model: modelDef.id, status: 200, image: true, latencyMs });
+    return { response, modelUsed: modelDef.id, providerUsed: providerId, targetModel: modelDef.targetModel };
+  }
 }
 
 module.exports = { OmniRouter };

@@ -57,6 +57,28 @@ class OpenAiCompatibleAdapter {
       body: JSON.stringify(body)
     });
   }
+
+  async imageGeneration({ apiKey, targetModel, prompt, n = 1, size, response_format, ...extra }) {
+    const url = `${this.baseUrl}/images/generations`;
+    const headers = {
+      "Content-Type": "application/json",
+      "User-Agent": "Nutaan-OmniRoute/1.0",
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
+    };
+
+    return fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: targetModel,
+        prompt,
+        n,
+        ...(size ? { size } : {}),
+        ...(response_format ? { response_format } : {}),
+        ...extra
+      })
+    });
+  }
 }
 
 module.exports = { OpenAiCompatibleAdapter };

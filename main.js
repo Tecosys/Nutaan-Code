@@ -2393,7 +2393,7 @@ ipcMain.handle("kb:search", async (_e, payload) => {
   }
 });
 
-async function generateImage(baseUrl, apiKey, model, prompt, timeoutMs = 120_000) {
+async function generateImage(baseUrl, apiKey, model, prompt, timeoutMs = 180_000) {
   if (!model) throw new Error("No image model configured — set one in ⚙ Settings → Advanced → Image model first.");
   const res = await fetch(buildEndpointUrl(baseUrl, "/images/generations"), {
     method: "POST",
@@ -3895,7 +3895,7 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
         const errors = [];
         for (const candidate of candidates) {
           try {
-            buffer = await generateImage(imageConfig.baseUrl, imageConfig.apiKey, candidate.id, args.prompt, 100_000);
+            buffer = await generateImage(imageConfig.baseUrl, imageConfig.apiKey, candidate.id, args.prompt, 180_000);
             usedModel = candidate.id;
             break;
           } catch (err) {
