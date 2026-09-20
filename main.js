@@ -3349,6 +3349,102 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "design_new",
+      description:
+        "Start a new design on the Design canvas. Use this the moment the user asks for something visual — a landing page, an app screen, a dashboard, a deck, a poster, a social post, an email. Give it a name and a short brief (audience, tone, brand colours, what it must say); the brief is kept with the design and is what you read back later to stay consistent. Then call design_artboard once per screen or page.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Short name, e.g. 'Acme landing page'." },
+          brief: { type: "string", description: "What this design is for, who it is for, the tone, the palette, and any copy that must appear. Written for your own future reference." },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "design_artboard",
+      description:
+        "Put one artboard on the canvas: a complete, self-contained piece of HTML that IS the design. Write real layout with modern CSS (grid/flex, custom properties, gradients, shadows, good type scale) — no frameworks, no external files, no <script> needed, everything inline in one document. Images: use CSS gradients, SVG you write, or leave a styled placeholder; do not link to files that do not exist. Pick the preset that matches what you are designing. Call it once per screen — a flow of three screens is three artboards.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "What this screen is, e.g. 'Hero', 'Pricing', 'Mobile home'." },
+          preset: {
+            type: "string",
+            enum: ["desktop", "laptop", "tablet", "mobile", "slide", "square", "story", "a4", "email"],
+            description: "Canvas size. desktop 1440x900, mobile 390x844, slide 1920x1080, square 1080x1080, a4 for print.",
+          },
+          html: { type: "string", description: "The whole artboard as HTML with inline <style>. Self-contained." },
+          design_id: { type: "string", description: "Which design to add to. Omit to use the one that is open." },
+        },
+        required: ["name", "html"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "design_update",
+      description:
+        "Replace the HTML of an artboard that already exists — use this for every revision ('make the header bigger', 'try it in dark mode', 'change the copy'). Read the design first with design_read so you are editing what is actually on the canvas rather than what you remember writing.",
+      parameters: {
+        type: "object",
+        properties: {
+          artboard_id: { type: "string", description: "Which artboard, from design_read." },
+          html: { type: "string", description: "The full replacement HTML for that artboard." },
+          name: { type: "string", description: "Optional new name." },
+          design_id: { type: "string" },
+        },
+        required: ["artboard_id", "html"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "design_verify",
+      description:
+        "Render an artboard exactly as it will be exported, look at it, and measure it. Returns a SCREENSHOT plus the real problems found in the rendered page: content running past the canvas, elements off-frame, text under 11px, contrast below WCAG AA, images that failed to load. " +
+        "CALL THIS AFTER EVERY artboard you create or change — writing HTML and assuming it looks right is not designing. If it comes back with findings, fix them with design_update and verify again. Keep going until it comes back clean; the tool tells you which round you are on and when to stop. Only tell the user the design is done once a verify came back with no findings.",
+      parameters: {
+        type: "object",
+        properties: {
+          artboard_id: { type: "string", description: "Which artboard to render and check." },
+          design_id: { type: "string", description: "Omit for the design that is open." },
+        },
+        required: ["artboard_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "design_read",
+      description:
+        "Read a design back: its brief, and every artboard with its id, name, size and HTML. Call this before revising anything, and whenever you need to remember what this design already is — it is how the canvas stays consistent across a long conversation or a new session.",
+      parameters: {
+        type: "object",
+        properties: {
+          design_id: { type: "string", description: "Omit for the design that is currently open." },
+          include_html: { type: "boolean", description: "Include each artboard's full HTML. Default true; set false when you only need the list." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "design_list",
+      description: "List the designs on this machine, newest first, with their names and how many artboards each has.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "disk_scan",
       description:
         "Scan the WHOLE computer for space that can be freed, and report what is where. Use this whenever the user asks to free up space, clear disk, 'remove 100 GB', 'my laptop is full', 'make it faster' — anything about reclaiming storage. It reads caches, the recycle bin, stale temp files, old installers in Downloads, dependency folders of dormant projects, large personal files, screen recordings, machine-wide system junk, and every installed application with its size. It DELETES NOTHING — it only measures. Report the groups and their sizes, say which are safe, and then tell the user you can open the review list for them to pick from.",
@@ -3999,6 +4095,72 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
       return { tasks: listBgTasks() };
     case "stop_background_task":
       return stopBgTask(args.id);
+    case "design_new": {
+      const doc = await design.create({ name: args.name, brief: args.brief });
+      emitToWindow("design:opened", { id: doc.id });
+      return { design_id: doc.id, name: doc.name, note: "The Design tab is showing this canvas. Add artboards with design_artboard." };
+    }
+    case "design_artboard": {
+      const id = args.design_id || design.openId;
+      if (!id) return { error: "No design is open — call design_new first." };
+      const board = await design.addArtboard(id, { name: args.name, preset: args.preset, html: args.html });
+      emitToWindow("design:opened", { id, focus: board.id });
+      return { artboard_id: board.id, name: board.name, size: `${board.w}x${board.h}`, design_id: id };
+    }
+    case "design_update": {
+      const id = args.design_id || design.openId;
+      if (!id) return { error: "No design is open." };
+      const board = await design.setArtboard(id, args.artboard_id, { html: args.html, name: args.name });
+      emitToWindow("design:opened", { id, focus: board.id });
+      return { artboard_id: board.id, name: board.name, updated: true };
+    }
+    case "design_verify": {
+      const id = args.design_id || design.openId;
+      if (!id) return { error: "No design is open." };
+      const MAX_ROUNDS = 4;
+      const round = (design.rounds.get(args.artboard_id) || 0) + 1;
+      design.rounds.set(args.artboard_id, round);
+      const res = await design.verify(id, args.artboard_id);
+      const clean = !res.findings.length;
+      if (clean) design.rounds.delete(args.artboard_id);
+      return {
+        artboard: res.artboard,
+        size: res.size,
+        elements: res.elements,
+        words: res.words,
+        headings: res.headings,
+        findings: res.findings,
+        round,
+        clean,
+        // The screenshot goes back as an image part below, so a model that can see gets to look at
+        // its own work rather than trust the measurements alone.
+        dataUrl: res.screenshot,
+        verdict: clean
+          ? "Clean — nothing to fix. Tell the user it is done."
+          : round >= MAX_ROUNDS
+            ? `Round ${round} of ${MAX_ROUNDS}. Fix what you can in one more design_update, then stop and tell the user plainly what is still wrong rather than looping.`
+            : `Round ${round}. Fix these with design_update on this artboard, then call design_verify again. Do not tell the user it is finished until this comes back clean.`,
+      };
+    }
+    case "design_read": {
+      const id = args.design_id || design.openId;
+      if (!id) return { error: "No design is open — call design_new first, or design_list to find one." };
+      const doc = await design.read(id);
+      const withHtml = args.include_html !== false;
+      return {
+        design_id: doc.id,
+        name: doc.name,
+        brief: doc.brief || "",
+        artboards: doc.artboards.map((b) => ({
+          artboard_id: b.id, name: b.name, size: `${b.w}x${b.h}`, preset: b.preset,
+          ...(withHtml ? { html: b.html } : { html_length: (b.html || "").length }),
+        })),
+      };
+    }
+    case "design_list": {
+      const list = await design.list();
+      return { designs: list, open: design.openId };
+    }
     case "disk_scan": {
       const scan = await reclaim.scan({
         budgetMs: Math.min(240_000, Math.max(15_000, (Number(args.budget_seconds) || 90) * 1000)),
@@ -4550,6 +4712,10 @@ const TOOL_FAMILIES = {
   knowledge: {
     names: ["kb_add", "kb_search"],
     re: /\b(knowledge ?base|kb|docs?|documentation|reference|ingest)\b|index (this|the)|remember this/i,
+  },
+  design: {
+    names: ["design_new", "design_artboard", "design_update", "design_verify", "design_read", "design_list"],
+    re: /\b(design|mockup|wireframe|landing ?page|ui|ux|layout|screen|deck|slide|poster|flyer|banner|brand|logo|figma|prototype|artboard|canvas|dashboard|palette|typography)\b/i,
   },
   storage: {
     names: ["cleanup_storage", "disk_scan", "disk_review"],
@@ -5192,22 +5358,34 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
       const modelLooksVisionCapable = canSeeImages(model);
       const imageFromTool =
         name === "browser_screenshot" ? result?.imageDataUrl :
-        name === "view_image" ? result?.dataUrl : null;
+        name === "view_image" ? result?.dataUrl :
+        // A design is verified by looking at it. On a vision model that means the real screenshot;
+        // on a blind one the same screenshot is described by a vision model — either way the agent
+        // sees its own work rather than assuming.
+        name === "design_verify" ? result?.dataUrl : null;
 
       // A blind model gets the image described by a vision model instead of being told "you
       // can't see images" — so checking its own work keeps working on any model.
-      if (imageFromTool && result?.ok && !modelLooksVisionCapable) {
+      if (imageFromTool && (result?.ok || name === "design_verify") && !modelLooksVisionCapable) {
         const context = name === "browser_screenshot"
           ? `This is a screenshot of the page at ${result.url || "the browser panel"}.`
-          : `This is the image file ${args.path} from the project.`;
+          : name === "design_verify"
+            ? `This is a screenshot of the design artboard "${result.artboard?.name || ""}" rendered at ${result.size?.w}x${result.size?.h}. Describe the layout, hierarchy, spacing, colour and anything that looks broken, cramped, misaligned or unfinished.`
+            : `This is the image file ${args.path} from the project.`;
         const described = await describeImage(baseUrl, apiKey, imageFromTool, context);
+        // The measurements are the same either way — only the looking changes.
+        const base = name === "design_verify"
+          ? { ...result, dataUrl: undefined }
+          : { ok: true, url: result.url };
         chatMessages.push({
           role: "tool",
           tool_call_id: call.id,
           content: JSON.stringify(
             described
-              ? { ok: true, url: result.url, viewed_by: described.model, description: described.text }
-              : { ok: false, error: "Couldn't view the image: no vision model was reachable. Use browser_read_page for text content instead." }
+              ? { ...base, viewed_by: described.model, looks_like: described.text }
+              : name === "design_verify"
+                ? { ...base, looks_like: null, note: "No vision model was reachable, so judge it from the findings and the measurements above." }
+                : { ok: false, error: "Couldn't view the image: no vision model was reachable. Use browser_read_page for text content instead." }
           ).slice(0, MAX_OUTPUT_CHARS),
         });
         continue;
@@ -5229,6 +5407,20 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
           content: [
             { type: "text", text: "(screenshot of the browser panel, requested via browser_screenshot)" },
             { type: "image_url", image_url: { url: result.imageDataUrl } },
+          ],
+        });
+      } else if (name === "design_verify" && result && result.dataUrl && modelLooksVisionCapable) {
+        // The findings go in the tool message; the picture comes next, so the model judges both.
+        chatMessages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: JSON.stringify({ ...result, dataUrl: undefined }).slice(0, MAX_OUTPUT_CHARS),
+        });
+        chatMessages.push({
+          role: "user",
+          content: [
+            { type: "text", text: `(the artboard "${result.artboard?.name || ""}" as it renders — look at it and judge it yourself, then fix what is wrong)` },
+            { type: "image_url", image_url: { url: result.dataUrl } },
           ],
         });
       } else if (name === "view_image" && result && result.ok && result.dataUrl && modelLooksVisionCapable) {
@@ -5284,6 +5476,7 @@ const { Healer } = require("./agents/healer");
 const { Today } = require("./agents/today");
 const { Monitor } = require("./agents/monitor");
 const { Reclaim } = require("./agents/reclaim");
+const { Design } = require("./agents/design");
 
 async function headlessBackend(model) {
   const s = await refreshSettingsCache();
@@ -5433,6 +5626,10 @@ const today = new Today({ userDataDir, complete, log: (m) => console.log("[today
 // what they ticked. The instance is long-lived because a selection only means anything against
 // the scan it came from.
 const reclaim = new Reclaim({ log: (m) => console.log("[reclaim]", m) });
+
+// The design canvas: artboards the agent writes as HTML, kept as one JSON file per design. There
+// is nothing to install and nothing to start.
+const design = new Design({ userDataDir, emit: emitToWindow, log: (m) => console.log("[design]", m) });
 
 const monitor = new Monitor({
   userDataDir,
@@ -5905,3 +6102,38 @@ ipcMain.handle("reclaim:apply", async (_e, { paths, token } = {}) => {
   }
 });
 ipcMain.handle("reclaim:uninstall", (_e, id) => reclaim.uninstall(id));
+
+// ---- IPC: Design ----
+const designCall = async (fn) => { try { return await fn(); } catch (err) { return { error: err.message }; } };
+ipcMain.handle("design:list", () => designCall(() => design.list()));
+ipcMain.handle("design:presets", () => design.presets());
+ipcMain.handle("design:create", (_e, spec) => designCall(() => design.create(spec || {})));
+ipcMain.handle("design:read", (_e, id) => designCall(() => design.read(id)));
+ipcMain.handle("design:remove", (_e, id) => designCall(() => design.remove(id)));
+ipcMain.handle("design:rename", (_e, id, name) => designCall(() => design.rename(id, name)));
+ipcMain.handle("design:add-artboard", (_e, id, spec) => designCall(() => design.addArtboard(id, spec || {})));
+ipcMain.handle("design:set-artboard", (_e, id, boardId, patch) => designCall(() => design.setArtboard(id, boardId, patch || {})));
+ipcMain.handle("design:remove-artboard", (_e, id, boardId) => designCall(() => design.removeArtboard(id, boardId)));
+ipcMain.handle("design:set-canvas", (_e, id, canvas) => designCall(() => design.setCanvas(id, canvas || {})));
+ipcMain.handle("design:verify", (_e, { id, boardId } = {}) => designCall(() => design.verify(id, boardId)));
+ipcMain.handle("design:export", async (_e, { id, boardId, format, scale } = {}) => {
+  try {
+    const doc = await design.read(id);
+    const board = doc.artboards.find((b) => b.id === boardId);
+    const data = await design.render(id, boardId, { format, scale });
+    const ext = format === "pdf" ? "pdf" : "png";
+    const safe = String(board?.name || doc.name || "artboard").replace(/[\/:*?"<>|]+/g, "-").slice(0, 60);
+    let base = app.getPath("downloads");
+    try { base = app.getPath("pictures") || base; } catch {}
+    const res = await dialog.showSaveDialog(win, {
+      title: "Export artboard",
+      defaultPath: path.join(base, `${safe}.${ext}`),
+      filters: [ext === "pdf" ? { name: "PDF", extensions: ["pdf"] } : { name: "PNG image", extensions: ["png"] }],
+    });
+    if (res.canceled || !res.filePath) return { ok: false, canceled: true };
+    await fs.writeFile(res.filePath, Buffer.from(data));
+    return { ok: true, path: res.filePath, bytes: data.length };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});

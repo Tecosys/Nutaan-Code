@@ -437,6 +437,7 @@
     coworker: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="17.5" cy="10" r="2.2"/><path d="M15 19a4 4 0 0 1 5.8-3.6"/></svg>',
     workers: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/><path d="M4 4l2 2M20 4l-2 2"/></svg>',
     health: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h3l2.5 6 5-13 2.5 7H21"/></svg>',
+    design: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.4 5.4 5.6.6-4.2 3.9 1.2 5.6L12 15.6 6.9 18.5l1.2-5.6L4 9l5.6-.6z"/></svg>',
     studio: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5.5" width="14" height="13" rx="2.5"/><path d="M16.5 10.5l5-3v9l-5-3z"/></svg>',
   };
 
@@ -449,6 +450,7 @@
       { id: "coworker", label: "Co-worker", icon: "coworker", badge: "" },
       { id: "workers", label: "Workers", icon: "workers", badge: autonomous.unread ? String(autonomous.unread) : "", hot: autonomous.unread > 0 },
       { id: "health", label: "Health", icon: "health", badge: autonomous.openIncidents ? String(autonomous.openIncidents) : "", hot: autonomous.openIncidents > 0, warn: true },
+      { id: "design", label: "Design", icon: "design", badge: "" },
       { id: "studio", label: "Demo Studio", icon: "studio", badge: "" },
       { id: "settings", label: "Settings", icon: "gear", badge: "" },
     ];
@@ -496,9 +498,10 @@
   function renderExplorer() {
     const isFiles = sidebarView === "files";
     const isStudio = sidebarView === "studio";
+    const isDesign = sidebarView === "design";
     filesView.hidden = !isFiles;
-    chatsView.hidden = isFiles || isStudio;
-    explorerLabel.textContent = isFiles ? "Explorer" : sidebarView === "chats" ? "Chats" : sidebarView === "workers" ? "Workers" : sidebarView === "health" ? "Health" : isStudio ? "Demo Studio" : "Co-worker";
+    chatsView.hidden = isFiles || isStudio || isDesign;
+    explorerLabel.textContent = isFiles ? "Explorer" : sidebarView === "chats" ? "Chats" : sidebarView === "workers" ? "Workers" : sidebarView === "health" ? "Health" : isStudio ? "Demo Studio" : isDesign ? "Design" : "Co-worker";
     if (sidebarView === "chats") renderChatsView();
     if (sidebarView === "coworker") renderCoWorkerView();
     if (sidebarView === "workers") renderWorkersSidebar();
@@ -1502,6 +1505,47 @@
   function activeWebview() {
     return activeBrowserTab()?.view || null;
   }
+
+  // The Design page needs two things from here: which model gateway is configured, and a way to
+  // put a URL in the browser panel so the agent's browser tools can reach it.
+  window.NutaanSettings = () => ({
+    baseUrl: settings.baseUrl || "",
+    apiKey: settings.apiKey || "",
+    nutaanKey: settings.nutaanKey || "",
+    model: settings.model || "",
+  });
+  // How the Design page hands work back to the agent: a message in the normal chat, and a file
+  // written into whatever project is open (or the personal workspace if none is).
+  window.NutaanChat = {
+    async send(text) {
+      if (!text) return;
+      await ensureWorkspace();
+      sidebarView = "chats";
+      renderNav();
+      renderExplorer();
+      input.value = text;
+      autoGrowInput();
+      await sendMessage();
+    },
+    async writeFile(relPath, content) {
+      const proj = activeProject() || (await ensureWorkspace());
+      if (!proj) return { error: "no workspace" };
+      try {
+        return await window.nutaan.writeFile(proj.path, relPath, content);
+      } catch (e) {
+        return { error: e.message };
+      }
+    },
+  };
+
+  window.NutaanBrowser = {
+    open(url) {
+      if (!url) return;
+      if (panel.hidden) panelToggleBtn.click();
+      setPanelMode("browser");
+      addBrowserTab(url);
+    },
+  };
 
   function addBrowserTab(url) {
     const id = genId();
@@ -5645,6 +5689,7 @@
   const workersPage = el("workersPage");
   const healthPage = el("healthPage");
   const studioPage = el("studioPage");
+  const designPage = el("designPage");
   const composerWrap = document.querySelector(".composer-wrap");
   const todaySection = el("todaySection");
   const todayGrid = el("todayGrid");
@@ -5686,11 +5731,14 @@
     // The Studio is a full-bleed editor rather than a page above the composer — a timeline and a
     // chat box fighting for the same bottom strip helps nobody.
     const showStudio = sidebarView === "studio";
+    const showDesign = sidebarView === "design";
     workersPage.hidden = !showWorkers;
     healthPage.hidden = !showHealth;
     if (studioPage) studioPage.hidden = !showStudio;
-    if (composerWrap) composerWrap.hidden = showStudio;
-    threadScroll.hidden = showWorkers || showHealth || showStudio;
+    if (designPage) designPage.hidden = !showDesign;
+    // Both are full-bleed workspaces: a canvas or a timeline has no room left beside the composer.
+    if (composerWrap) composerWrap.hidden = showStudio || showDesign;
+    threadScroll.hidden = showWorkers || showHealth || showStudio || showDesign;
     if (showWorkers) renderWorkersPage();
     if (showHealth) {
       renderHealthPage();
@@ -5699,11 +5747,11 @@
     // The Studio is a full-bleed editor — a stage, an inspector and a timeline do not fit beside
     // the code/browser panel. Fold the panel away while it is open and put it back on the way out,
     // exactly as the user left it.
-    if (showStudio && !panel.hidden) {
+    if ((showStudio || showDesign) && !panel.hidden) {
       studioFoldedPanel = true;
       panel.hidden = true;
       resizer.hidden = true;
-    } else if (!showStudio && studioFoldedPanel) {
+    } else if (!showStudio && !showDesign && studioFoldedPanel) {
       studioFoldedPanel = false;
       panel.hidden = false;
       resizer.hidden = false;
@@ -5711,6 +5759,10 @@
     if (window.NutaanStudio) {
       if (showStudio) window.NutaanStudio.onShow();
       else window.NutaanStudio.onHide();
+    }
+    if (window.NutaanDesign) {
+      if (showDesign) window.NutaanDesign.onShow();
+      else window.NutaanDesign.onHide();
     }
   }
   let studioFoldedPanel = false;

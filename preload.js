@@ -167,10 +167,29 @@ contextBridge.exposeInMainWorld("nutaan", {
       return () => ipcRenderer.removeListener("reclaim:review", listener);
     },
   },
+  design: {
+    list: () => ipcRenderer.invoke("design:list"),
+    presets: () => ipcRenderer.invoke("design:presets"),
+    create: (spec) => ipcRenderer.invoke("design:create", spec),
+    read: (id) => ipcRenderer.invoke("design:read", id),
+    remove: (id) => ipcRenderer.invoke("design:remove", id),
+    rename: (id, name) => ipcRenderer.invoke("design:rename", id, name),
+    addArtboard: (id, spec) => ipcRenderer.invoke("design:add-artboard", id, spec),
+    setArtboard: (id, boardId, patch) => ipcRenderer.invoke("design:set-artboard", id, boardId, patch),
+    removeArtboard: (id, boardId) => ipcRenderer.invoke("design:remove-artboard", id, boardId),
+    setCanvas: (id, canvas) => ipcRenderer.invoke("design:set-canvas", id, canvas),
+    verifyBoard: (payload) => ipcRenderer.invoke("design:verify", payload),
+    export: (payload) => ipcRenderer.invoke("design:export", payload),
+    onChanged: (callback) => {
+      const listener = (_e, data) => callback(data);
+      ipcRenderer.on("design:changed", listener);
+      return () => ipcRenderer.removeListener("design:changed", listener);
+    },
+  },
   today: (payload) => ipcRenderer.invoke("today:build", payload),
   projectOpened: (root) => ipcRenderer.send("project:opened", root),
   onAutonomousEvent: (channel, callback) => {
-    const valid = ["workers:changed", "workers:update", "workers:run", "swarm:event", "swarm:launched", "healer:changed", "healer:incident", "healer:activity", "healer:health", "healer:repair-done", "monitor:changed"];
+    const valid = ["workers:changed", "workers:update", "workers:run", "swarm:event", "swarm:launched", "healer:changed", "healer:incident", "healer:activity", "healer:health", "healer:repair-done", "monitor:changed", "design:opened", "design:changed"];
     if (!valid.includes(channel)) return () => {};
     const listener = (_e, data) => callback(data);
     ipcRenderer.on(channel, listener);

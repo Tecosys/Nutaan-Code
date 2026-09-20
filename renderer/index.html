@@ -345,6 +345,93 @@
         </div>
       </div>
 
+      <!-- Design: a home that starts from what you want to make, then a workspace with the
+           conversation on the left and the real rendered artboard on the right. -->
+      <div class="page design-page" id="designPage" hidden>
+
+        <div class="dz-home" id="dzHome">
+          <div class="dz-home-inner">
+            <h1 class="dz-hero">What are we designing?</h1>
+            <p class="dz-hero-sub">Describe it. It gets built as real, rendered HTML you can click into, refine and export — with whichever model you already picked.</p>
+
+            <div class="dz-kinds" id="dzKinds"></div>
+
+            <div class="dz-prompt">
+              <textarea id="dzPromptText" rows="3" placeholder="A landing page for my SaaS — dark, one bold headline, pricing with three tiers…"></textarea>
+              <div class="dz-prompt-bar">
+                <span class="dz-kind-chip" id="dzKindChip">UI mockup</span>
+                <span class="spacer"></span>
+                <span class="dz-model" id="dzModel"></span>
+                <button class="dz-send" id="dzSend" type="button" title="Design it">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="page-col-title dz-recent-title">Your designs
+              <span class="spacer"></span>
+              <button class="link-btn" id="dzNew" type="button">+ Blank design</button>
+            </div>
+            <div class="dz-library" id="dzLibrary"></div>
+          </div>
+        </div>
+
+        <div class="dz-work" id="dzWork" hidden>
+          <aside class="dz-side">
+            <div class="dz-side-head">
+              <button class="st-back" id="dzBackToLibrary" type="button" title="All designs">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+              </button>
+              <input class="st-name" id="dzName" type="text" spellcheck="false" />
+              <span class="dz-saved" id="dzSaved"></span>
+            </div>
+            <div class="dz-side-body" id="dzSideBody"></div>
+            <div class="dz-side-prompt">
+              <textarea id="dzFollowUp" rows="2" placeholder="Refine it — 'make the headline bigger', 'try it light', 'add a pricing section'…"></textarea>
+              <div class="dz-prompt-bar">
+                <select class="st-select dz-inline" id="dzPreset"></select>
+                <span class="spacer"></span>
+                <button class="dz-send" id="dzFollowSend" type="button" title="Send">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+                </button>
+              </div>
+            </div>
+          </aside>
+
+          <div class="dz-main">
+            <div class="dz-tabs" id="dzTabs"></div>
+            <div class="dz-toolbar">
+              <div class="dz-seg" id="dzViewMode">
+                <button type="button" class="active" data-mode="preview">Preview</button>
+                <button type="button" data-mode="code">Code</button>
+              </div>
+              <select class="st-select dz-inline" id="dzDevice">
+                <option value="fit">Fit</option>
+                <option value="desktop">Desktop 1440</option>
+                <option value="laptop">Laptop 1280</option>
+                <option value="tablet">Tablet 834</option>
+                <option value="mobile">Mobile 390</option>
+              </select>
+              <span class="spacer"></span>
+              <button class="dz-mini" id="dzZoomOut" type="button">−</button>
+              <span class="dz-zoom" id="dzZoomLabel">100%</span>
+              <button class="dz-mini" id="dzZoomIn" type="button">+</button>
+              <span class="dz-sep"></span>
+              <button class="btn-secondary sm" id="dzUseToBuild" type="button" title="Take this design into your project and build it for real">Use this design to build</button>
+              <select class="st-select dz-inline" id="dzFormat"><option value="png">PNG</option><option value="pdf">PDF</option><option value="html">HTML</option></select>
+              <button class="btn-primary sm" id="dzExport" type="button">Export</button>
+            </div>
+
+            <div class="dz-stagewrap" id="dzStageWrap">
+              <div class="dz-frame-holder" id="dzFrameHolder"></div>
+              <pre class="dz-code" id="dzCode" hidden></pre>
+            </div>
+
+            <div class="dz-inspect-strip" id="dzInspect"></div>
+          </div>
+        </div>
+      </div>
+
       <!-- Demo Studio: record the screen, turn the take into a product demo, export it. -->
       <div class="page studio-page" id="studioPage" hidden>
 
@@ -1382,6 +1469,7 @@
 <script src="terminal.js"></script>
 <script src="app.js"></script>
 <script src="monitor.js"></script>
+<script src="design.js"></script>
 <script src="studio.js"></script>
 </body>
 </html>
