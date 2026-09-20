@@ -1,8 +1,3 @@
----
-name: interface-design
-description: Design a landing page, marketing site, app screen or product UI that looks designed rather than generated. Use before drawing any website, homepage, UI mockup or mobile screen in the Design canvas.
----
-
 Generated interfaces fail in a recognisable way: three identical feature cards, a headline that could
 belong to any company, uniform padding everywhere, and a gradient hero. The cure is committing to
 constraints and writing real copy.

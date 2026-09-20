@@ -1,8 +1,3 @@
----
-name: document-design
-description: Typeset a report, whitepaper, proposal or research paper on A4 pages so it reads like a published document. Use before drawing any document, paper or multi-page text artboard in the Design canvas.
----
-
 A document is judged on reading comfort, not decoration. Almost all of that is the text column.
 
 ## The measure

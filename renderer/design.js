@@ -15,23 +15,31 @@
 
   // What you can make, and the prompt each one needs so the model produces the right artefact.
   const KINDS = [
-    { id: "ui", label: "UI mockup", preset: "desktop", icon: "▦", skill: "interface-design",
+    { id: "website", label: "Website", preset: "desktop", icon: "▦", playbook: "website",
+      ask: "a complete multi-page website, as a clickable prototype. Decide the pages it needs from the subject " +
+           "(a cafe: Home, Menu, About, Visit; a SaaS: Home, Product, Pricing, Docs, Contact — never fewer than " +
+           "three) and draw one artboard PER PAGE, each a full page top to bottom with the same header and footer. " +
+           "Wire the navigation: every link to another page is <a href=\"#page:Page Name\"> using that artboard's " +
+           "exact name, so clicking it in the canvas opens that page. Draw the home page first and verify it before " +
+           "the others so the world is settled" },
+    { id: "ui", label: "UI mockup", preset: "desktop", icon: "▢", playbook: "interface",
       ask: "a screen design, as one self-contained HTML artboard — real content and a real hierarchy, not " +
            "lorem ipsum in generic cards" },
-    { id: "mobile", label: "Mobile app", preset: "mobile", icon: "▯", skill: "interface-design",
+    { id: "mobile", label: "Mobile app", preset: "mobile", icon: "▯", playbook: "interface",
       ask: "a mobile app screen at 390×844, as one self-contained HTML artboard — thumb-reachable actions, " +
            "44px minimum touch targets, a real status bar and a real hierarchy" },
-    { id: "dashboard", label: "Dashboard", preset: "desktop", icon: "▥", skill: "dashboard-design",
-      ask: "an analytics dashboard. Decide the one decision it supports and the hero metric that drives it, " +
-           "then lay it out in zones: quiet nav and a last-updated stamp, a hero metric plus 3–5 KPI tiles " +
-           "(every number with a comparison — vs last period, vs target, or a sparkline), a wide primary chart " +
+    { id: "dashboard", label: "Dashboard", preset: "desktop", icon: "▥", playbook: "dashboard",
+      ask: "an analytics dashboard. Decide the one decision it supports and the metric that drives it, then lay " +
+           "it out in zones: quiet nav and a last-updated stamp; the driving metric given the most room as a real " +
+           "chart with its current value read off it (not the big-number-small-label tile); 3–5 supporting KPIs " +
+           "(every number with a comparison — vs last period, vs target, or a trend), a wide primary chart " +
            "beside a narrower secondary one, and a breakdown table under them. Charts are inline SVG with real " +
            "computed paths, gridlines and axis labels — never an image placeholder or a grey box. 5–9 metrics " +
            "total, one accent colour with greys everywhere else, and tiles that are deliberately not all the " +
            "same size, because that uniform grid is what makes a dashboard look generated" },
     { id: "wireframe", label: "Wireframe", preset: "desktop", icon: "▤",
       ask: "a low-fidelity wireframe — greyscale, boxes and placeholder type, no colour or imagery" },
-    { id: "deck", label: "Slide deck", preset: "slide", icon: "▭", skill: "presentation-design",
+    { id: "deck", label: "Slide deck", preset: "slide", icon: "▭", playbook: "presentation",
       ask: "a slide deck that carries an argument. Write the storyline first as action titles — each title is " +
            "the finding the slide proves ('Revenue grew 24% — entirely from enterprise renewals', not 'Q3 " +
            "Revenue'), under 15 words. Read them in order and make sure they argue. Then one artboard PER SLIDE " +
@@ -39,11 +47,11 @@
            "40 words of body, titles at 40–54px on the same baseline every slide, a 96px outer margin everywhere, " +
            "one typeface, one accent marking exactly one thing per slide. Vary the slide type — statement, big " +
            "number, chart, two-column, comparison, quote — never eleven copies of title-plus-bullets" },
-    { id: "doc", label: "Document", preset: "a4", icon: "▣", skill: "document-design",
+    { id: "doc", label: "Document", preset: "a4", icon: "▣", playbook: "document",
       ask: "a typeset document on A4 pages. One artboard PER PAGE at 1240×1754, with real editorial typography: " +
            "a measure of 60–75 characters, a heading scale that actually steps, generous leading at 1.55–1.65, " +
            "footnotes and page furniture" },
-    { id: "paper", label: "Research paper", preset: "a4", icon: "☰", skill: "document-design",
+    { id: "paper", label: "Research paper", preset: "a4", icon: "☰", playbook: "document",
       ask: "an academic paper on A4 pages, one artboard PER PAGE: title block with authors and abstract, two-column body, numbered sections, figures with captions, and a references list" },
     { id: "social", label: "Social post", preset: "square", icon: "◼",
       ask: "a social post at 1080×1080, as one self-contained HTML artboard" },
@@ -99,39 +107,35 @@
       return `In the Design canvas, revise the design "${S.doc.name}" (design_id ${S.doc.id}).\n\n` +
         `${text}\n\n` +
         `Call design_read first to see the artboards as they are now, then design_update the ones that need to change ` +
-        `(or design_artboard for a genuinely new screen). Read the brand back too and keep using it.
+        `(or design_artboard for a genuinely new screen). Read the brand back too and keep using it. Refinement ` +
+        `preserves: change what I asked for and nothing else. If I named one of impeccable's commands — polish, ` +
+        `critique, audit, bolder, quieter, distill, harden, animate, colorize, typeset, layout, delight, clarify, ` +
+        `adapt — load its playbook with use_skill({ id: "impeccable", file: "reference/<command>.md" }) and follow it.
 
 ` +
         `Then design_verify every artboard you touched and fix what it finds, repeating until it comes back clean.`;
     }
+    const playbook = k.playbook || "interface";
     return `Design ${k.ask}.\n\n${text}\n\n` +
-      (k.skill
-        ? `First call use_skill with id "${k.skill}" and follow it. It is the house standard for this kind of ` +
-          `work and it is not optional — a design that ignores it gets rejected at verify.\n\n`
-        : "") +
-      `${k.skill ? "Then" : "First"} call design_brand. If no brand is set, ask me for my colours and logo before you draw anything — propose ` +
-      `a palette you think fits and let me confirm it. Then use exactly those colours in every artboard, and place the ` +
-      `logo with <img src="{{logo}}"> wherever it belongs.
-
-` +
-      `Before the first artboard, write the token set into the brief and then never deviate from it: a spacing scale ` +
-      `(4/8/12/16/24/32/48/64), a type scale of at most six sizes, one radius, one shadow depth, one typeface. ` +
-      `Designs look generated when every value is improvised — the constraint is what makes it look designed.
-
-` +
-      `Use the Design canvas: call design_new with a name and a brief (audience, the decision it supports, tone, ` +
-      `palette, tokens, the copy that matters), then design_artboard with preset "${k.preset}" for each screen or page. ` +
-      `Write complete, self-contained HTML with inline <style> — real copy about the actual subject, never lorem ipsum ` +
-      `or placeholder headlines, and no external files.
-
-` +
-      `After EVERY artboard, call design_verify on it and look at the screenshot it returns. If it reports findings, or ` +
-      `the picture looks cramped, misaligned or unfinished, fix it with design_update and verify again. Keep going until ` +
-      `verify comes back clean — do not tell me it is done before that. Then say in one line what you made.`;
+      `Two skills govern this and neither is optional. First use_skill "impeccable" — the taste: pick the mode, commit ` +
+      `to a visual world, and read its reference/craft-floor.md before the first artboard. Then use_skill "nutaan-design" ` +
+      `— the method: read my words, any image I attached and the open project before deciding what this is; ask me ONE ` +
+      `question only if the subject itself is unclear (then stop and wait for my answer); write the brief; and follow ` +
+      `its reference/${playbook}.md for this kind of work` +
+      (k.id === "website" ? `, plus reference/motion.md once the pages are designed` : ``) + `.\n\n` +
+      `Then design_new with a name and the brief (audience, mode, world, tokens — a spacing scale, a type scale of at ` +
+      `most six sizes, one radius, one shadow depth, one typeface — the copy that matters, what any attached image is ` +
+      `for, which project files it draws from). Then design_brand: use the brand if set; otherwise pick a palette that ` +
+      `fits (mine if I named colours), save it with "set", and carry on — never stop to ask about colours.\n\n` +
+      `Then design_artboard with preset "${k.preset}" for each screen or page: complete, self-contained HTML with ` +
+      `inline <style>, real copy about the actual subject, no external files (the motion module named in ` +
+      `reference/motion.md is the one exception). After EVERY artboard call design_verify and look at what it ` +
+      `returns; fix what it finds with design_update in one batch and verify again, at most twice. Do not tell me it ` +
+      `is done before verify is clean. Then one line on what you made, naming any decision you took on my behalf.`;
   }
 
-  function sendToAgent(prompt) {
-    if (window.NutaanChat && window.NutaanChat.send) window.NutaanChat.send(prompt);
+  function sendToAgent(prompt, title) {
+    if (window.NutaanChat && window.NutaanChat.send) window.NutaanChat.send(prompt, { title });
   }
 
   // ---------- workspace ----------
@@ -252,7 +256,7 @@
               <span class="dz-side-size">${b.w}×${b.h}</span>
             </div>`).join("")
         : `<div class="st-note">Nothing drawn yet. Ask below and it appears here.</div>`) +
-      `<div class="st-note dz-hint">Click anything in the preview to select it — text, colour, type, spacing and size are all editable, and every change is written into the design the agent reads next.</div>`;
+      `<div class="st-note dz-hint">Click anything in the preview to select it — text, colour, type, spacing and size are all editable, and every change is written into the design the agent reads next. A link to another page opens that page.</div>`;
     wireBrand();
   }
 
@@ -261,15 +265,20 @@
   }
 
   function renderBoard() {
-    const b = board();
-    // While the agent works the canvas stays live: nothing drawn yet means the step list, but the
-    // moment an artboard exists you watch it being built instead of staring at a spinner.
-    if (LIVE.on && !b) return liveRender();
+    // An artboard streaming in from the agent takes the canvas: you watch it being drawn, the way
+    // code appears while it is typed. The saved board comes back the moment the stream lands.
+    const live = LIVE.on && liveBoard();
+    const b = live || board();
     const holder = el("dzFrameHolder");
     const code = el("dzCode");
-    if (!b) { holder.innerHTML = `<div class="page-empty">No artboard yet.</div>`; return; }
+    if (!b) {
+      holder.innerHTML = LIVE.on
+        ? `<div class="page-empty dz-live-wait"><span class="dz-live-dot"></span>The first artboard appears here as it is drawn</div>`
+        : `<div class="page-empty">No artboard yet.</div>`;
+      return;
+    }
 
-    if (S.mode === "code") {
+    if (S.mode === "code" && !live) {
       holder.hidden = true;
       code.hidden = false;
       code.textContent = b.html || "";
@@ -286,16 +295,48 @@
     const scale = fit * S.zoom;
     el("dzZoomLabel").textContent = Math.round(scale * 100) + "%";
 
-    holder.innerHTML = `<div class="dz-board" style="width:${w}px;height:${b.h}px;transform:scale(${scale})">
-        <div class="dz-board-label">${esc(b.name)}</div>
-        <div class="dz-board-frame"></div>
-        <span class="dz-h tl"></span><span class="dz-h tr"></span><span class="dz-h bl"></span><span class="dz-h br"></span>
-        <iframe class="dz-frame" sandbox="allow-same-origin" scrolling="no"></iframe>
-      </div>`;
-    const frame = holder.querySelector(".dz-frame");
+    // While streaming, keep the frame and only swap its document: rebuilding the board every few
+    // hundred milliseconds makes the whole canvas flash.
+    // Play runs scripts in an origin-less frame; Preview keeps same-origin so the inspector can edit.
+    const play = S.mode === "play" && !live;
+    let frame = holder.querySelector(`.dz-board[data-live="${live ? "1" : "0"}"][data-play="${play ? "1" : "0"}"] .dz-frame`);
+    if (!frame) {
+      holder.innerHTML = `<div class="dz-board" data-live="${live ? "1" : "0"}" data-play="${play ? "1" : "0"}" style="width:${w}px;height:${b.h}px;transform:scale(${scale})">
+          <div class="dz-board-label"></div>
+          <div class="dz-board-frame"></div>
+          <span class="dz-h tl"></span><span class="dz-h tr"></span><span class="dz-h bl"></span><span class="dz-h br"></span>
+          <iframe class="dz-frame" sandbox="${play ? "allow-scripts" : "allow-same-origin"}" scrolling="no"></iframe>
+        </div>`;
+      frame = holder.querySelector(".dz-frame");
+    } else {
+      const boardEl = frame.closest(".dz-board");
+      boardEl.style.width = w + "px";
+      boardEl.style.height = b.h + "px";
+      boardEl.style.transform = `scale(${scale})`;
+    }
+    const label = holder.querySelector(".dz-board-label");
+    label.innerHTML = live
+      ? `<span class="dz-live-dot"></span>${esc(b.name)}${live.part ? ` <span class="dz-board-part">· drawing ${esc(live.part)}</span>` : ""}`
+      : esc(b.name);
     frame.srcdoc = wrapHtml(b, w);
-    frame.addEventListener("load", () => bindFrame(frame, b.id), { once: true });
-    if (LIVE.on) liveFloat(); else clearLiveFloat();
+    if (!live && !play) frame.addEventListener("load", () => bindFrame(frame, b.id), { once: true });
+  }
+
+  // The artboard as it stands mid-stream, shaped like a saved one so the same painter draws it.
+  // A revision streams over the board it replaces; a new artboard borrows its preset's size.
+  function liveBoard() {
+    const s = LIVE.stream;
+    if (!s || !s.html) return null;
+    const existing = s.artboardId && S.doc && S.doc.artboards.find((x) => x.id === s.artboardId);
+    const preset = (S.presets || []).find((p) => p.id === s.preset) || (S.presets || []).find((p) => p.id === "desktop");
+    return {
+      id: "live",
+      name: s.name || (existing && existing.name) || "Artboard",
+      html: s.html,
+      w: (existing && existing.w) || (preset && preset.w) || 1440,
+      h: (existing && existing.h) || (preset && preset.h) || 900,
+      part: s.part,
+    };
   }
 
   function wrapHtml(b, width) {
@@ -310,6 +351,22 @@
     color:#0f1117;-webkit-font-smoothing:antialiased}
   img{max-width:100%}
 </style></head><body>${html}</body></html>`;
+    if (S.mode === "play") {
+      // Scripts run in Play, in a frame with no origin: it cannot reach this window or the IPC
+      // bridge. Page links are relayed out with postMessage, which is all the parent listens for.
+      return body.replace(/<\/body>/i, `<script>
+  document.addEventListener("click", function (e) {
+    var a = e.target && e.target.closest && e.target.closest("a[href]");
+    if (!a) return;
+    var href = a.getAttribute("href") || "";
+    if (/^https?:/i.test(href)) { e.preventDefault(); return; }
+    if (/^#page:/i.test(href) || /^[a-z0-9./-]+$/i.test(href)) {
+      e.preventDefault();
+      parent.postMessage({ nutaanPage: href }, "*");
+    }
+  }, true);
+<\/script></body>`);
+    }
     return body.replace(/<\/head>/i, `<style>
   [data-nd-sel]{outline:2px solid #a855f7 !important;outline-offset:1px}
   [data-nd-hover]{outline:1px dashed rgba(168,85,247,.6) !important;outline-offset:1px}
@@ -324,7 +381,38 @@
       for (const n of d.querySelectorAll("[data-nd-hover]")) n.removeAttribute("data-nd-hover");
       if (e.target && e.target !== d.body) e.target.setAttribute("data-nd-hover", "1");
     });
-    d.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); select(boardId, e.target); }, true);
+    d.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      // A link to another artboard is the prototype: clicking "Menu" in the nav opens the Menu
+      // page, the way it would on the real site. Anything else is a selection for editing.
+      const a = e.target.closest && e.target.closest("a[href]");
+      const target = a && pageLinkTarget(a.getAttribute("href"));
+      if (target) { showTab(target.id); return; }
+      select(boardId, e.target);
+    }, true);
+  }
+
+  // "#page:Menu" names an artboard exactly; "menu.html" / "/menu" / "#menu" match one by name, so
+  // links written the ordinary way still navigate when a page of that name exists.
+  function pageLinkTarget(href) {
+    if (!S.doc || !href) return null;
+    const boards = S.doc.artboards;
+    const norm = (s) => String(s || "").toLowerCase().replace(/\.html?$/, "").replace(/[^a-z0-9]+/g, "");
+    const m = href.match(/^#page:(.+)$/i);
+    if (m) {
+      const want = norm(decodeURIComponent(m[1]));
+      return boards.find((b) => norm(b.name) === want) || null;
+    }
+    const slug = norm(href.replace(/^[./#]+/, "").split(/[?#]/)[0]);
+    if (!slug || slug === "index" || slug === "home") return boards.find((b) => /home|index/i.test(b.name)) || null;
+    return boards.find((b) => norm(b.name) === slug) || null;
+  }
+
+  function showTab(id) {
+    if (!S.doc || !S.doc.artboards.some((b) => b.id === id)) return;
+    S.tab = id;
+    S.sel = null;
+    renderBar(); renderSide(); renderBoard(); renderInspect();
   }
 
   const pathOf = (node, root) => {
@@ -555,58 +643,77 @@
       </div>`).join("");
   }
 
+  // The one place progress is written up: the steps so far, and — while an artboard streams —
+  // the parts of it drawn so far with the current one lit. The canvas shows the artboard itself;
+  // it does not repeat this list.
   function liveRenderSide() {
     const box = el("dzSideBody");
     if (!box || !LIVE.on) return;
+    const s = LIVE.stream;
+    const parts = s && s.parts && s.parts.length
+      ? `<div class="dz-live-parts"><div class="dz-live-parts-h">Drawing ${esc(s.name || "the artboard")}</div>` +
+        s.parts.map((p, i) => `<span class="dz-live-part${i === s.parts.length - 1 ? " current" : ""}">${esc(p)}</span>`).join("") +
+        `</div>`
+      : "";
     box.innerHTML =
       `<div class="dz-live-head"><span class="dz-live-dot"></span>Working…</div>` +
       `<div class="dz-live-steps">${stepsHtml(LIVE.steps.slice(-12))}</div>` +
+      parts +
       (LIVE.text ? `<div class="dz-live-text">${esc(LIVE.text.slice(-700))}</div>` : "");
     box.scrollTop = box.scrollHeight;
   }
 
-  // Floated over the canvas, so the artboard underneath stays visible while it is being worked on.
-  function liveFloat() {
-    const wrap = el("dzStageWrap");
-    if (!wrap) return;
-    let box = wrap.querySelector(".dz-live-float");
-    if (!box) {
-      box = document.createElement("div");
-      box.className = "dz-live-float";
-      wrap.appendChild(box);
-    }
-    box.innerHTML =
-      `<div class="dz-live-head"><span class="dz-live-dot"></span>Designing…</div>` +
-      `<div class="dz-live-steps">${stepsHtml(LIVE.steps.slice(-5))}</div>`;
-  }
-
-  function clearLiveFloat() {
-    const f = el("dzStageWrap") && el("dzStageWrap").querySelector(".dz-live-float");
-    if (f) f.remove();
-  }
-
   function liveRender() {
     liveRenderSide();
-    if (!LIVE.on) return;
-    // Once anything has been drawn, show it — watching the design appear is the whole point.
-    if (board()) return renderBoard();
-    const holder = el("dzFrameHolder");
-    if (!holder) return;
-    el("dzCode").hidden = true;
-    holder.hidden = false;
-    holder.innerHTML = `
-      <div class="dz-live">
-        <div class="dz-live-head"><span class="dz-live-dot"></span>Designing…</div>
-        <div class="dz-live-steps">${stepsHtml(LIVE.steps.slice(-7))}</div>
-        ${LIVE.text ? `<div class="dz-live-text">${esc(LIVE.text.slice(-400))}</div>` : ""}
-      </div>`;
+    if (LIVE.on) renderBoard();
   }
 
   function liveStart() {
     LIVE.on = true;
     LIVE.steps = [];
     LIVE.text = "";
+    LIVE.stream = null;
     liveRender();
+  }
+
+  // Which part of the screen is being drawn right now, read off the HTML as it streams: the
+  // landmarks and sections in the order they were opened, named by what the markup calls them.
+  // "Drawing pricing" tells you where the agent is; a byte count does not.
+  const PART_TAG = /<(section|header|nav|footer|aside|main|form|table|article|dialog)\b([^>]*)>|<!--\s*([^\n]{2,40}?)\s*-->/gi;
+  function partsOf(html) {
+    const out = [];
+    let m;
+    PART_TAG.lastIndex = 0;
+    while ((m = PART_TAG.exec(html))) {
+      let name;
+      if (m[3]) {
+        name = m[3].replace(/^\/?\s*(end|start)\b:?\s*/i, "");
+      } else {
+        const attrs = m[2] || "";
+        const pick = (re) => { const a = attrs.match(re); return a ? a[1] : ""; };
+        name = pick(/aria-label="([^"]+)"/i) || pick(/\bid="([^"]+)"/i) || (pick(/\bclass="([^"]+)"/i).split(/\s+/)[0] || "") || m[1];
+        name = name.replace(/[-_]+/g, " ").replace(/\b(section|wrap|wrapper|container|inner)\b/gi, "").trim() || m[1];
+      }
+      name = name.toLowerCase();
+      if (name && out[out.length - 1] !== name) out.push(name);
+    }
+    return out.slice(-8);
+  }
+
+  // Paint at most a few times a second: every chunk is a few characters, and a canvas reflow
+  // per chunk would fight the stream it is meant to show.
+  let streamTimer = null;
+  function liveStream({ name, path, text, done, preset, artboardId }) {
+    if (!LIVE.on) liveStart();
+    const parts = partsOf(text);
+    LIVE.stream = { tool: name, name: path || (LIVE.stream && LIVE.stream.name) || "", html: text, preset, artboardId, parts, part: parts[parts.length - 1] || "" };
+    if (done) {
+      clearTimeout(streamTimer); streamTimer = null;
+      liveRender();
+      return;
+    }
+    if (streamTimer) return;
+    streamTimer = setTimeout(() => { streamTimer = null; liveRender(); }, 350);
   }
 
   function liveStep(label, detail) {
@@ -624,27 +731,42 @@
 
   function liveEnd() {
     LIVE.on = false;
+    LIVE.chatId = null;
     LIVE.text = "";
-    clearLiveFloat();
+    LIVE.stream = null;
+    clearTimeout(streamTimer); streamTimer = null;
     renderSide();
     renderBoard();
   }
 
   function wireLive() {
-    const on = window.nutaan.onAgentEvent;
-    if (!on) return;
-    on("agent:tool-start", ({ name, args }) => {
+    if (!window.nutaan.onAgentEvent) return;
+    // Several chats can run at once; the live view follows the one that started drawing, and
+    // another chat finishing must not end it.
+    const on = (channel, fn) => window.nutaan.onAgentEvent(channel, (ev) => {
+      if (LIVE.on && LIVE.chatId && ev && ev.chatId && ev.chatId !== LIVE.chatId) return;
+      fn(ev || {});
+    });
+    on("agent:tool-start", ({ name, args, chatId }) => {
       if (el("designPage").hidden) return;
-      if (!LIVE.on && String(name || "").startsWith("design_")) liveStart();
+      if (!LIVE.on && String(name || "").startsWith("design_")) { liveStart(); LIVE.chatId = chatId || null; }
       if (!LIVE.on) return;
       liveStep(TOOL_LABEL[name] || name, stepDetail(name, args));
+    });
+    on("agent:tool-arg-stream", (ev) => {
+      if (el("designPage").hidden) return;
+      if (ev.name === "design_artboard" || ev.name === "design_update") { liveStream(ev); if (!LIVE.chatId) LIVE.chatId = ev.chatId || null; }
     });
     on("agent:tool-result", ({ name }) => {
       if (!LIVE.on) return;
       for (const s of LIVE.steps) s.done = true;
+      // The streamed draft is superseded by the saved artboard, which lands right after.
+      if (name === "design_artboard" || name === "design_update" || name === "design_verify") {
+        LIVE.stream = null;
+        clearTimeout(streamTimer); streamTimer = null;
+        refreshOpen(); // verify can grow the artboard to fit the page
+      }
       liveRender();
-      // An artboard just landed — show it immediately rather than at the end of the turn.
-      if (name === "design_artboard" || name === "design_update") refreshOpen();
     });
     on("agent:assistant-delta", ({ content }) => {
       if (!LIVE.on) return;
@@ -688,7 +810,7 @@
       const text = el("dzPromptText").value.trim();
       if (!text) return;
       el("dzPromptText").value = "";
-      sendToAgent(designPrompt(text));
+      sendToAgent(designPrompt(text), text);
       liveStart();
       flash("Designing…");
     };
@@ -701,7 +823,7 @@
       const text = el("dzFollowUp").value.trim();
       if (!text) return;
       el("dzFollowUp").value = "";
-      sendToAgent(designPrompt(text, { follow: true }));
+      sendToAgent(designPrompt(text, { follow: true }), text);
       liveStart();
       flash("Working…");
     };
@@ -745,9 +867,7 @@
     el("dzSideBody").addEventListener("click", (e) => {
       const row = e.target.closest(".dz-side-row");
       if (!row) return;
-      S.tab = row.dataset.id;
-      S.sel = null;
-      renderBar(); renderSide(); renderBoard(); renderInspect();
+      showTab(row.dataset.id);
     });
 
     el("dzViewMode").addEventListener("click", (e) => {
@@ -781,12 +901,19 @@
         flash(ok && !ok.error ? "Saved into your project" : "Could not save");
         return;
       }
+      flash(fmt === "zip" ? "Rendering every artboard…" : "Rendering…");
       const res = await api().export({ id: S.doc.id, boardId: b.id, format: fmt, scale: 2 });
-      if (res && res.ok) flash("Exported");
+      if (res && res.ok) flash(fmt === "zip" ? "Zip saved — open index.html for the prototype" : "Exported");
       else if (res && !res.canceled) alert(res.error || "export failed");
     });
 
     window.addEventListener("resize", () => { if (S.doc && !el("dzWork").hidden) renderBoard(); });
+    window.addEventListener("message", (e) => {
+      const href = e.data && typeof e.data.nutaanPage === "string" ? e.data.nutaanPage : null;
+      if (!href || S.mode !== "play") return;
+      const t = pageLinkTarget(href);
+      if (t) showTab(t.id);
+    });
 
   }
 

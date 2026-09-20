@@ -222,7 +222,7 @@ contextBridge.exposeInMainWorld("nutaan", {
   },
 
   sendAgentMessage: (payload) => ipcRenderer.send("agent:send", payload),
-  stopAgent: () => ipcRenderer.send("agent:stop"),
+  stopAgent: (chatId) => ipcRenderer.send("agent:stop", chatId || null),
   respondToPermission: (id, approved) => ipcRenderer.send("agent:permission-response", { id, approved }),
   respondToBrowserAction: (id, result) => ipcRenderer.send("agent:browser-action-response", { id, result }),
   onAgentEvent: (channel, callback) => {

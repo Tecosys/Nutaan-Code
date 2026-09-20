@@ -1197,7 +1197,8 @@ function parseSkillFile(raw) {
   const meta = {};
   for (const line of match[1].split("\n")) {
     const kv = line.match(/^(\w+):\s*(.*)$/);
-    if (kv) meta[kv[1]] = kv[2].trim();
+    // Skills written for other tools often quote the description YAML-style; keep the value, drop the quotes.
+    if (kv) meta[kv[1]] = kv[2].trim().replace(/^(["'])(.*)\1$/, "$2");
   }
   return { name: meta.name || null, description: meta.description || null, body: match[2].trim() };
 }
@@ -1243,9 +1244,19 @@ async function collectSkills(root) {
 
 async function readSkillBody(root, id) {
   for (const dir of skillSearchDirs(root).reverse()) {
+    const skillDir = path.join(dir, id);
     try {
-      const raw = await fs.readFile(path.join(dir, id, "SKILL.md"), "utf8");
-      return parseSkillFile(raw).body;
+      const raw = await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8");
+      // Skills written for Claude Code ship scripts/ and references/ next to SKILL.md and refer to
+      // them by relative path (or by "~/.claude/skills/…", which no Windows shell expands inside
+      // quotes). Without the folder the model cannot run or read any of it.
+      let files = [];
+      try {
+        files = (await fs.readdir(skillDir, { withFileTypes: true }))
+          .filter((e) => e.name !== "SKILL.md")
+          .map((e) => e.name + (e.isDirectory() ? "/" : ""));
+      } catch {}
+      return { body: parseSkillFile(raw).body, dir: skillDir, files };
     } catch {
       // try next
     }
@@ -2920,10 +2931,15 @@ const TOOLS = [
     type: "function",
     function: {
       name: "use_skill",
-      description: "Load the full instructions for a skill by id (from list_skills) and follow them for the current task.",
+      description:
+        "Load the full instructions for a skill by id (from list_skills) and follow them for the current task. " +
+        "Skills ship reference files next to SKILL.md; pass `file` (e.g. \"reference/polish.md\") to read one of those instead.",
       parameters: {
         type: "object",
-        properties: { id: { type: "string" } },
+        properties: {
+          id: { type: "string" },
+          file: { type: "string", description: "Optional path inside the skill folder to read instead of SKILL.md" },
+        },
         required: ["id"],
       },
     },
@@ -3994,8 +4010,26 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
       return searchFiles(root, args.path, args.pattern);
     case "list_skills":
       return { skills: await collectSkills(root) };
-    case "use_skill":
-      return { instructions: await readSkillBody(root, args.id) };
+    case "use_skill": {
+      if (args.file) {
+        // A reference file from inside the skill folder. resolveSafe keeps it there: the skill
+        // folder is the sandbox for this read, the way the project folder is for read_file.
+        const { dir } = await readSkillBody(root, args.id);
+        const content = await fs.readFile(resolveSafe(dir, args.file), "utf8");
+        return { file: args.file, content };
+      }
+      const { body, dir, files } = await readSkillBody(root, args.id);
+      // The folder goes at the top of the instructions themselves, not in a sibling field: a model
+      // reads the text and acts on it, and a field beside it gets skipped — it then hunts for
+      // scripts/search.py inside the user's project and reports "no such file".
+      const header = files.length
+        ? `[This skill lives in: ${dir}]\n[It ships these alongside SKILL.md: ${files.join(", ")}]\n` +
+          `Every scripts/… or reference(s)/… path below (and any "~/.claude/skills/${args.id}/…") means a file under that ` +
+          `folder, not the project. Read one with use_skill({ id: "${args.id}", file: "reference/<name>.md" }); run a ` +
+          `script by its absolute path under that folder.\n\n`
+        : "";
+      return { instructions: header + body, dir };
+    }
     case "write_file": {
       const target = resolveSafe(root, args.path);
       await fs.mkdir(path.dirname(target), { recursive: true });
@@ -4430,8 +4464,14 @@ async function compactIfNeeded(sender, chatMessages, { baseUrl, apiKey, model })
   if (chatMessages.length <= KEEP_RECENT_MESSAGES + 2) return chatMessages;
 
   const systemMsg = chatMessages[0];
-  const recent = chatMessages.slice(-KEEP_RECENT_MESSAGES);
-  const middle = chatMessages.slice(1, chatMessages.length - KEEP_RECENT_MESSAGES);
+  // Cut on a user turn, never inside an assistant→tool exchange: a window that opens on a tool
+  // call has no user message before it, and Gemini rejects that outright ("function call turn
+  // must come immediately after a user turn"), while other providers accept it by luck.
+  let cut = chatMessages.length - KEEP_RECENT_MESSAGES;
+  while (cut > 1 && !(chatMessages[cut].role === "user" && typeof chatMessages[cut].content !== "undefined")) cut--;
+  if (cut <= 1) return chatMessages;
+  const recent = chatMessages.slice(cut);
+  const middle = chatMessages.slice(1, cut);
   if (middle.length === 0) return chatMessages;
 
   sender.send("agent:compacting", {});
@@ -4582,6 +4622,32 @@ function normalizeHistory(msgs, model) {
 
   out = out.map((m) => (m.role === "assistant" && !m.tool_calls?.length && m.content == null ? { ...m, content: "(no output)" } : m));
 
+  // Turns must alternate. Two assistant turns in a row (text, then a tool call) is one turn that
+  // was stored as two, and two user turns in a row is one message — Gemini rejects both shapes
+  // ("function call turn must come immediately after a user turn or a function response turn").
+  const merged = [];
+  for (const m of out) {
+    const prev = merged[merged.length - 1];
+    const text = (x) => (typeof x.content === "string" ? x.content : "");
+    if (prev && prev.role === "assistant" && m.role === "assistant" && !prev.tool_calls?.length) {
+      merged[merged.length - 1] = { ...m, content: [text(prev), text(m)].filter(Boolean).join("\n\n") || (m.tool_calls?.length ? m.content : "(no output)") };
+      continue;
+    }
+    if (prev && prev.role === "user" && m.role === "user" && typeof prev.content === "string" && typeof m.content === "string") {
+      merged[merged.length - 1] = { ...prev, content: `${prev.content}\n\n${m.content}` };
+      continue;
+    }
+    merged.push(m);
+  }
+  out = merged;
+
+  // The first real turn must be the user's. A window that opens on the assistant (a compacted or
+  // hand-edited history) needs a user turn in front of it or the provider has nothing to answer.
+  const firstTurn = out.findIndex((m) => m.role !== "system");
+  if (firstTurn >= 0 && out[firstTurn].role !== "user") {
+    out.splice(firstTurn, 0, { role: "user", content: "(earlier conversation was trimmed to save context — continue from the history that follows)" });
+  }
+
   const last = out[out.length - 1];
   if (last && last.role === "assistant") {
     out.push({ role: "user", content: "Continue from where you left off." });
@@ -4695,7 +4761,12 @@ function extractPartialStringField(argsSoFar, fieldName) {
   return { text, done: false };
 }
 
-const STREAMED_FILE_FIELDS = { write_file: "content", edit_file: "new_string" };
+// Arguments worth showing while they stream. Files go to the thread as they are written; an
+// artboard's HTML goes to the Design canvas, so you watch the screen take shape instead of a
+// spinner — the same way the code appears while it is typed.
+const STREAMED_FILE_FIELDS = { write_file: "content", edit_file: "new_string", design_artboard: "html", design_update: "html" };
+// The field that names what is being streamed: a path for files, the artboard's name for designs.
+const STREAMED_LABEL_FIELDS = { design_artboard: "name", design_update: "name" };
 
 // Last resort when a provider rejects the conversation shape itself: throw away every tool
 // structure and keep only what was said, as plain alternating turns. The agent loses the
@@ -4947,15 +5018,19 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
           const field = STREAMED_FILE_FIELDS[fnName];
           if (field) {
             const args = toolCalls[idx].function.arguments;
-            const pathMatch = extractPartialStringField(args, "path");
+            const pathMatch = extractPartialStringField(args, STREAMED_LABEL_FIELDS[fnName] || "path");
             const contentMatch = extractPartialStringField(args, field);
             if (contentMatch && toolCalls[idx].id) {
+              const presetMatch = fnName.startsWith("design_") ? extractPartialStringField(args, "preset") : null;
+              const idMatch = fnName === "design_update" ? extractPartialStringField(args, "artboard_id") : null;
               sender.send("agent:tool-arg-stream", {
                 id: toolCalls[idx].id,
                 name: fnName,
                 path: pathMatch ? pathMatch.text : null,
                 text: contentMatch.text,
                 done: contentMatch.done,
+                ...(presetMatch && presetMatch.done ? { preset: presetMatch.text } : {}),
+                ...(idMatch && idMatch.done ? { artboardId: idMatch.text } : {}),
               });
             }
           }
@@ -5134,6 +5209,12 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
         /thought_signature|model turn|not a string|invalid.*argument|role|alternat|tool_call|function call/i.test(streamResult.error || "");
       if (malformedHistory && !flattenHistory) {
         flattenHistory = true;
+        // Logged, not shown: the user gets a retry, but a silent fallback hides the provider quirk
+        // that needs fixing in normalizeHistory.
+        const shape = normalizeHistory(requestMessages.slice(1), model)
+          .map((m) => (m.role === "assistant" && m.tool_calls?.length ? `assistant→${m.tool_calls.map((c) => c.function?.name).join("+")}${m.content ? "(+text)" : ""}` : m.role))
+          .join(" | ");
+        console.warn(`[agent] ${model} rejected the tool history (HTTP 400: ${streamResult.error}) — retrying with it flattened to text\n[agent] history shape: ${shape}`);
         sender.send("agent:retrying", {
           message: "Adjusting the conversation format for this model",
           attempt: 1,
@@ -5497,17 +5578,35 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
   sender.send("agent:error", { message: "Stopped after reaching the max number of steps for this turn." });
 }
 
+// One run per chat, several chats at once. Every event a run emits carries its chatId, so the
+// renderer can keep working in another chat while a design or a long build finishes in this one
+// and lands in its own history. Without the tag, agent:done wrote the transcript into whichever
+// chat happened to be open.
+const agentRuns = new Map(); // chatId -> AbortController
 ipcMain.on("agent:send", async (event, payload) => {
+  const chatId = (payload && payload.chatId) || null;
+  const sender = {
+    send: (channel, data) => { if (!event.sender.isDestroyed()) event.sender.send(channel, { ...(data || {}), chatId }); },
+    hooks: null,
+  };
+  const controller = new AbortController();
+  if (chatId) {
+    agentRuns.get(chatId)?.abort();
+    agentRuns.set(chatId, controller);
+  }
   try {
     const backend = await activeBackend(payload || {});
-    await runAgentLoop(event.sender, { ...payload, ...backend });
+    await runAgentLoop(sender, { ...payload, ...backend, controller });
   } catch (err) {
-    event.sender.send("agent:error", { message: err.message });
+    sender.send("agent:error", { message: err.message });
+  } finally {
+    if (chatId && agentRuns.get(chatId) === controller) agentRuns.delete(chatId);
   }
 });
 
-ipcMain.on("agent:stop", () => {
-  agentAbort?.abort();
+ipcMain.on("agent:stop", (_e, chatId) => {
+  if (chatId && agentRuns.has(chatId)) agentRuns.get(chatId).abort();
+  else { agentAbort?.abort(); for (const c of agentRuns.values()) c.abort(); }
   for (const resolve of pendingPermissions.values()) resolve(false);
   pendingPermissions.clear();
   for (const resolve of pendingBrowserActions.values()) resolve({ ok: false, error: "Stopped" });
@@ -6199,15 +6298,17 @@ ipcMain.handle("design:export", async (_e, { id, boardId, format, scale } = {}) 
   try {
     const doc = await design.read(id);
     const board = doc.artboards.find((b) => b.id === boardId);
-    const data = await design.render(id, boardId, { format, scale });
-    const ext = format === "pdf" ? "pdf" : "png";
-    const safe = String(board?.name || doc.name || "artboard").replace(/[\/:*?"<>|]+/g, "-").slice(0, 60);
+    const zip = format === "zip";
+    const data = zip ? await design.exportZip(id) : await design.render(id, boardId, { format, scale });
+    const ext = zip ? "zip" : format === "pdf" ? "pdf" : "png";
+    const safe = String(zip ? doc.name : board?.name || doc.name || "artboard").replace(/[\/:*?"<>|]+/g, "-").slice(0, 60);
     let base = app.getPath("downloads");
-    try { base = app.getPath("pictures") || base; } catch {}
+    if (!zip) try { base = app.getPath("pictures") || base; } catch {}
+    const filters = { zip: { name: "Zip archive", extensions: ["zip"] }, pdf: { name: "PDF", extensions: ["pdf"] }, png: { name: "PNG image", extensions: ["png"] } };
     const res = await dialog.showSaveDialog(win, {
-      title: "Export artboard",
+      title: zip ? "Export design" : "Export artboard",
       defaultPath: path.join(base, `${safe}.${ext}`),
-      filters: [ext === "pdf" ? { name: "PDF", extensions: ["pdf"] } : { name: "PNG image", extensions: ["png"] }],
+      filters: [filters[ext]],
     });
     if (res.canceled || !res.filePath) return { ok: false, canceled: true };
     await fs.writeFile(res.filePath, Buffer.from(data));

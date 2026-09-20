@@ -1,8 +1,3 @@
----
-name: dashboard-design
-description: Design an analytics dashboard, admin panel, metrics screen or reporting view that looks like a real product rather than a generated template. Use before drawing any dashboard, KPI screen, admin console or data-heavy artboard in the Design canvas.
----
-
 Most generated dashboards fail the same way: twelve identical tiles in a uniform grid, a rainbow of
 chart colours, numbers with no comparison, and no answer to "so what?". Fix that by deciding the
 question first and letting the layout follow it.

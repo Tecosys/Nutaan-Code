@@ -1,8 +1,3 @@
----
-name: presentation-design
-description: Design a slide deck, pitch, board review or conference talk that carries an argument instead of listing bullet points. Use before drawing any slide, deck or presentation artboard in the Design canvas.
----
-
 A deck is an argument, not a document. The failure mode of a generated deck is a title, four
 bullets, and a stock layout repeated eleven times — which is a memo someone pasted into slides.
 Consulting decks look rigorous because the structure does the work before any styling starts.

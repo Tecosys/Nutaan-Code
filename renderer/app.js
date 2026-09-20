@@ -135,8 +135,49 @@
   };
   let projects = [];
   let activePath = null;
+  // `running` means the chat on screen is running. Other chats can be running too — a design
+  // that takes five minutes keeps going while you start something else — and those live in
+  // `runs`, keyed by chat id, with the last thing they did for the sidebar.
   let running = false;
+  const runs = new Map(); // chatId -> { activity }
+  let threadChatId = null; // the chat the thread on screen was built for
   let sidebarView = "files"; // files | chats | recent
+
+  // Every agent event carries the chat it belongs to. Events for the chat on screen go to the
+  // handlers below, which draw the thread. Events for any other chat are handled here: the run's
+  // finish lands in that chat's history, and the sidebar shows what it is doing meanwhile.
+  function chatById(id) {
+    for (const p of projects) for (const c of p.chats) if (c.id === id) return { proj: p, chat: c };
+    return null;
+  }
+  function backgroundEvent(channel, data) {
+    const found = chatById(data.chatId);
+    if (channel === "agent:done" || channel === "agent:error") {
+      runs.delete(data.chatId);
+      if (found) {
+        if (channel === "agent:done" && data.messages) found.chat.messages = data.messages;
+        if (channel === "agent:error" && data.message) found.chat.lastError = data.message;
+        found.chat.updatedAt = new Date().toISOString();
+        found.chat.unread = true;
+        persistProjects();
+      }
+      renderExplorer();
+      return;
+    }
+    const run = runs.get(data.chatId);
+    if (!run) return;
+    if (channel === "agent:tool-start" || channel === "agent:tool-pending") run.activity = toolLabel(data.name, data.args).replace(/<[^>]+>/g, "");
+    if (channel === "agent:retrying") run.activity = "Retrying…";
+    if (channel === "agent:compacting") run.activity = "Compacting…";
+    renderExplorer();
+  }
+  const onAgentEvent = (channel, handler) =>
+    window.nutaan.onAgentEvent(channel, (data) => {
+      const mine = !data || !data.chatId || !activeChat() || data.chatId === activeChat().id;
+      if (!mine) return backgroundEvent(channel, data);
+      handler(data);
+    });
+
   let availableModels = []; // nutaan catalog ids (legacy checks)
   let nutaanModels = [];
   let aggregatedModels = []; // [{ id, providerId, providerName }] nutaan + user-managed
@@ -677,10 +718,11 @@
     }
     for (const c of proj.chats) {
       const row = document.createElement("div");
-      row.className = "chat-row" + (c.id === proj.activeChatId ? " active" : "");
+      const run = runs.get(c.id);
+      row.className = "chat-row" + (c.id === proj.activeChatId ? " active" : "") + (run ? " running" : "") + (c.unread ? " unread" : "");
       row.innerHTML =
-        `<span class="chat-title">${escapeHtml(c.title)}</span>` +
-        `<span class="chat-meta">${escapeHtml(basename(proj.path))} · ${escapeHtml(relTime(c.updatedAt))}</span>` +
+        `<span class="chat-title">${run ? `<span class="chat-run-dot"></span>` : ""}${escapeHtml(c.title)}</span>` +
+        `<span class="chat-meta">${run ? escapeHtml(run.activity || "Working…") : `${escapeHtml(basename(proj.path))} · ${escapeHtml(relTime(c.updatedAt))}`}</span>` +
         `<button class="row-close" title="Delete chat">✕</button>`;
       row.addEventListener("click", (e) => {
         if (e.target.classList.contains("row-close")) return;
@@ -1516,9 +1558,11 @@
   });
   // How the Design page hands work back to the agent: a message in the normal chat, and a file
   // written into whatever project is open (or the personal workspace if none is).
+  let pendingTitle = null; // what the chat is called when the message is a wrapped design prompt
   window.NutaanChat = {
-    async send(text) {
+    async send(text, { title } = {}) {
       if (!text) return;
+      pendingTitle = title || null;
       await ensureWorkspace();
       sidebarView = "chats";
       renderNav();
@@ -3575,13 +3619,20 @@
 
   function newChat() {
     const proj = activeProject();
-    if (!proj || running) return;
+    if (!proj) return;
     const chat = makeChat(proj.path);
     proj.chats.unshift(chat);
     proj.activeChatId = chat.id;
+    // A new chat is something you type into. Started from Design, Workers or the Studio it was
+    // created behind that page and nothing visibly happened.
+    sidebarView = "chats";
     renderNav();
     renderExplorer();
+    renderEmptyVisibility();
     renderThreadFromMessages(chat.messages);
+    threadChatId = chat.id;
+    setRunning(false);
+    input.focus();
     persistProjects();
   }
 
@@ -3601,16 +3652,22 @@
   }
 
   async function selectChat(path, chatId) {
-    if (running) return;
     const proj = projects.find((p) => p.path === path);
     if (!proj) return;
     const pathChanged = path !== activePath;
     activePath = path;
     proj.activeChatId = chatId;
     if (pathChanged) await onProjectChanged();
+    const chat = activeChat();
+    if (chat) chat.unread = false;
     renderNav();
     renderExplorer();
-    renderThreadFromMessages(activeChat().messages);
+    renderThreadFromMessages(chat.messages);
+    threadChatId = chat.id;
+    // Landing in a chat that is still working: the transcript so far, then the live indicator.
+    // Its new events stream in from here; the full history lands when it finishes.
+    setRunning(runs.has(chat.id));
+    if (runs.has(chat.id)) showThinking(runs.get(chat.id).activity || "Working");
     persistProjects();
   }
 
@@ -3759,7 +3816,7 @@
     }
   }
 
-  window.nutaan.onAgentEvent("agent:tasks-update", ({ tasks }) => {
+  onAgentEvent("agent:tasks-update", ({ tasks }) => {
     const chat = activeChat();
     // Kept on the chat so reopening it later still shows what was planned and what got done.
     if (chat) {
@@ -3822,7 +3879,7 @@
     if (show) runTasks.textContent = `${n} running tasks`;
   }
 
-  window.nutaan.onAgentEvent("agent:usage", ({ usage }) => {
+  onAgentEvent("agent:usage", ({ usage }) => {
     // Only generated tokens accumulate. Summing total_tokens counted prompt_tokens again on
     // every iteration of the loop — and the prompt is the whole conversation re-sent each time —
     // so a handful of tool calls read as "50.9k tokens" when barely anything had been written.
@@ -3838,7 +3895,7 @@
     paintRunStatus();
   });
 
-  window.nutaan.onAgentEvent("agent:tasks", ({ running, names }) => {
+  onAgentEvent("agent:tasks", ({ running, names }) => {
     setRunTasks(running);
     if (running > 1) {
       const labels = [...new Set((names || []).map((n) => TOOL_PENDING_LABEL[n] || n))];
@@ -3885,7 +3942,7 @@
     web_fetch: "Fetching a page",
   };
 
-  window.nutaan.onAgentEvent("agent:tool-pending", ({ name }) => {
+  onAgentEvent("agent:tool-pending", ({ name }) => {
     const clean = String(name || "").split("<|")[0];
     const label = TOOL_PENDING_LABEL[clean] || "Preparing " + clean;
     showThinking(label);
@@ -3938,7 +3995,7 @@
 
   async function sendMessage() {
     if (running) {
-      window.nutaan.stopAgent();
+      window.nutaan.stopAgent(activeChat()?.id);
       appendBubble("error", "Stopped. Your draft is still in the box — press Send again to continue.");
       return;
     }
@@ -3962,7 +4019,8 @@
       return;
     }
     if (chat.messages.length === 0) chat.messages = [{ role: "system", content: systemPrompt(proj.path) }];
-    if (chat.title === "New chat") chat.title = deriveChatTitle(text);
+    if (chat.title === "New chat") chat.title = deriveChatTitle(pendingTitle || text);
+    pendingTitle = null;
     chat.updatedAt = new Date().toISOString();
 
     // Outcome mode: the goal goes to the swarm, not to one agent.
@@ -3982,6 +4040,8 @@
     input.value = "";
     autoGrowInput();
     renderExplorer();
+    runs.set(chat.id, { activity: "Thinking" });
+    threadChatId = chat.id;
     setRunning(true);
     showThinking();
 
@@ -4045,6 +4105,7 @@
       imageModel: settings.imageModel,
       autoApprove: settings.autoApprove,
       messages: chat.messages,
+      chatId: chat.id,
     });
   }
 
@@ -4105,7 +4166,7 @@
     reasoningText = "";
   }
 
-  window.nutaan.onAgentEvent("agent:reasoning-delta", ({ content }) => {
+  onAgentEvent("agent:reasoning-delta", ({ content }) => {
     hideThinking();
     if (!reasoningCard) {
       resetFileGroup();
@@ -4139,7 +4200,7 @@
     scrollToBottom();
   });
 
-  window.nutaan.onAgentEvent("agent:assistant-delta", ({ content }) => {
+  onAgentEvent("agent:assistant-delta", ({ content }) => {
     if (!streamBubble) {
       hideThinking();
       finalizeReasoning();
@@ -4151,7 +4212,7 @@
     scrollToBottom();
   });
 
-  window.nutaan.onAgentEvent("agent:tool-start", ({ id, name, args }) => {
+  onAgentEvent("agent:tool-start", ({ id, name, args }) => {
     hideThinking();
     finalizeStream();
     toolArgsById.set(id, args);
@@ -4173,7 +4234,9 @@
     runActivity.textContent = toolLabel(name, args).replace(/<[^>]+>/g, "");
   });
 
-  window.nutaan.onAgentEvent("agent:tool-arg-stream", ({ id, name, path, text }) => {
+  onAgentEvent("agent:tool-arg-stream", ({ id, name, path, text }) => {
+    // An artboard streams onto the Design canvas (design.js), not as a wall of HTML in the thread.
+    if (String(name).startsWith("design_")) return;
     hideThinking();
     finalizeStream();
     let card = liveWriteCards.get(id);
@@ -4195,7 +4258,7 @@
     scrollToBottom();
   });
 
-  window.nutaan.onAgentEvent("agent:permission-request", (req) => {
+  onAgentEvent("agent:permission-request", (req) => {
     hideThinking();
     finalizeStream();
     const liveCard = liveWriteCards.get(req.id);
@@ -4253,15 +4316,15 @@
     scrollToBottom();
   });
 
-  window.nutaan.onAgentEvent("agent:compacting", () => {
+  onAgentEvent("agent:compacting", () => {
     appendNoticeCard("Compacting conversation to make room for more context…");
   });
 
-  window.nutaan.onAgentEvent("agent:retrying", ({ message, attempt, max, delayMs }) => {
+  onAgentEvent("agent:retrying", ({ message, attempt, max, delayMs }) => {
     appendNoticeCard(`Provider hiccup (${escapeHtml(message || "")}) — retrying in ${Math.round(delayMs / 1000)}s… (${attempt}/${max})`);
   });
 
-  window.nutaan.onAgentEvent("agent:model-switched", ({ from, to }) => {
+  onAgentEvent("agent:model-switched", ({ from, to }) => {
     settings.model = to;
     window.nutaan.setSettings(settings);
     updateModelBadge();
@@ -4281,7 +4344,7 @@
   }
 
   const FS_MUTATING_TOOLS = new Set(["write_file", "edit_file", "run_command"]);
-  window.nutaan.onAgentEvent("agent:tool-result", ({ id, name, result }) => {
+  onAgentEvent("agent:tool-result", ({ id, name, result }) => {
     resolveToolCard(id, name, result);
     maybeShowInCodeTab(id, name, result);
     if (running) showThinking();
@@ -4292,7 +4355,7 @@
     }
   });
 
-  window.nutaan.onAgentEvent("agent:done", ({ messages }) => {
+  onAgentEvent("agent:done", ({ messages, chatId }) => {
     hideThinking();
     finalizeStream();
     resetFileGroup();
@@ -4302,14 +4365,18 @@
       chat.updatedAt = new Date().toISOString();
       persistProjects();
     }
+    runs.delete(chatId || chat?.id);
     setRunning(false);
+    // The thread was built for another chat (you switched here mid-run): redraw from history.
+    if (chat && threadChatId !== chat.id) { renderThreadFromMessages(chat.messages); threadChatId = chat.id; }
     renderExplorer();
   });
 
-  window.nutaan.onAgentEvent("agent:error", ({ message }) => {
+  onAgentEvent("agent:error", ({ message, chatId }) => {
     hideThinking();
     finalizeStream();
     resetFileGroup();
+    runs.delete(chatId || activeChat()?.id);
 
     if (/user not found|invalid.?api.?key|invalid_api_key|no such user|unknown key|missing.*auth|no auth credentials/i.test(message || "")) {
       appendBubble("error", `${message}\n\nThe backend rejected the request as unauthenticated. If you set a custom Server URL under Settings → Advanced, check its API key.`);
@@ -4390,7 +4457,7 @@
     }
   }
 
-  window.nutaan.onAgentEvent("agent:browser-action", async (req) => {
+  onAgentEvent("agent:browser-action", async (req) => {
     openPanel("browser");
     agentActivityText.textContent = agentActionLabel(req);
     agentActivity.hidden = false;
