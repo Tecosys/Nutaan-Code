@@ -2322,15 +2322,18 @@ async function coWorkerRead(p, limit = 600) {
 }
 
 // One call per platform for "open this the way a double-click would".
-function osOpenCommand(target) {
-  if (process.platform === "win32") return `start "" "${target.replace(/"/g, '')}"`;
-  if (process.platform === "darwin") return `open "${target.replace(/"/g, '\\"')}"`;
-  return `xdg-open "${target.replace(/"/g, '\\"')}"`;
+// Files and folders open through Electron itself — the same call the OS makes for a double-click —
+// and URLs through the default browser. No shell involved, so Excel, Word, a PDF viewer or a folder
+// opens the same way whatever shell the agent runs in.
+async function osOpen(target) {
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(target)) { await shell.openExternal(target); return { ok: true }; }
+  const err = await shell.openPath(target);
+  return err ? { ok: false, error: err } : { ok: true };
 }
 
 function osLaunchAppCommand(appName) {
   const safe = String(appName).replace(/"/g, "");
-  if (process.platform === "win32") return `start "" "${safe}"`;
+  if (process.platform === "win32") return `Start-Process -FilePath "${safe}"`;
   if (process.platform === "darwin") return `open -a "${safe}"`;
   // Linux desktop entries are launched by their .desktop id; fall back to the binary name.
   return `gtk-launch "${safe}" 2>/dev/null || setsid "${safe}" >/dev/null 2>&1 &`;
@@ -2546,9 +2549,7 @@ ipcMain.handle("os:read", async (_e, { path: p, limit }) => {
 ipcMain.handle("os:open", async (_e, target) => {
   try {
     const resolved = /^[a-z][a-z0-9+.-]*:\/\//i.test(target) ? target : resolveUserPath(target);
-    const res = await runCommand(HOME, osOpenCommand(resolved));
-    if (res.exitCode !== 0) return { ok: false, error: (res.stderr || "Could not open it").slice(0, 300) };
-    return { ok: true };
+    return await osOpen(resolved);
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -2661,12 +2662,33 @@ async function generateImage(baseUrl, apiKey, model, prompt, timeoutMs = 180_000
   throw new Error("Server response had neither b64_json nor url");
 }
 
+// On Windows the agent's shell is PowerShell, run from a script file: cmd.exe (Node's default)
+// breaks on the second line of any multi-line command and swallows quotes, so a here-string,
+// a COM script or a python -c block "succeeded" with no output and did nothing. A file has no
+// quoting problem at all. Elsewhere the login shell runs the text as is.
+let pwshPath = null; // PowerShell 7 if installed: it also understands && and ||
+try { const r = require("child_process").spawnSync("where.exe", ["pwsh"], { windowsHide: true, encoding: "utf8" }); pwshPath = process.platform === "win32" && r.status === 0 ? String(r.stdout).split(/\r?\n/)[0].trim() || null : null; } catch {}
+function shellInvocation(command) {
+  if (process.platform !== "win32") return { cmd: command, cleanup: () => {} };
+  // A one-line command chained with && or || is cmd.exe / bash grammar that Windows PowerShell 5
+  // rejects; without pwsh it goes to cmd.exe as before. Everything else — multi-line scripts,
+  // here-strings, cmdlets, COM — is PowerShell.
+  const looksCmd = !/\n/.test(command) && /&&|\|\|/.test(command) && !/\$\w+\s*=|\b(Get|Set|New|Start|Write|Invoke|Select|Where)-[A-Z]|@["']/.test(command);
+  if (looksCmd && !pwshPath) return { cmd: command, cleanup: () => {} };
+  const file = path.join(os.tmpdir(), `nutaan-cmd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}.ps1`);
+  const preamble = ["$ErrorActionPreference = 'Continue'", "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8", ""].join("\n");
+  fsSync.writeFileSync(file, preamble + command + "\nexit $LASTEXITCODE\n", "utf8");
+  return { cmd: `"${pwshPath || "powershell.exe"}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${file}"`, cleanup: () => { try { fsSync.unlinkSync(file); } catch {} } };
+}
+
 function runCommand(root, command, signal) {
   return new Promise((resolve) => {
+    const inv = shellInvocation(command);
     exec(
-      command,
-      { cwd: root, timeout: COMMAND_TIMEOUT_MS, windowsHide: true, signal },
+      inv.cmd,
+      { cwd: root, timeout: COMMAND_TIMEOUT_MS, windowsHide: true, signal, maxBuffer: 8 * 1024 * 1024 },
       (error, stdout, stderr) => {
+        inv.cleanup();
         resolve({
           exitCode: error ? (error.code ?? 1) : 0,
           stdout: String(stdout || "").slice(0, MAX_OUTPUT_CHARS),
@@ -2694,7 +2716,7 @@ function startBackgroundTask(root, command) {
   const id = "bg" + ++bgTaskSeq;
   let child;
   try {
-    child = spawn(command, { cwd: root, shell: true, windowsHide: true });
+    child = spawn(shellInvocation(command).cmd, { cwd: root, shell: true, windowsHide: true });
   } catch (e) {
     return { id, command, status: "error", error: e.message };
   }
@@ -3319,6 +3341,22 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "deliver_file",
+      description:
+        "Hand a finished file to the user: a workbook, document, deck, PDF, image, video, CSV or archive you produced. It appears in the chat as a card they can open, reveal in its folder, or download, and it stays in the history. Call it once per deliverable, after the file is written and checked — never for a file that does not exist yet. Returns the file's size so you can confirm it is real.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Absolute path of the file." },
+          note: { type: "string", description: "One line on what it is, e.g. 'Leads sheet with average — 3 rows'." },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "os_open",
       description:
         "Open a file, folder or URL in whatever application the system normally uses for it — a PDF in the PDF viewer, a folder in the file manager. Works on Windows, macOS and Linux. Requires user approval.",
@@ -3491,7 +3529,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "run_command",
-      description: "Run a shell command in the project root (60s timeout). Requires user approval. For long-running or never-ending commands (dev servers, watchers, long builds/tests), use run_background instead — this one will time out at 60s.",
+      description: "Run a shell command in the project root (60s timeout) — PowerShell on Windows (multi-line scripts, here-strings and COM automation all work; use python only if it is what the project uses), the login shell on macOS/Linux. Requires user approval. For long-running or never-ending commands (dev servers, watchers, long builds/tests), use run_background instead — this one will time out at 60s.",
       parameters: {
         type: "object",
         properties: { command: { type: "string" } },
@@ -4117,6 +4155,7 @@ const PARALLEL_TOOLS = new Set([
 ]);
 
 const SAFE_TOOLS = new Set([
+  "deliver_file",
   "outreach_review",
   "outreach_log",
   "outreach_history",
@@ -4366,10 +4405,19 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
       return await killProcess(args || {});
     case "os_system_stats":
       return await systemStats();
+    case "deliver_file": {
+      const target = path.resolve(String(args.path || ""));
+      let st;
+      try { st = await fs.stat(target); } catch { return { error: `No file at ${target}. Write it first, check it exists, then deliver it.` }; }
+      if (!st.isFile()) return { error: `${target} is a folder, not a file.` };
+      const info = { path: target, name: path.basename(target), bytes: st.size, ext: path.extname(target).slice(1).toLowerCase(), note: String(args.note || "").slice(0, 200), at: Date.now() };
+      sender.send("agent:file-delivered", info);
+      return { ok: true, ...info, note: "Shown to the user as a file card." };
+    }
     case "os_open": {
       const target = /^[a-z][a-z0-9+.-]*:\/\//i.test(args.target) ? args.target : resolveUserPath(args.target);
-      const res = await runCommand(root, osOpenCommand(target), signal);
-      if (res.exitCode !== 0) return { error: (res.stderr || "Could not open it").slice(0, 300) };
+      const res = await osOpen(target);
+      if (!res.ok) return { error: String(res.error || "Could not open it").slice(0, 300) };
       return { ok: true, opened: target };
     }
     case "os_launch_app": {
@@ -5186,6 +5234,10 @@ const TOOL_FAMILIES = {
   design: {
     names: ["design_new", "design_artboard", "design_append", "design_update", "design_verify", "design_brand", "design_read", "design_list", "design_export_video", "design_takes"],
     re: /\b(design|mockup|wireframe|landing ?page|ui|ux|layout|screen|deck|slide|poster|flyer|banner|brand|logo|figma|prototype|artboard|canvas|dashboard|palette|typography)\b/i,
+  },
+  deliver: {
+    names: ["deliver_file"],
+    re: /\b(excel|xlsx|csv|sheet|spreadsheet|word|docx|document|report|pdf|deck|pptx|powerpoint|slides?|export|download|file|save)\b/i,
   },
   outreach: {
     names: ["outreach_review", "outreach_log", "outreach_history"],

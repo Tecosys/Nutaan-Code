@@ -254,6 +254,7 @@ contextBridge.exposeInMainWorld("nutaan", {
       "agent:tool-result",
       "agent:permission-request",
       "agent:outreach-review",
+      "agent:file-delivered",
       "agent:browser-action",
       "agent:compacting",
       "agent:retrying",

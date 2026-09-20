@@ -7,6 +7,10 @@ Office is scripted through its COM automation from PowerShell, which run_command
 Windows. The result is the real application producing a real file — formulas calculate, styles
 apply, the file opens in Office exactly as it would if a person had made it. Nothing to install.
 
+The three recipes below are also in reference/excel.md, reference/word.md and reference/powerpoint.md
+(use_skill with `file`). **Use PowerShell + COM as written. Do not switch to python/openpyxl/win32com** —
+they may not be installed, and a command that printed nothing proves nothing.
+
 Rules that keep it reliable:
 - Check once per session: `Get-Command excel` is not enough — try `New-Object -ComObject Excel.Application`
   in a try/catch. If it fails, Office is not installed: write CSV / Markdown / HTML instead and say so.
@@ -17,8 +21,12 @@ Rules that keep it reliable:
 - Put the whole script in ONE run_command as a here-string (`@' … '@`), never line by line.
 - Build content from real data: read the source (a CSV, the codebase, a web page) first; never invent
   numbers. If the user must supply a value, leave a clearly marked cell and tell them.
-- After writing, open the file for the user with os_open (or tell them the path), and read one value
-  back (as below) to prove the file is right.
+- Every script ends by printing something checkable (`"saved $out …"` plus a value read back). If the
+  output is empty or shows an error, the file was NOT made — say so and fix it; never report success
+  you did not see.
+- When the file is written and checked, call **deliver_file** with its path and a one-line note: it
+  becomes a card in the chat (Open · Show in folder) and stays in the history. Do this for every file
+  you produce — workbook, document, deck, PDF, CSV.
 
 ## Excel — new workbook with data, formulas, formatting
 

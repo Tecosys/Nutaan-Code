@@ -2536,7 +2536,14 @@
     `;
     const header = wrap.querySelector(".tool-header");
     const detail = wrap.querySelector(".tool-detail");
-    header.addEventListener("click", () => {
+    header.addEventListener("click", (e) => {
+      // A browser row is a link to the page: open the panel on it. The chevron still expands.
+      if (/^browser_/.test(name) && !e.target.closest(".tool-chev")) {
+        const url = args && args.url;
+        openPanel("browser");
+        if (url && (!activeBrowserTab() || (activeBrowserTab().url || "").split("#")[0] !== String(url).split("#")[0])) { userDrivenNav = true; navigateBrowser(url); }
+        return;
+      }
       if (!detail.innerHTML.trim()) return;
       detail.hidden = !detail.hidden;
       wrap.querySelector(".tool-chev").textContent = detail.hidden ? "▸" : "▾";
@@ -2948,6 +2955,21 @@
       if (text) detail.innerHTML = `<pre>${escapeHtml(text.slice(0, 4000))}</pre>`;
     }
 
+    // Browser rows: the page's title and what was read, so the row expands to something.
+    if (!detail.innerHTML.trim() && /^browser_/.test(name) && result && typeof result === "object") {
+      const bits = [];
+      if (result.title) bits.push(result.title);
+      if (result.url) bits.push(result.url);
+      const text = result.text || result.content || result.snippet || (Array.isArray(result.links) ? result.links.slice(0, 20).map((l) => `${l.text || ""} ${l.href || l.url || ""}`.trim()).join("\n") : "");
+      if (text) bits.push("", String(text).slice(0, 2500));
+      if (result.title) setToolStat(cardEl, String(result.title).slice(0, 40));
+      if (bits.length) detail.innerHTML = `<pre>${escapeHtml(bits.join("\n"))}</pre>`;
+    }
+    // Anything else that came back with content: show it rather than hiding the chevron.
+    if (!detail.innerHTML.trim() && result && typeof result === "object" && Object.keys(result).length) {
+      const text = typeof result.text === "string" ? result.text : JSON.stringify(result, null, 2);
+      if (text && text !== "{}") detail.innerHTML = `<pre>${escapeHtml(String(text).slice(0, 2500))}</pre>`;
+    }
     if (!detail.innerHTML.trim() && !detail.childElementCount) {
       const chev = cardEl.querySelector(".tool-chev");
       if (chev) chev.style.visibility = "hidden";
@@ -3239,6 +3261,7 @@
         catch { result = { text: String(m.content || "").slice(0, 4000) }; }
         // A rendered video is part of the conversation: it comes back with the history.
         if (name === "design_export_video" && result && result.path) appendVideoCard(result);
+        if (name === "deliver_file" && result && result.ok && result.path) appendFileCard(result);
         if (!toolCards.has(m.tool_call_id)) continue;
         try { resolveToolCard(m.tool_call_id, name, result); } catch {}
       }
@@ -4068,6 +4091,7 @@
       "For anything with more than about three steps — and for any long instruction with several distinct parts — call task_write first to lay out the plan as a checklist, then keep it updated as you go: exactly one item in_progress, and each one flipped to completed as soon as it's actually done. Don't batch the updates to the end; the checklist is how the user follows what you're doing and what's left.",
       "When you list files for someone, lead with the filename and what it is, not the full path — a wall of C:\\Users\\... is unreadable. Put the folder after the name in plain words ('in Downloads', 'in Documents/invoices'), keep it to the handful that actually matter, and say why each one is relevant. Mention the full path only when it's genuinely ambiguous; the app turns paths into links the user can click to open, so you never need to tell them where to go looking.",
       "You have persistent memory (memory_list, memory_read, memory_write) that survives across every chat and project, and a knowledge base (kb_add, kb_search) for bulk reference material. When the user tells you something durable about themselves, how they want you to work, or a decision behind this project, save it with memory_write rather than letting it evaporate at the end of the chat. When they point you at documentation worth keeping, kb_add it instead of re-fetching it every time.",
+      "When you produce a file for the user — a workbook, document, deck, PDF, CSV, image, archive — finish by calling deliver_file with its absolute path once it exists: it becomes a card they can open or reveal, and it stays in the chat. A path typed into a sentence is not a deliverable. On Windows, run_command is PowerShell: multi-line scripts and here-strings work; a command that prints nothing has proven nothing, so print a checkable result and read files back before claiming success.",
       "Check your own work instead of handing that back to the user. If you changed something visual, or the user asks how something looks, drive the browser panel yourself: browser_navigate to the page (start the dev server first if it isn't running) and browser_screenshot it, or view_image a file directly. Both work on every model — when you can't see images yourself, a vision model describes them for you. Never tell the user to open a file or a URL themselves just to check something you could have looked at.",
       "Prefer edit_file over write_file for existing files, and only change what's needed.",
       "Explain briefly what you're about to do, then do it. Whether a tool needs approval is handled by the app and stated to you each turn — never invent a permission step of your own, and never end a turn asking 'shall I go ahead?' when you could have gone ahead.",
@@ -4984,6 +5008,26 @@
     scrollToBottom();
   }
   onAgentEvent("motion:done", (out) => { if (out && out.path) appendVideoCard(out); });
+
+  // A finished file, as a card: open it in its app, reveal it in its folder, or copy the path.
+  const FILE_ICON = { xlsx: "▦", xlsm: "▦", csv: "▦", docx: "▤", doc: "▤", pdf: "▣", pptx: "▭", ppt: "▭", png: "▧", jpg: "▧", jpeg: "▧", svg: "▧", mp4: "▶", webm: "▶", zip: "▮", json: "{}", md: "≡", txt: "≡", html: "‹›" };
+  function appendFileCard({ path, name, bytes, ext, note }) {
+    const wrap = document.createElement("div");
+    wrap.className = "file-card";
+    const kb = (bytes || 0) / 1024;
+    const size = kb > 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(kb))} KB`;
+    wrap.innerHTML = `<span class="fc-ico">${FILE_ICON[ext] || "▫"}</span>
+      <div class="fc-body"><div class="fc-name">${escapeHtml(name || basename(path))}</div>
+      ${note ? `<div class="fc-note">${escapeHtml(note)}</div>` : ""}
+      <div class="fc-where">${escapeHtml(String(path).replace(/[\\/][^\\/]+$/, ""))} · ${size}</div></div>
+      <div class="fc-actions"><button type="button" class="btn-primary fc-open">Open</button><button type="button" class="link-btn fc-reveal">Show in folder</button></div>`;
+    wrap.querySelector(".fc-open").addEventListener("click", () => window.nutaan.osOpen(path));
+    wrap.querySelector(".fc-reveal").addEventListener("click", () => (window.nutaan.studio?.reveal ? window.nutaan.studio.reveal(path) : window.nutaan.osOpen(path)));
+    thread.appendChild(wrap);
+    renderEmptyVisibility();
+    scrollToBottom();
+  }
+  onAgentEvent("agent:file-delivered", (info) => { if (info && info.path) appendFileCard(info); });
 
   onAgentEvent("agent:tool-result", ({ id, name, result }) => {
     resolveToolCard(id, name, result);
