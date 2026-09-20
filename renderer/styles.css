@@ -4764,3 +4764,8 @@ main.chat.home .thread { max-width: 860px; }
 
 /* Rail: a compact stack, not spread across the column. */
 .chat-rail { justify-content: center; gap: 8px; }
+.video-card .video-where { display: block; font-size: 11px; color: var(--text-3); font-family: var(--mono); margin-top: 2px; }
+/* Nothing in the thread runs off the edge: notices and system lines wrap. */
+.sys-line { max-width: 100%; white-space: normal; text-align: center; line-height: 1.4; }
+.tool-card .tool-title { white-space: normal; overflow-wrap: anywhere; }
+.tool-card.ok .tool-header > .tool-title:only-child, .tool-card .tool-header > .tool-title:first-child:not(:has(+ .tool-cmd)) { flex: 1 1 auto; min-width: 0; }

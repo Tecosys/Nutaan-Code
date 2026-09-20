@@ -3191,7 +3191,10 @@
     const toolNameById = new Map();
     for (const m of messages || []) {
       if (m.role === "user") {
+        // A nudge or a screenshot handed to the model is not something the person said. Older
+        // chats carry them untagged, so the wording is checked too.
         const text = m.display || messageText(m.content);
+        if (m.internal || /^\((the artboard|screenshot of the browser panel|Your last response)|^Your last response was empty|^You still have \d+ unfinished task|^\[result of an earlier tool call\]|^Continue from where you left off|^\(earlier conversation was trimmed/.test((text || "").trim())) continue;
         if (text && text.trim()) appendBubble("user", text);
       } else if (m.role === "assistant") {
         const text = messageText(m.content);
@@ -3206,10 +3209,12 @@
         }
       } else if (m.role === "tool") {
         const name = toolNameById.get(m.tool_call_id) || "";
-        if (!toolCards.has(m.tool_call_id)) continue;
         let result = {};
         try { result = typeof m.content === "string" ? JSON.parse(m.content) : m.content; }
         catch { result = { text: String(m.content || "").slice(0, 4000) }; }
+        // A rendered video is part of the conversation: it comes back with the history.
+        if (name === "design_export_video" && result && result.path) appendVideoCard(result);
+        if (!toolCards.has(m.tool_call_id)) continue;
         try { resolveToolCard(m.tool_call_id, name, result); } catch {}
       }
     }
@@ -4774,7 +4779,7 @@
   });
 
   onAgentEvent("agent:compacting", () => {
-    appendNoticeCard("Compacting conversation to make room for more context…");
+    appendSystemLine("Compacting the conversation to make room");
   });
 
   // A provider stumbling is the app's problem, not the user's: retries show in the run strip and
@@ -4888,7 +4893,7 @@
     wrap.className = "video-card";
     const src = "file:///" + String(path).replace(/\\/g, "/").replace(/^\/+/, "");
     wrap.innerHTML = `<video controls preload="metadata" src="${escapeHtml(src)}"></video>
-      <div class="video-meta"><span>${escapeHtml(basename(path))}</span><span class="video-dim">${Math.round(seconds || 0)}s · ${width}×${height} · ${((bytes || 0) / 1048576).toFixed(1)} MB</span>
+      <div class="video-meta"><span title="${escapeHtml(path)}">${escapeHtml(basename(path))}<small class="video-where">${escapeHtml(String(path).replace(/[\/][^\/]+$/, ""))}</small></span><span class="video-dim">${Math.round(seconds || 0)}s · ${width}×${height} · ${((bytes || 0) / 1048576).toFixed(1)} MB</span>
       <button class="link-btn" type="button">Show in folder</button></div>`;
     wrap.querySelector("button").addEventListener("click", () => window.nutaan.studio?.reveal ? window.nutaan.studio.reveal(path) : window.nutaan.osOpen(path));
     thread.appendChild(wrap);
@@ -4961,7 +4966,7 @@
         settings.modelProviderId = "";
         window.nutaan.setSettings(settings);
         updateModelBadge();
-        appendNoticeCard(`"${badModel}" is temporarily unavailable — switched to "${fallback}" and retrying (it'll be retried automatically later)…`);
+        appendSystemLine(`Switched to ${basename(fallback)} — ${basename(badModel)} was unavailable`);
         setRunning(true);
         showThinking();
         runAgentTurn();

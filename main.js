@@ -5133,7 +5133,7 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
       // already-assembled Azure history and being rejected. Deciding at the moment of the call
       // means it always matches the model actually being asked.
       // `display` is what the thread shows for a wrapped prompt; providers must never see it.
-      messages: [chatMessages[0], ...(flattenHistory ? flattenToolHistory(chatMessages.slice(1)) : normalizeHistory(chatMessages.slice(1), model))].map(({ display, ...msg }) => msg),
+      messages: [chatMessages[0], ...(flattenHistory ? flattenToolHistory(chatMessages.slice(1)) : normalizeHistory(chatMessages.slice(1), model))].map(({ display, internal, ...msg }) => msg),
       // Everything the user switched on in Tools is offered to the model as well.
       tools: toolList,
       // Weak models ignore even a forceful "call the tool, don't lecture" instruction and write a
@@ -5568,7 +5568,7 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
         if (truncatedRetries < MAX_TRUNCATION_RETRIES) {
           truncatedRetries++;
           chatMessages.push({
-            role: "user",
+            role: "user", internal: true,
             content: "(Your last response got cut off by the length limit before you finished. Continue exactly where you left off.)",
           });
           sender.send("agent:retrying", {
@@ -5593,7 +5593,7 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
         if (emptyResponseRetries < MAX_EMPTY_RESPONSE_RETRIES) {
           emptyResponseRetries++;
           chatMessages.push({
-            role: "user",
+            role: "user", internal: true,
             content:
               "Your last response was empty — you stopped without finishing or explaining. Please continue: finish the task, or tell me what's blocking you.",
           });
@@ -5632,7 +5632,7 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
         unfinishedNudges++;
         const n = openTaskCount();
         chatMessages.push({
-          role: "user",
+          role: "user", internal: true,
           content: `You still have ${n} unfinished task${n === 1 ? "" : "s"} on your checklist. Carry on and actually do the next one — don't just describe it. Update the checklist as you complete each item, and only stop when everything is done or you hit something you genuinely cannot resolve.`,
         });
         sender.send("agent:retrying", {
@@ -5781,7 +5781,7 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
           content: JSON.stringify({ ok: true, url: result.url, note: "Screenshot captured — see the image in the next message." }),
         });
         chatMessages.push({
-          role: "user",
+          role: "user", internal: true,
           content: [
             { type: "text", text: "(screenshot of the browser panel, requested via browser_screenshot)" },
             { type: "image_url", image_url: { url: result.imageDataUrl } },
@@ -5795,7 +5795,7 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
           content: JSON.stringify({ ...result, dataUrl: undefined }).slice(0, MAX_OUTPUT_CHARS),
         });
         chatMessages.push({
-          role: "user",
+          role: "user", internal: true,
           content: [
             { type: "text", text: `(the artboard "${result.artboard?.name || ""}" as it renders — look at it and judge it yourself, then fix what is wrong)` },
             { type: "image_url", image_url: { url: result.dataUrl } },
