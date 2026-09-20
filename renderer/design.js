@@ -15,22 +15,35 @@
 
   // What you can make, and the prompt each one needs so the model produces the right artefact.
   const KINDS = [
-    { id: "ui", label: "UI mockup", preset: "desktop", icon: "▦",
-      ask: "a screen design, as one self-contained HTML artboard" },
-    { id: "mobile", label: "Mobile app", preset: "mobile", icon: "▯",
-      ask: "a mobile app screen at 390×844, as one self-contained HTML artboard" },
-    { id: "dashboard", label: "Dashboard", preset: "desktop", icon: "▥",
-      ask: "an analytics dashboard: a left nav or top bar, a row of KPI tiles with real numbers and deltas, " +
-           "at least two charts drawn as inline SVG (bars, a line with a filled area, or a donut — real paths " +
-           "with axis labels and gridlines, never an image placeholder), and a data table with sensible column " +
-           "alignment. Dense and scannable, the way a real product dashboard is" },
+    { id: "ui", label: "UI mockup", preset: "desktop", icon: "▦", skill: "interface-design",
+      ask: "a screen design, as one self-contained HTML artboard — real content and a real hierarchy, not " +
+           "lorem ipsum in generic cards" },
+    { id: "mobile", label: "Mobile app", preset: "mobile", icon: "▯", skill: "interface-design",
+      ask: "a mobile app screen at 390×844, as one self-contained HTML artboard — thumb-reachable actions, " +
+           "44px minimum touch targets, a real status bar and a real hierarchy" },
+    { id: "dashboard", label: "Dashboard", preset: "desktop", icon: "▥", skill: "dashboard-design",
+      ask: "an analytics dashboard. Decide the one decision it supports and the hero metric that drives it, " +
+           "then lay it out in zones: quiet nav and a last-updated stamp, a hero metric plus 3–5 KPI tiles " +
+           "(every number with a comparison — vs last period, vs target, or a sparkline), a wide primary chart " +
+           "beside a narrower secondary one, and a breakdown table under them. Charts are inline SVG with real " +
+           "computed paths, gridlines and axis labels — never an image placeholder or a grey box. 5–9 metrics " +
+           "total, one accent colour with greys everywhere else, and tiles that are deliberately not all the " +
+           "same size, because that uniform grid is what makes a dashboard look generated" },
     { id: "wireframe", label: "Wireframe", preset: "desktop", icon: "▤",
       ask: "a low-fidelity wireframe — greyscale, boxes and placeholder type, no colour or imagery" },
-    { id: "deck", label: "Slide deck", preset: "slide", icon: "▭",
-      ask: "a slide deck. One artboard PER SLIDE at 1920×1080, each a complete slide with a clear hierarchy — title slide first, then the argument, then a closing slide" },
-    { id: "doc", label: "Document", preset: "a4", icon: "▣",
-      ask: "a typeset document on A4 pages. One artboard PER PAGE at 1240×1754, with real editorial typography: a measured column, proper heading scale, footnotes and page furniture" },
-    { id: "paper", label: "Research paper", preset: "a4", icon: "☰",
+    { id: "deck", label: "Slide deck", preset: "slide", icon: "▭", skill: "presentation-design",
+      ask: "a slide deck that carries an argument. Write the storyline first as action titles — each title is " +
+           "the finding the slide proves ('Revenue grew 24% — entirely from enterprise renewals', not 'Q3 " +
+           "Revenue'), under 15 words. Read them in order and make sure they argue. Then one artboard PER SLIDE " +
+           "at 1920×1080: title, the answer up front, 3–5 supporting slides, a close. One idea per slide, under " +
+           "40 words of body, titles at 40–54px on the same baseline every slide, a 96px outer margin everywhere, " +
+           "one typeface, one accent marking exactly one thing per slide. Vary the slide type — statement, big " +
+           "number, chart, two-column, comparison, quote — never eleven copies of title-plus-bullets" },
+    { id: "doc", label: "Document", preset: "a4", icon: "▣", skill: "document-design",
+      ask: "a typeset document on A4 pages. One artboard PER PAGE at 1240×1754, with real editorial typography: " +
+           "a measure of 60–75 characters, a heading scale that actually steps, generous leading at 1.55–1.65, " +
+           "footnotes and page furniture" },
+    { id: "paper", label: "Research paper", preset: "a4", icon: "☰", skill: "document-design",
       ask: "an academic paper on A4 pages, one artboard PER PAGE: title block with authors and abstract, two-column body, numbered sections, figures with captions, and a references list" },
     { id: "social", label: "Social post", preset: "square", icon: "◼",
       ask: "a social post at 1080×1080, as one self-contained HTML artboard" },
@@ -92,14 +105,24 @@
         `Then design_verify every artboard you touched and fix what it finds, repeating until it comes back clean.`;
     }
     return `Design ${k.ask}.\n\n${text}\n\n` +
-      `First call design_brand. If no brand is set, ask me for my colours and logo before you draw anything — propose ` +
+      (k.skill
+        ? `First call use_skill with id "${k.skill}" and follow it. It is the house standard for this kind of ` +
+          `work and it is not optional — a design that ignores it gets rejected at verify.\n\n`
+        : "") +
+      `${k.skill ? "Then" : "First"} call design_brand. If no brand is set, ask me for my colours and logo before you draw anything — propose ` +
       `a palette you think fits and let me confirm it. Then use exactly those colours in every artboard, and place the ` +
       `logo with <img src="{{logo}}"> wherever it belongs.
 
 ` +
-      `Use the Design canvas: call design_new with a name and a brief (audience, tone, palette, the copy that matters), ` +
-      `then design_artboard with preset "${k.preset}" for each screen or page. Write complete, self-contained HTML with inline ` +
-      `<style> — real layout, a proper type scale, and no external files.
+      `Before the first artboard, write the token set into the brief and then never deviate from it: a spacing scale ` +
+      `(4/8/12/16/24/32/48/64), a type scale of at most six sizes, one radius, one shadow depth, one typeface. ` +
+      `Designs look generated when every value is improvised — the constraint is what makes it look designed.
+
+` +
+      `Use the Design canvas: call design_new with a name and a brief (audience, the decision it supports, tone, ` +
+      `palette, tokens, the copy that matters), then design_artboard with preset "${k.preset}" for each screen or page. ` +
+      `Write complete, self-contained HTML with inline <style> — real copy about the actual subject, never lorem ipsum ` +
+      `or placeholder headlines, and no external files.
 
 ` +
       `After EVERY artboard, call design_verify on it and look at the screenshot it returns. If it reports findings, or ` +
@@ -238,8 +261,10 @@
   }
 
   function renderBoard() {
-    if (LIVE.on) return liveRender();
     const b = board();
+    // While the agent works the canvas stays live: nothing drawn yet means the step list, but the
+    // moment an artboard exists you watch it being built instead of staring at a spinner.
+    if (LIVE.on && !b) return liveRender();
     const holder = el("dzFrameHolder");
     const code = el("dzCode");
     if (!b) { holder.innerHTML = `<div class="page-empty">No artboard yet.</div>`; return; }
@@ -270,6 +295,7 @@
     const frame = holder.querySelector(".dz-frame");
     frame.srcdoc = wrapHtml(b, w);
     frame.addEventListener("load", () => bindFrame(frame, b.id), { once: true });
+    if (LIVE.on) liveFloat(); else clearLiveFloat();
   }
 
   function wrapHtml(b, width) {
@@ -487,50 +513,91 @@
 
   const TOOL_LABEL = {
     design_new: "Starting the design",
-    design_artboard: "Drawing an artboard",
-    design_update: "Revising an artboard",
+    design_artboard: "Drawing",
+    design_update: "Revising",
     design_verify: "Checking how it renders",
     design_read: "Reading the design so far",
     design_list: "Looking at your designs",
+    design_brand: "Setting the brand",
+    design_export: "Exporting",
+    use_skill: "Loading design rules",
+    list_skills: "Looking up design rules",
     web_search: "Searching the web",
     web_fetch: "Reading a page",
     read_file: "Reading a file",
     write_file: "Writing a file",
   };
 
+  // What the step line says. A raw tool name and an opaque id tell you nothing; the point of a
+  // live view is that you can see which artboard is being drawn and what is going onto it.
+  function stepDetail(name, args) {
+    let a = {};
+    try { a = typeof args === "string" ? JSON.parse(args) : args || {}; } catch {}
+    const named = (id) => {
+      if (!id || !S.doc) return "";
+      const b = S.doc.artboards.find((x) => x.id === id);
+      return b ? b.name : "";
+    };
+    if (name === "design_verify") return named(a.artboard_id) || a.name || "";
+    if (name === "design_update") return named(a.artboard_id) || a.name || "";
+    if (name === "design_artboard") return a.name || a.preset || "";
+    if (name === "design_new") return a.name || "";
+    if (name === "use_skill" || name === "list_skills") return a.id || a.skill || "";
+    return a.name || a.query || a.path || "";
+  }
+
+  function stepsHtml(steps) {
+    return steps.map((st, i) => `
+      <div class="dz-live-step ${i === steps.length - 1 && !st.done ? "current" : "done"}">
+        <span class="dz-live-tick">${st.done ? "✓" : "●"}</span><span>${esc(st.label)}</span>
+        ${st.detail ? `<span class="dz-live-detail">${esc(st.detail)}</span>` : ""}
+        ${st.n > 1 ? `<span class="dz-live-n">×${st.n}</span>` : ""}
+      </div>`).join("");
+  }
+
   function liveRenderSide() {
     const box = el("dzSideBody");
     if (!box || !LIVE.on) return;
-    const steps = LIVE.steps.slice(-10);
     box.innerHTML =
       `<div class="dz-live-head"><span class="dz-live-dot"></span>Working…</div>` +
-      `<div class="dz-live-steps">${steps.map((st, i) => `
-          <div class="dz-live-step ${i === steps.length - 1 && !st.done ? "current" : "done"}">
-            <span class="dz-live-tick">${st.done ? "✓" : "●"}</span><span>${esc(st.label)}</span>
-            ${st.detail ? `<span class="dz-live-detail">${esc(st.detail)}</span>` : ""}
-          </div>`).join("")}</div>` +
+      `<div class="dz-live-steps">${stepsHtml(LIVE.steps.slice(-12))}</div>` +
       (LIVE.text ? `<div class="dz-live-text">${esc(LIVE.text.slice(-700))}</div>` : "");
     box.scrollTop = box.scrollHeight;
   }
 
+  // Floated over the canvas, so the artboard underneath stays visible while it is being worked on.
+  function liveFloat() {
+    const wrap = el("dzStageWrap");
+    if (!wrap) return;
+    let box = wrap.querySelector(".dz-live-float");
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "dz-live-float";
+      wrap.appendChild(box);
+    }
+    box.innerHTML =
+      `<div class="dz-live-head"><span class="dz-live-dot"></span>Designing…</div>` +
+      `<div class="dz-live-steps">${stepsHtml(LIVE.steps.slice(-5))}</div>`;
+  }
+
+  function clearLiveFloat() {
+    const f = el("dzStageWrap") && el("dzStageWrap").querySelector(".dz-live-float");
+    if (f) f.remove();
+  }
+
   function liveRender() {
     liveRenderSide();
+    if (!LIVE.on) return;
+    // Once anything has been drawn, show it — watching the design appear is the whole point.
+    if (board()) return renderBoard();
     const holder = el("dzFrameHolder");
-    if (!holder || !LIVE.on) return;
+    if (!holder) return;
     el("dzCode").hidden = true;
     holder.hidden = false;
-    const steps = LIVE.steps.slice(-7);
     holder.innerHTML = `
       <div class="dz-live">
         <div class="dz-live-head"><span class="dz-live-dot"></span>Designing…</div>
-        <div class="dz-live-steps">
-          ${steps.map((s, i) => `
-            <div class="dz-live-step ${i === steps.length - 1 && !s.done ? "current" : "done"}">
-              <span class="dz-live-tick">${s.done ? "✓" : "●"}</span>
-              <span>${esc(s.label)}</span>
-              ${s.detail ? `<span class="dz-live-detail">${esc(s.detail)}</span>` : ""}
-            </div>`).join("")}
-        </div>
+        <div class="dz-live-steps">${stepsHtml(LIVE.steps.slice(-7))}</div>
         ${LIVE.text ? `<div class="dz-live-text">${esc(LIVE.text.slice(-400))}</div>` : ""}
       </div>`;
   }
@@ -544,13 +611,21 @@
 
   function liveStep(label, detail) {
     for (const s of LIVE.steps) s.done = true;
-    LIVE.steps.push({ label, detail, done: false });
+    const last = LIVE.steps[LIVE.steps.length - 1];
+    // "Reading the design so far" three times in a row is noise, not progress.
+    if (last && last.label === label && last.detail === detail) {
+      last.n = (last.n || 1) + 1;
+      last.done = false;
+    } else {
+      LIVE.steps.push({ label, detail, done: false, n: 1 });
+    }
     liveRender();
   }
 
   function liveEnd() {
     LIVE.on = false;
     LIVE.text = "";
+    clearLiveFloat();
     renderSide();
     renderBoard();
   }
@@ -562,12 +637,7 @@
       if (el("designPage").hidden) return;
       if (!LIVE.on && String(name || "").startsWith("design_")) liveStart();
       if (!LIVE.on) return;
-      let detail = "";
-      try {
-        const a = typeof args === "string" ? JSON.parse(args) : args || {};
-        detail = a.name || a.artboard_id || a.query || "";
-      } catch {}
-      liveStep(TOOL_LABEL[name] || name, detail);
+      liveStep(TOOL_LABEL[name] || name, stepDetail(name, args));
     });
     on("agent:tool-result", ({ name }) => {
       if (!LIVE.on) return;
