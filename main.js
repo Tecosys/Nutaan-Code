@@ -48,7 +48,10 @@ const LEGACY_STORE_PATH = path.join(LEGACY_STORE_DIR, "settings.json");
 })();
 const COMMAND_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_CHARS = 20_000;
-const MAX_AGENT_ITERATIONS = 50;
+// 50 left long workers ("Competitor watch" style jobs that look things up across many pages)
+// dying with "max number of steps" halfway through a legitimate run. 90 still bounds cost but
+// gives a headless job room to finish what it set out to do.
+const MAX_AGENT_ITERATIONS = 90;
 const BROWSER_ACTION_TIMEOUT_MS = 45_000;
 const MAX_RESPONSE_TOKENS = 16_000;
 const STREAM_IDLE_TIMEOUT_MS = 45_000;
@@ -73,10 +76,13 @@ const RELEASES_URL = "https://github.com/Tecosys/Nutaan-Code/releases/latest";
 // Settings, in which case their key for that endpoint is used instead.
 async function activeBackend({ baseUrl, apiKey, nutaanKey, customProviders, modelProviderId, omnirouteApiKey }) {
   if (modelProviderId === "omniroute") {
-    gatewayManager.configure({ apiKey: omnirouteApiKey || "" });
+    // The user's nutaan key must reach the gateway even on the free pool — without it the
+    // upstream calls go out headerless and die with "Missing Authentication header" even
+    // though activation succeeded.
+    gatewayManager.configure({ apiKey: String(omnirouteApiKey || "").trim(), nutaanKey: String(nutaanKey || "").trim() });
     await gatewayManager.getModels();
     const status = await gatewayManager.getStatus();
-    return { baseUrl: `${status.url}/v1`, apiKey: omnirouteApiKey || "" };
+    return { baseUrl: `${status.url}/v1`, apiKey: String(omnirouteApiKey || nutaanKey || "").trim() };
   }
   // A user-managed provider selected for this specific model wins: route straight to its own
   // OpenAI-compatible endpoint with its own key. This is what lets one account mix Nutaan-managed
@@ -108,18 +114,38 @@ function resolveSafe(root, relPath) {
   return target;
 }
 
+// The store is the user's key, their projects and every chat. It is never half-written (tmp +
+// rename), a copy of the last good version is kept beside it, and a write that would throw away
+// the key or the projects is refused — a fresh window that booted on a bad read must not be able
+// to save its defaults over everything.
 async function readStore() {
-  try {
-    const raw = await fs.readFile(STORE_PATH, "utf8");
-    return JSON.parse(raw);
-  } catch {
-    return {};
+  for (const file of [STORE_PATH, STORE_PATH + ".bak"]) {
+    try {
+      const data = JSON.parse(await fs.readFile(file, "utf8"));
+      if (data && typeof data === "object") return data;
+    } catch {}
   }
+  return {};
 }
 
+let storeChain = Promise.resolve();
 async function writeStore(data) {
-  await fs.mkdir(path.dirname(STORE_PATH), { recursive: true });
-  await fs.writeFile(STORE_PATH, JSON.stringify(data, null, 2), "utf8");
+  storeChain = storeChain.then(async () => {
+    await fs.mkdir(path.dirname(STORE_PATH), { recursive: true });
+    const current = await readStore();
+    // Only the key is guarded: a project can be removed on purpose, and the .bak beside the store
+    // covers the rest. The key has no legitimate path to "" except the activation screen.
+    if (current.nutaanKey && !data.nutaanKey && !data.keyCleared) {
+      console.warn("[store] refused a write that would drop the key; keeping the saved settings");
+      return;
+    }
+    const json = JSON.stringify(data, null, 2);
+    const tmp = `${STORE_PATH}.${process.pid}.tmp`;
+    await fs.writeFile(tmp, json, "utf8");
+    try { await fs.copyFile(STORE_PATH, STORE_PATH + ".bak"); } catch {}
+    await fs.rename(tmp, STORE_PATH);
+  }).catch((err) => console.error("[store] write failed:", err.message));
+  return storeChain;
 }
 
 function createWindow() {
@@ -133,6 +159,13 @@ function createWindow() {
     // platforms use the PNG.
     icon: path.join(__dirname, "assets", process.platform === "win32" ? "icon.ico" : "logo.png"),
     backgroundColor: "#0f1117",
+    // Frameless with a dark system-drawn overlay strip: kills the white native title bar that
+    // otherwise sat above the app's own dark header. The overlay paints the min/max/close in
+    // the app's palette on Windows; macOS keeps its traffic lights inset automatically.
+    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "hidden",
+    titleBarOverlay: process.platform === "win32"
+      ? { color: "#0f1117", symbolColor: "#c7cad2", height: 38 }
+      : false,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -510,6 +543,150 @@ ipcMain.handle("tools:remove-custom", async (_e, id) => {
   await writeStore({ ...store, customTools: (store.customTools || []).filter((c) => c.id !== id) });
   await refreshSettingsCache();
   return toolRegistry.status();
+});
+
+// ---------- Import from other AI coding tools ----------
+// If this device already has Claude Code, Codex, Antigravity / Gemini CLI or Cursor, their MCP
+// servers and global memory files (CLAUDE.md, AGENTS.md, GEMINI.md) come across — so the setup
+// follows the person to every machine. Every path is checked per-platform via os.homedir().
+ipcMain.handle("import:detect", async () => {
+  const fs = require("fs");
+  const path = require("path");
+  const os = require("os");
+  const home = os.homedir();
+  const readText = (p) => { try { return fs.readFileSync(p, "utf8"); } catch { return null; } };
+  const readJson = (p) => { try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return null; } };
+  const exists = (p) => { try { return fs.existsSync(p); } catch { return false; } };
+  const found = [];
+
+  const collectJsonServers = (raw) => {
+    const servers = [];
+    for (const [name, s] of Object.entries(raw || {})) {
+      if (!s || typeof s !== "object") continue;
+      if (s.command) servers.push({ name, transport: "stdio", command: s.command, args: s.args || [], env: s.env || {} });
+      else if (s.httpUrl || s.url) servers.push({ name, transport: "http", url: s.httpUrl || s.url, headers: s.headers || {} });
+    }
+    return servers;
+  };
+
+  // Claude Code — ~/.claude.json holds mcpServers; ~/.claude/CLAUDE.md is the global memory.
+  {
+    const servers = collectJsonServers(readJson(path.join(home, ".claude.json"))?.mcpServers);
+    const instr = readText(path.join(home, ".claude", "CLAUDE.md"));
+    if (servers.length || instr != null || exists(path.join(home, ".claude"))) {
+      found.push({ id: "claude-code", name: "Claude Code", detail: `${servers.length} MCP server${servers.length === 1 ? "" : "s"} found`, mcp: servers, instructions: instr ? { file: "CLAUDE.md", text: instr } : null });
+    }
+  }
+  // Codex — ~/.codex/config.toml [mcp_servers.*]; ~/.codex/AGENTS.md is the memory.
+  {
+    const dir = path.join(home, ".codex");
+    if (exists(dir)) {
+      const servers = [];
+      const toml = readText(path.join(dir, "config.toml"));
+      if (toml) {
+        const re = /\[mcp_servers\.([\w.-]+)\]([^\[]*)/g;
+        let m;
+        while ((m = re.exec(toml))) {
+          const body = m[2];
+          const cmd = body.match(/command\s*=\s*"([^"]+)"/);
+          if (cmd) servers.push({ name: m[1], transport: "stdio", command: cmd[1], args: [], env: {} });
+          else {
+            const url = body.match(/url\s*=\s*"([^"]+)"/);
+            if (url) servers.push({ name: m[1], transport: "http", url: url[1], headers: {} });
+          }
+        }
+      }
+      const instr = readText(path.join(dir, "AGENTS.md"));
+      if (servers.length || instr) {
+        found.push({ id: "codex", name: "Codex", detail: `${servers.length} MCP server${servers.length === 1 ? "" : "s"} found`, mcp: servers, instructions: instr ? { file: "AGENTS.md", text: instr } : null });
+      }
+    }
+  }
+  // Antigravity + Gemini CLI — both read ~/.gemini (settings.json mcpServers, GEMINI.md memory);
+  // the Antigravity IDE itself installs under ~/.antigravity or the Windows app-data folders.
+  {
+    const dir = path.join(home, ".gemini");
+    const antigravity = exists(path.join(home, ".antigravity"))
+      || exists(path.join(process.env.LOCALAPPDATA || home, "Antigravity"))
+      || exists(path.join(process.env.APPDATA || home, "Antigravity"));
+    if (exists(dir) || antigravity) {
+      const servers = collectJsonServers(readJson(path.join(dir, "settings.json"))?.mcpServers);
+      const instr = readText(path.join(dir, "GEMINI.md"));
+      if (servers.length || instr || antigravity) {
+        found.push({ id: "antigravity", name: antigravity ? "Antigravity / Gemini" : "Gemini CLI", detail: `${servers.length} MCP server${servers.length === 1 ? "" : "s"} found`, mcp: servers, instructions: instr ? { file: "GEMINI.md", text: instr } : null });
+      }
+    }
+  }
+  // Cursor — ~/.cursor/mcp.json (global servers).
+  {
+    const servers = collectJsonServers(readJson(path.join(home, ".cursor", "mcp.json"))?.mcpServers);
+    if (servers.length) {
+      found.push({ id: "cursor", name: "Cursor", detail: `${servers.length} MCP server${servers.length === 1 ? "" : "s"} found`, mcp: servers, instructions: null });
+    }
+  }
+
+  // Codebases the other tools were used in — Claude Code's ~/.claude.json "projects" keys are
+  // exactly the roots it worked on. Offered here so Nutaan can adopt the same codebases.
+  const store = await refreshSettingsCache();
+  const known = new Set([...(store.projects || []).map((p) => p.path), store.projectPath].filter(Boolean).map((p) => String(p).toLowerCase()));
+  const codebases = [];
+  try {
+    const cc = readJson(path.join(home, ".claude.json"));
+    for (const p of Object.keys((cc && cc.projects) || {})) {
+      // Worktrees, node_modules, temp folders and tool-internal dirs are not codebases anyone
+      // wants as a project; Claude Code lists them because it was run inside them.
+      if (/[\\/](\.claude|\.codex|\.gemini|\.cursor|node_modules|worktrees|Temp|tmp|\.git)([\\/]|$)/i.test(p)) continue;
+      if (p && fs.existsSync(p) && !known.has(String(p).toLowerCase())) codebases.push(p);
+    }
+  } catch {}
+
+  // Project-level context the other tools keep inside the codebases: CLAUDE.md, AGENTS.md,
+  // GEMINI.md — the instructions that shape how they work in that repo.
+  const projectContext = [];
+  for (const root of [...(store.projects || []).map((p) => p.path), store.projectPath]) {
+    if (!root) continue;
+    for (const f of ["CLAUDE.md", "AGENTS.md", "GEMINI.md"]) {
+      const text = readText(path.join(root, f));
+      if (text) projectContext.push({ path: root, file: f, text: String(text).slice(0, 20000) });
+    }
+  }
+  return { found, codebases: codebases.slice(0, 12), projectContext: projectContext.slice(0, 12) };
+});
+
+ipcMain.handle("import:apply", async (_e, payload) => {
+  const store = await refreshSettingsCache();
+  const existing = new Set((store.customTools || []).map((t) => (t.label || "").toLowerCase()));
+  let added = 0;
+  for (const s of payload?.mcp || []) {
+    if (!s || existing.has(String(s.name).toLowerCase())) continue;
+    const id = "custom-" + Date.now().toString(36) + "-" + added;
+    const spec = s.transport === "http"
+      ? { label: s.name, kind: "mcp", transport: "http", url: s.url, headers: s.headers || {} }
+      : { label: s.name, kind: "mcp", transport: "stdio", command: s.command, args: s.args || [], env: s.env || {} };
+    store.customTools = [...(store.customTools || []), { ...spec, id, enabled: true }];
+    added++;
+  }
+  if (Array.isArray(payload?.instructions) && payload.instructions.length) {
+    const parts = (store.importedInstructions || []).concat(payload.instructions);
+    const seen = new Set();
+    store.importedInstructions = parts
+      .filter((p) => { const k = `${p.source}:${p.file}`; if (!p.text || seen.has(k)) return false; seen.add(k); return true; })
+      .map((p) => ({ source: p.source, file: p.file, text: String(p.text).slice(0, 20000) }));
+  }
+  if (Array.isArray(payload?.projectContext) && payload.projectContext.length) {
+    const parts = (store.importedProjectContext || []).concat(payload.projectContext);
+    const seen = new Set();
+    store.importedProjectContext = parts
+      .filter((p) => { const k = `${p.path}:${p.file}`; if (!p.text || seen.has(k)) return false; seen.add(k); return true; })
+      .map((p) => ({ path: p.path, file: p.file, text: String(p.text).slice(0, 20000) }));
+  }
+  store.importDone = true;
+  await writeStore({ ...store });
+  await refreshSettingsCache();
+  for (const t of (store.customTools || []).filter((x) => x.enabled)) {
+    await toolRegistry.connect(t.id).catch(() => {});
+  }
+  return { ok: true, added };
 });
 
 // Catalogue metadata the Tools panel renders — icons live on disk next to the app. `custom` is

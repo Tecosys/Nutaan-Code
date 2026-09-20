@@ -1,6 +1,10 @@
 (function () {
   const el = (id) => document.getElementById(id);
 
+  // Windows draws the min/max/close overlay on the frameless window; the topbar keeps its
+  // interactive children clear of that strip via this class.
+  if (/Win/i.test(navigator.userAgent || "")) document.documentElement.classList.add("platform-win");
+
   // ---------- Elements ----------
   const appEl = el("app");
   const thread = el("thread");
@@ -254,7 +258,8 @@
   }
 
   function closeAllMenus(except) {
-    for (const m of [projectMenu, contextMenu, slashMenu, modelMenu, deviceMenu]) {
+    const plusMenu = el("plusMenu");
+    for (const m of [projectMenu, contextMenu, slashMenu, modelMenu, deviceMenu, plusMenu]) {
       if (m && m !== except) m.hidden = true;
     }
   }
@@ -478,11 +483,29 @@
     obOverlay.querySelectorAll(".ob-step").forEach((s) => { s.hidden = Number(s.dataset.step) !== i; });
     obOverlay.querySelectorAll(".ob-seg").forEach((s) => s.classList.toggle("on", Number(s.dataset.seg) <= i));
     obBack.hidden = i === 0;
-    obNext.textContent = i === 0 ? "Next" : "Start";
+    obNext.textContent = i === 2 ? "Finish" : "Next";
+    el("obSkip").hidden = i !== 2;
     if (i === 1) obOverlay.querySelectorAll(".ob-mode").forEach((m) => m.classList.toggle("selected", m.dataset.uimode === obMode));
     el("obRightTitle").textContent = i === 0
       ? "Build, design, and get work done — with the model you already pay for."
-      : obMode === "office" ? "Chat first. Code only when you ask for it." : "The whole workshop, beside the chat.";
+      : i === 2
+        ? "Your setup from Claude Code, Codex and Antigravity — one click, on every device."
+        : obMode === "office" ? "Chat first. Code only when you ask for it." : "The whole workshop, beside the chat.";
+    if (i === 2 && !obImportData) fillObImport();
+  }
+
+  // Step 2 of first run: scan the device for other AI tools and list everything importable —
+  // MCP servers, global memory, project context files, and the codebases themselves.
+  async function fillObImport() {
+    const list = el("obImportList");
+    if (!list) return;
+    list.innerHTML = `<div class="import-empty">Scanning this device…</div>`;
+    try { obImportData = (await window.nutaan.import.detect()) || {}; } catch { obImportData = {}; }
+    if (!(obImportData.found || []).length && !(obImportData.codebases || []).length) {
+      list.innerHTML = `<div class="import-empty">Nothing to bring over — no other AI coding tools were found on this device. You can always import later from Settings → Tools.</div>`;
+      return;
+    }
+    renderImportRows(list, obImportData);
   }
 
   obOverlay.addEventListener("click", (e) => {
@@ -500,24 +523,109 @@
       el("obRightTitle").textContent = obMode === "office" ? "Chat first. Code only when you ask for it." : "The whole workshop, beside the chat.";
     }
   });
-  obBack.addEventListener("click", () => obShow(0));
+  obBack.addEventListener("click", () => obShow(obStep === 2 ? 1 : 0));
+  let obImportData = null; // detect result cached when the import step opens
   obNext.addEventListener("click", async () => {
     if (obStep === 0) {
       if (!obRole) { el("obRoles").classList.add("shake"); setTimeout(() => el("obRoles").classList.remove("shake"), 400); return; }
       obShow(1);
       return;
     }
+    if (obStep === 1) { obShow(2); return; }
+    // Step 3 — import: bring over what is checked (and only that), then finish.
+    let codebases = [];
+    if (obImportData && (obImportData.found || []).length + (obImportData.codebases || []).length) {
+      obNext.disabled = true; obNext.textContent = "Importing…";
+      try { const res = await applyFromList(el("obImportList"), obImportData, { silent: true }); codebases = (res && res.codebases) || []; }
+      catch (err) { console.warn("import failed", err); }
+      obNext.disabled = false;
+    }
+    await finishOnboarding(codebases);
+  });
+
+  el("obSkip").addEventListener("click", () => finishOnboarding([]));
+
+  async function finishOnboarding(codebases) {
+    for (const p of codebases) {
+      if (projects.some((x) => x.path.toLowerCase() === String(p).toLowerCase())) continue;
+      const chat = makeChat(p);
+      projects.push({ path: p, activeChatId: chat.id, chats: [chat] });
+    }
+    if (codebases.length) { persistProjects(); renderNav(); renderExplorer(); renderRecent(); }
     settings.role = obRole.id;
     settings.roleLabel = obRole.label;
     settings.uiMode = obMode;
     settings.onboarded = true;
+    settings.importDone = true; // the offer was made here; it is not made again on launch
     await window.nutaan.setSettings(settings);
     obOverlay.hidden = true;
     applyUiMode();
     // The system prompt of the chat that is already open predates the answer; refresh it.
     const chat = activeChat();
     if (chat && chat.messages.length <= 1 && activePath) chat.messages = [{ role: "system", content: systemPrompt(activePath) }];
-  });
+  }
+
+  // ---------- Import from other AI coding tools ----------
+  // Claude Code, Codex, Antigravity / Gemini CLI and Cursor keep MCP servers + memory files on
+  // this machine; one dialog brings them in so the setup follows the person to every device.
+
+  // Shared import rendering/apply — used by the standalone dialog AND the onboarding step.
+  function renderImportRows(container, data) {
+    const tools = (data && data.found) || [];
+    const codebases = (data && data.codebases) || [];
+    const projCtx = (data && data.projectContext) || [];
+    if (!tools.length && !codebases.length && !projCtx.length) {
+      container.innerHTML = `<div class="import-empty">Nothing found on this device yet. Install Claude Code, Codex, Antigravity or Cursor and their setup can be imported here in one click.</div>`;
+      return;
+    }
+    let html = tools.map((tool, ti) => `
+      <div class="import-tool">
+        <div class="import-tool-head"><b>${escapeHtml(tool.name)}</b><span>${escapeHtml(tool.detail || "")}</span></div>
+        ${tool.instructions ? `
+        <label class="import-row"><input type="checkbox" checked data-imp="instr" data-tool="${ti}" />
+          <span>Memory <code>${escapeHtml(tool.instructions.file)}</code><small>${escapeHtml(tool.instructions.text.slice(0, 90).replace(/\s+/g, " "))}…</small></span></label>` : ""}
+        ${(tool.mcp || []).map((s, si) => `
+        <label class="import-row"><input type="checkbox" checked data-imp="mcp" data-tool="${ti}" data-srv="${si}" />
+          <span>MCP server <code>${escapeHtml(s.name)}</code><small>${escapeHtml(s.transport === "http" ? String(s.url) : [s.command, ...(s.args || [])].join(" "))}</small></span></label>`).join("")}
+      </div>`).join("");
+    if (codebases.length) {
+      html += `<div class="import-tool"><div class="import-tool-head"><b>Codebases</b><span>${codebases.length} found — added as projects automatically</span></div>
+        ${codebases.map((p) => `<label class="import-row"><input type="checkbox" checked data-imp="code" value="${escapeHtml(p)}" /><span>Codebase <code>${escapeHtml(basename(p))}</code><small>${escapeHtml(p)}</small></span></label>`).join("")}</div>`;
+    }
+    if (projCtx.length) {
+      html += `<div class="import-tool"><div class="import-tool-head"><b>Project context</b><span>instructions from your repos</span></div>
+        ${projCtx.map((p, pi) => `<label class="import-row"><input type="checkbox" checked data-imp="proj" data-pi="${pi}" /><span><code>${escapeHtml(p.file)}</code><small>${escapeHtml(basename(p.path))} — ${escapeHtml(p.text.slice(0, 70).replace(/\s+/g, " "))}…</small></span></label>`).join("")}</div>`;
+    }
+    container.innerHTML = html;
+  }
+
+  async function applyFromList(listEl, data, { silent = false } = {}) {
+    const mcp = [];
+    const instructions = [];
+    const codebases = [];
+    const projCtx = [];
+    for (const box of listEl.querySelectorAll("input[data-imp]:checked")) {
+      const tool = (data.found || [])[Number(box.dataset.tool)];
+      if (box.dataset.imp === "instr" && tool && tool.instructions) {
+        instructions.push({ source: tool.name, file: tool.instructions.file, text: tool.instructions.text });
+      } else if (box.dataset.imp === "mcp" && tool && Array.isArray(tool.mcp)) {
+        const s = tool.mcp[Number(box.dataset.srv)];
+        if (s) mcp.push(s);
+      } else if (box.dataset.imp === "code") {
+        codebases.push(box.value);
+      } else if (box.dataset.imp === "proj") {
+        const p = (data.projectContext || [])[Number(box.dataset.pi)];
+        if (p) projCtx.push(p);
+      }
+    }
+    if (!mcp.length && !instructions.length && !projCtx.length) return { added: 0, codebases: [] };
+    const res = await window.nutaan.import.apply({ mcp, instructions, projectContext: projCtx });
+    if (!silent) {
+      appendBubble("assistant", `Imported your setup: ${res.added || 0} MCP server${(res.added || 0) === 1 ? "" : "s"}${instructions.length ? `, ${instructions.length} memory file${instructions.length === 1 ? "" : "s"}` : ""}${projCtx.length ? `, ${projCtx.length} project context file${projCtx.length === 1 ? "" : "s"}` : ""}.${codebases.length ? ` ${codebases.length} codebase${codebases.length === 1 ? "" : "s"} added as projects.` : ""}`);
+    }
+    return { ...res, codebases };
+  }
+
 
   // Co-worker mode keeps the code panel out of the way until something opens it, and greets the
   // person in their own terms. Coding mode is the app as it always was.
@@ -831,29 +939,38 @@
   }
 
   function renderChatsView() {
-    const proj = activeProject();
     chatsView.innerHTML = "";
-    if (!proj) {
-      chatsView.innerHTML = `<div class="menu-empty">Open a project to see its chats.</div>`;
+    // A tree: each project, then its chats with a relative time — one glance shows
+    // every codebase and where the live work is.
+    if (!projects.length) {
+      chatsView.innerHTML = `<div class="menu-empty">No projects yet — open one to start.</div>`;
       return;
     }
-    for (const c of proj.chats) {
-      const row = document.createElement("div");
-      const run = runs.get(c.id);
-      row.className = "chat-row" + (c.id === proj.activeChatId ? " active" : "") + (run ? " running" : "") + (c.unread ? " unread" : "");
-      row.innerHTML =
-        `<span class="chat-title">${run ? `<span class="chat-run-dot"></span>` : ""}${escapeHtml(c.title)}</span>` +
-        `<span class="chat-meta">${run ? escapeHtml(run.activity || "Working…") : `${escapeHtml(basename(proj.path))} · ${escapeHtml(relTime(c.updatedAt))}`}</span>` +
-        `<button class="row-close" title="Delete chat">✕</button>`;
-      row.addEventListener("click", (e) => {
-        if (e.target.classList.contains("row-close")) return;
-        selectChat(proj.path, c.id);
-      });
-      row.querySelector(".row-close").addEventListener("click", (e) => {
-        e.stopPropagation();
-        deleteChat(proj.path, c.id);
-      });
-      chatsView.appendChild(row);
+    for (const proj of projects) {
+      const head = document.createElement("div");
+      head.className = "chats-proj-head";
+      head.innerHTML =
+        `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 7a2 2 0 0 1 2-2h3.6l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>` +
+        `<span>${escapeHtml(basename(proj.path))}</span>`;
+      chatsView.appendChild(head);
+      for (const c of proj.chats) {
+        const row = document.createElement("div");
+        const run = runs.get(c.id);
+        row.className = "chat-row" + (c.id === proj.activeChatId ? " active" : "") + (run ? " running" : "") + (c.unread ? " unread" : "");
+        row.innerHTML =
+          `<span class="chat-title">${run ? `<span class="chat-run-dot"></span>` : ""}${escapeHtml(c.title)}</span>` +
+          `<span class="chat-meta">${run ? escapeHtml(run.activity || "Working…") : escapeHtml(relTime(c.updatedAt))}</span>` +
+          `<button class="row-close" title="Delete chat">✕</button>`;
+        row.addEventListener("click", (e) => {
+          if (e.target.classList.contains("row-close")) return;
+          selectChat(proj.path, c.id);
+        });
+        row.querySelector(".row-close").addEventListener("click", (e) => {
+          e.stopPropagation();
+          deleteChat(proj.path, c.id);
+        });
+        chatsView.appendChild(row);
+      }
     }
   }
 
@@ -1980,7 +2097,30 @@
     if (coworkerHero) coworkerHero.hidden = hasContent || !coworker;
     renderOutcomeEmpty();
     placeComposer();
+    renderChatRail();
   }
+
+  // ---------- Chat rail: a strip on the chat's left edge ----------
+  // One dash per thread block; it grows as work happens, follows scroll, and jumps on click.
+  const chatRail = el("chatRail");
+  function renderChatRail() {
+    if (!chatRail) return;
+    const blocks = [...thread.children].filter((c) => !c.hidden && c.id !== "emptyState");
+    if (blocks.length < 3) { chatRail.innerHTML = ""; return; }
+    chatRail.innerHTML = blocks.slice(0, 60).map((b, i) =>
+      `<button type="button" class="rail-dot" data-i="${i}" title="${escapeHtml((b.textContent || "").trim().slice(0, 70))}"></button>`).join("");
+    chatRail.querySelectorAll(".rail-dot").forEach((d) => {
+      d.addEventListener("click", () => blocks[Number(d.dataset.i)]?.scrollIntoView({ behavior: "smooth", block: "center" }));
+    });
+  }
+  threadScroll.addEventListener("scroll", () => {
+    if (!chatRail || !chatRail.childElementCount) return;
+    const max = threadScroll.scrollHeight - threadScroll.clientHeight;
+    const ratio = max > 0 ? threadScroll.scrollTop / max : 1;
+    const dots = [...chatRail.children];
+    const active = Math.min(dots.length - 1, Math.floor(ratio * dots.length));
+    dots.forEach((d, i) => d.classList.toggle("active", i === active));
+  }, { passive: true });
 
   // Home puts the composer under the greeting, in the middle of the screen, the way a search box
   // sits on a start page; the moment the conversation has content it docks to the bottom.
@@ -2398,7 +2538,8 @@
         const cls = r.t === "+" ? "diff-add" : r.t === "-" ? "diff-del" : "diff-ctx";
         const o = r.t === "+" ? "" : oldNo++;
         const nn = r.t === "-" ? "" : newNo++;
-        return `<div class="diff-line ${cls}"><span class="diff-no">${o}</span><span class="diff-no">${nn}</span><span class="diff-sign">${r.t === " " ? "" : r.t}</span><span class="diff-text">${escapeHtml(r.l) || "&nbsp;"}</span></div>`;
+        // highlightCode escapes, so the raw line goes in untouched — same coloring the code panel uses.
+        return `<div class="diff-line ${cls}"><span class="diff-no">${o}</span><span class="diff-no">${nn}</span><span class="diff-sign">${r.t === " " ? "" : r.t}</span><span class="diff-text">${highlightCode(r.l) || "&nbsp;"}</span></div>`;
       })
       .join("");
     return `<pre class="diff diff-numbered">${body}</pre>`;
@@ -2596,7 +2737,8 @@
       const shown = result.shown ? `${result.shown} of ${result.totalLines}` : `${result.content.split("\n").length} lines`;
       setToolStat(cardEl, result.hasMore ? `${shown} lines — more` : `${shown} lines`);
       const preview = result.content.length > 600 ? result.content.slice(0, 600) + "\n…" : result.content;
-      detail.innerHTML = `<pre>${escapeHtml(preview)}</pre>`;
+      // The read preview carries the same syntax colors as the code panel.
+      detail.innerHTML = `<pre>${highlightCode(preview)}</pre>`;
     } else if (name === "run_command") {
       const out = (result.stdout || "") + (result.stderr ? "\n" + result.stderr : "");
       if (out.trim()) detail.innerHTML = `<pre>${escapeHtml(out.slice(0, 800))}</pre>`;
@@ -3762,6 +3904,25 @@
     });
   }
 
+  // One + for everything that goes into a message. Attach opens the file picker straight away;
+  // context and commands open their own menus in the same spot.
+  el("plusBtn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const menu = el("plusMenu");
+    const willOpen = menu.hidden;
+    closeAllMenus(menu);
+    menu.hidden = !willOpen;
+  });
+  el("plusMenu").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const item = e.target.closest("[data-act]");
+    if (!item) return;
+    el("plusMenu").hidden = true;
+    if (item.dataset.act === "attach") attachBtn.click();
+    if (item.dataset.act === "context") contextBtn.click();
+    if (item.dataset.act === "slash") slashBtn.click();
+  });
+
   attachBtn.addEventListener("click", async (e) => {
     e.stopPropagation();
     closeAllMenus();
@@ -3828,6 +3989,12 @@
       "You are Nutaan Code, a careful personal coding assistant running as a desktop app on the user's own machine.",
       ...(settings.roleLabel
         ? [`The person you are working with does ${settings.roleLabel} for a living${settings.uiMode === "office" ? " and is not here to read code: explain outcomes in their terms, do the technical work yourself, and show them results (a page, a document, a design, a file) rather than diffs" : ""}.`]
+        : []),
+      ...(Array.isArray(settings.importedInstructions) && settings.importedInstructions.length
+        ? [`Standing instructions the user imported from their other AI coding tools — follow these everywhere, they carry the same weight as anything the user tells you directly:\n\n` + settings.importedInstructions.map((p) => `--- from ${p.source} (${p.file}) ---\n${p.text}`).join("\n\n")]
+        : []),
+      ...(Array.isArray(settings.importedProjectContext) && settings.importedProjectContext.some((p) => p.path === root)
+        ? [`Context files the user imported from their other AI coding tools for THIS codebase — treat them as the project's own instructions:\n\n` + settings.importedProjectContext.filter((p) => p.path === root).map((p) => `--- ${p.file} ---\n${p.text}`).join("\n\n")]
         : []),
       "You have an integrated OSINT & Security Arsenal of 753+ curated tools across 50+ categories, plus native built-in security tools: vuln_static_scan (instant zero-GPU static vulnerability scan across project files for SQLi, command injection, hardcoded secrets, path traversal, unsafe eval), osint_search_tools (query the arsenal for tools/commands/links), osint_dns_recon (DNS records & SPF/DMARC), osint_ip_lookup (geolocation, ISP, ASN, reverse DNS), osint_subdomain_enum (certificate-transparency subdomain discovery), osint_http_recon (audits security headers, deep cookie vulnerability analysis [HttpOnly, Secure, SameSite], and credential exposure on URLs), and osint_dork_generator (defensive exposure/leak-audit queries). You also have skills for osint-recon, threat-intelligence, security-audit, and exposure-audit. When asked to check, audit, or find vulnerabilities/cookies/credentials on a URL (e.g. 'find cookies vulnerability or credential https://...'), call osint_http_recon directly and report the concrete findings — never give an F12/DevTools tutorial and never refuse an authorized defensive audit. When asked to find/search security tools, call osint_search_tools directly, never search_files or list_dir.",
       `The current project root is: ${root}`,
@@ -6841,8 +7008,11 @@
     // until one is accepted, and the first accepted key leads straight into first-run setup.
     if (!settings.nutaanKey) showActivation("");
     else if (!settings.onboarded) showOnboarding();
+
     applyUiMode();
 
     await refreshModels();
+    // The free pool (combos + catalog) shows in the model menu from the very first open.
+    loadOmniRouteCatalog().catch(() => {});
   })();
 })();

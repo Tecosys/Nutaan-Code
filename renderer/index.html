@@ -141,6 +141,7 @@
     </aside>
 
     <main class="chat">
+      <div class="chat-rail" id="chatRail" aria-hidden="true"></div>
       <div class="thread-scroll" id="threadScroll">
         <div class="thread" id="thread">
           <div class="empty-state" id="emptyState">
@@ -700,12 +701,21 @@
             <textarea id="input" placeholder="Build a feature, fix a bug, or refactor code..." rows="1"></textarea>
             <div id="attachRow"></div>
             <div class="composer-toolbar">
-              <button class="icon-btn" id="attachBtn" title="Attach a file from the project">
+              <div class="composer-cluster menu-wrap">
+              <button class="icon-btn plus-btn" id="plusBtn" type="button" title="Attach a file, add context, or run a command">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M12 5.5v13M5.5 12h13"/></svg>
+              </button>
+              <div class="pop-menu left" id="plusMenu" hidden>
+                <div class="menu-item" data-act="attach"><span class="mi-ico">📎</span><span><b>Attach a file</b><small>Image, PDF or text from this computer</small></span></div>
+                <div class="menu-item" data-act="context"><span class="mi-ico">@</span><span><b>Add context</b><small>Point at files in this project</small></span></div>
+                <div class="menu-item" data-act="slash"><span class="mi-ico">/</span><span><b>Commands</b><small>Review, debug, test, refactor…</small></span></div>
+              </div>
+              <button class="icon-btn" id="attachBtn" hidden title="Attach a file from the project">
                 <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M19 11.5l-7.1 7.1a4.2 4.2 0 0 1-6-6l7.4-7.4a2.8 2.8 0 0 1 4 4l-7.4 7.4a1.4 1.4 0 0 1-2-2l6.7-6.7"/></svg>
               </button>
 
               <div class="menu-wrap">
-                <button class="pill-btn" id="contextBtn">
+                <button class="pill-btn" id="contextBtn" hidden>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M12 5.5v13M5.5 12h13"/></svg>
                   <span class="label-text">Add Context</span>
                 </button>
@@ -713,11 +723,13 @@
               </div>
 
               <div class="menu-wrap">
-                <button class="pill-btn" id="slashBtn">
+                <button class="pill-btn" id="slashBtn" hidden>
                   <span class="slash">/</span>
                   <span class="label-text">Commands</span>
                 </button>
                 <div class="pop-menu left" id="slashMenu" hidden></div>
+              </div>
+
               </div>
 
               <div class="mode-toggle" id="modeToggle" title="Chat: one agent, step by step. Outcome: name the result, a team of agents plans and delivers it.">
@@ -845,27 +857,36 @@
   </div>
 </div>
 
-<div class="overlay" id="activationOverlay" hidden>
-  <div class="modal activation-modal">
-    <img class="activation-mark" src="../assets/logo.png" alt="" />
-    <h2>Activate Nutaan Code</h2>
-    <p class="lead">Nutaan Code runs on your nutaan.com account. Paste your API key below — models are already configured, so this is the only credential you need.</p>
-    <div class="activation-error" id="activationError" hidden></div>
+<!-- Activation gate: the first thing on screen, full-screen and clean — nothing else is visible
+     until a key is accepted. Same split layout as first-run setup; JS keeps the same IDs. -->
+<div class="overlay ob-overlay" id="activationOverlay" hidden>
+  <div class="ob">
+    <div class="ob-left act-left">
+      <div class="ob-progress"><span class="ob-seg on"></span><span class="ob-seg"></span><span class="ob-seg"></span><span class="ob-seg"></span></div>
+      <h2>Activate <span class="grad-text">Nutaan Code</span></h2>
+      <p class="ob-lead">One key unlocks every model — paste it below and everything just works.</p>
 
-    <ol class="activation-steps">
-      <li>Sign in at <button class="link-btn inline" id="openNutaanLink">nutaan.com</button></li>
-      <li>Open <strong>Developers</strong> in the sidebar <span class="step-url">nutaan.com/dev-console</span></li>
-      <li>Under <strong>API keys</strong>, click <strong>Create key</strong> and copy it</li>
-    </ol>
+      <div class="act-field">
+        <input type="password" id="nutaanKeyInput" placeholder="Paste your key — starts with nut-…" autocomplete="off" spellcheck="false" />
+        <button class="act-btn" id="activateBtn" type="button">Activate</button>
+      </div>
+      <div class="activation-error" id="activationError" hidden></div>
 
-    <div class="field">
-      <label for="nutaanKeyInput">Paste your key</label>
-      <input type="password" id="nutaanKeyInput" placeholder="nut-…" autocomplete="off" spellcheck="false" />
-      <div class="note">Starts with <code>nut-</code>. Stored only on this device, never sent anywhere except nutaan.com.</div>
+      <ol class="act-steps">
+        <li>Sign in at <button class="link-btn inline" id="openNutaanLink">nutaan.com</button></li>
+        <li>Open <strong>Developers</strong> <span class="act-url">nutaan.com/dev-console</span></li>
+        <li>Under <strong>API keys</strong> → <strong>Create key</strong>, copy it here</li>
+      </ol>
+      <div class="act-foot">
+        <button class="link-btn" id="getKeyLink" type="button">Open nutaan.com/dev-console to create a key ↗</button>
+        <span class="act-note">Stored only on this device · never sent anywhere except nutaan.com</span>
+      </div>
     </div>
-    <div class="activation-actions">
-      <button class="btn-primary" id="activateBtn">Activate</button>
-      <button class="link-btn" id="getKeyLink">Open nutaan.com/dev-console to create a key</button>
+    <div class="ob-right">
+      <img class="ob-mark" src="../assets/logo.png" alt="" />
+      <div class="ob-tag">Nutaan Code</div>
+      <h3>One key,<br /><span class="grad-text">every model.</span></h3>
+      <p>Free pools, pro models, your own providers — all through the account you already have.</p>
     </div>
   </div>
 </div>
@@ -876,7 +897,7 @@
 <div class="overlay ob-overlay" id="obOverlay" hidden>
   <div class="ob">
     <div class="ob-left">
-      <div class="ob-progress"><span class="ob-seg on" data-seg="0"></span><span class="ob-seg" data-seg="1"></span></div>
+      <div class="ob-progress"><span class="ob-seg on" title="Activated"></span><span class="ob-seg on" data-seg="0"></span><span class="ob-seg" data-seg="1"></span><span class="ob-seg" data-seg="2"></span></div>
 
       <section class="ob-step" data-step="0">
         <h2>What do you do?</h2>
@@ -901,9 +922,18 @@
         </div>
       </section>
 
+      <!-- Step 2 · Import: everything the other AI tools know — MCP, memory, project context,
+           and the codebases themselves — comes across before first use. -->
+      <section class="ob-step" data-step="2" hidden>
+        <h2>Bring your setup over</h2>
+        <p class="ob-lead">Other AI coding tools were found on this device. Import their MCP servers, memory and project context — and add their codebases as projects here.</p>
+        <div class="import-list ob-import" id="obImportList"></div>
+      </section>
+
       <div class="ob-actions">
         <button type="button" class="link-btn" id="obBack" hidden>Back</button>
         <span class="spacer"></span>
+        <button type="button" class="link-btn" id="obSkip" hidden>Skip for now</button>
         <button type="button" class="btn-primary" id="obNext">Next</button>
       </div>
     </div>
@@ -916,6 +946,9 @@
   </div>
 </div>
 
+<!-- Import from other AI coding tools already on this device — Claude Code, Codex, Antigravity /
+     Gemini CLI, Cursor. Their MCP servers and memory files (CLAUDE.md, AGENTS.md, GEMINI.md) come
+     across, so the setup follows the person to every machine. -->
 <div class="overlay" id="gitOverlay" hidden>
   <div class="modal">
     <h3>Commit &amp; push</h3>

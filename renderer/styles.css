@@ -4423,7 +4423,7 @@ label.check .hint { color: var(--text-faded); font-size: 12px; }
 .sk-src { font-size: 11px; color: var(--text-3); white-space: nowrap; }
 .sk-empty { padding: 28px; text-align: center; color: var(--text-3); border: 1px dashed var(--border-card); border-radius: 12px; }
 
-/* ---------- Home: greeting, then the composer, then starters (Z.ai-style) ---------- */
+/* ---------- Home: greeting, then the composer, then starters ---------- */
 main.chat.home .thread { width: 100%; }
 .composer-slot { margin: 26px auto 22px; max-width: 820px; }
 .composer-slot .composer-wrap { padding: 0; }
@@ -4470,3 +4470,258 @@ main.chat.home .thread { max-width: 860px; }
 .diff-numbered .diff-sign { color: inherit; opacity: 0.8; user-select: none; text-align: center; }
 .diff-numbered .diff-text { padding-right: 8px; word-break: break-word; }
 .diff-numbered .diff-ctx { color: var(--text-dim); }
+
+/* ============================================================
+   Pass 4 — frameless titlebar, composer slim-down, import modal,
+   workers & co-worker page polish
+   ============================================================ */
+
+/* ---------- Frameless window: the topbar is the title bar now ---------- */
+/* Kills the white native strip that always sat above the dark header. */
+.topbar { -webkit-app-region: drag; }
+.topbar button,
+.topbar input,
+.topbar select,
+.topbar .project-menu-wrap,
+.topbar .branch-chip,
+.topbar .health-chip-wrap,
+.topbar .menu-wrap {
+  -webkit-app-region: no-drag;
+}
+/* The native min/max/close overlay paints over the top-right ~140px on Windows. */
+.platform-win .topbar { padding-right: 152px; }
+
+/* ---------- Composer: lean (icon buttons, no wordy pills) ---------- */
+#contextBtn .label-text,
+#slashBtn .label-text { display: none; }
+#contextBtn, #slashBtn { padding: 0 10px; }
+.pill-btn { flex-shrink: 0; }
+
+/* ---------- Import dialog ---------- */
+.import-modal { width: 540px; max-width: 92vw; max-height: 78vh; overflow-y: auto; }
+.import-tool {
+  border: 1px solid var(--border-card);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  background: var(--bg-card);
+}
+.import-tool-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.import-tool-head b { font-size: 13.5px; color: var(--text-bright); }
+.import-tool-head span { font-size: 11.5px; color: var(--text-faint); }
+.import-row {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 8px 0 2px;
+  margin-top: 6px;
+  border-top: 1px solid var(--border-soft);
+  cursor: pointer;
+}
+.import-row input { margin-top: 2px; accent-color: var(--purple); flex-shrink: 0; }
+.import-row span { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 12.8px; color: var(--text-2); }
+.import-row code { font-family: var(--mono); font-size: 11.5px; color: var(--purple-light); }
+.import-row small {
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 380px;
+}
+.import-empty { padding: 22px 16px; text-align: center; color: var(--text-muted); font-size: 13px; line-height: 1.6; }
+.import-error {
+  margin: 12px 0 0;
+  padding: 9px 12px;
+  border-radius: 9px;
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  color: var(--red);
+  font-size: 12.5px;
+}
+
+/* ---------- Workers page: cards align, quiet counts ---------- */
+.activity-title .count:empty { display: none; }
+.page-cols { align-items: stretch; }
+.worker-tabs { margin-bottom: 14px; }
+
+/* ---------- Co-worker abilities: never a lone card on a second row ---------- */
+.cw-abilities { grid-template-columns: repeat(5, 1fr); }
+@media (max-width: 980px) { .cw-abilities { grid-template-columns: repeat(3, 1fr); } }
+
+/* ============================================================
+   Pass 5 — numbered diff (syntax + accent bars), chat rail,
+   composer Full-access chip
+   ============================================================ */
+
+/* ---------- Diff: numbered, syntax-highlighted, accent-barred ---------- */
+.diff-numbered { display: block; }
+.diff-line { position: relative; }
+.diff-line.diff-add { background: rgba(74, 222, 128, 0.09); }
+.diff-line.diff-add::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--green-light);
+}
+.diff-line.diff-del { background: rgba(248, 113, 113, 0.08); }
+.diff-line.diff-del::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--red);
+}
+.diff-line .diff-text .hl-keyword { color: #c792ea; }
+.diff-line .diff-text .hl-string { color: #a5d6a7; }
+.diff-line .diff-text .hl-comment { color: var(--text-gutter); font-style: italic; }
+.diff-line .diff-text .hl-tag { color: #7fb3ff; }
+.diff-line .diff-text .hl-attr { color: #ffcb6b; }
+.diff-line .diff-text .hl-num { color: #f78c6c; }
+
+/* ---------- Chat rail (left edge of the chat column) ---------- */
+.chat-rail {
+  position: absolute;
+  left: 6px;
+  top: 90px;
+  bottom: 120px;
+  width: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  z-index: 5;
+  padding: 2px 0;
+}
+.chat-rail .rail-dot {
+  width: 12px;
+  height: 2px;
+  border: none;
+  border-radius: 2px;
+  background: var(--border-strong);
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s, transform 0.2s;
+}
+.chat-rail .rail-dot:hover { background: var(--text-dim); }
+.chat-rail .rail-dot.active { background: var(--purple-light); transform: scaleX(1.5); }
+.chat-rail .rail-dot.active:last-child { animation: pulsedot 1.1s ease-in-out infinite; }
+
+/* ---------- Composer: Full access chip ---------- */
+.access-chip { gap: 7px; }
+.access-chip .access-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.access-chip.on .access-dot { background: var(--green-light); box-shadow: 0 0 8px rgba(74, 222, 128, 0.6); }
+.access-chip .label-text { font-size: 12px; font-weight: 700; color: var(--text-2); }
+.access-chip.on .label-text { color: var(--green-light); }
+.access-chip:hover { border-color: var(--border-strong); background: var(--bg-hover); }
+
+/* Group the three left icons into one quiet control cluster */
+.composer-toolbar > .icon-btn:first-child { opacity: 0.75; }
+.composer-toolbar > .icon-btn:first-child:hover { opacity: 1; }
+
+/* chat rail anchors to the chat column */
+.chat { position: relative; }
+
+/* ---------- Activation gate: full-screen, from scratch, split layout ---------- */
+/* The gate is the same card as first run — same panes, same type, one mark. Step one of four. */
+.act-left { justify-content: center; }
+.act-left h2 { margin: 0 0 8px; font-size: 26px; font-weight: 700; letter-spacing: -0.01em; color: var(--text-bright); }
+.act-field { display: flex; gap: 10px; width: 100%; max-width: 430px; margin: 26px 0 0; }
+.act-field input {
+  flex: 1; padding: 13px 15px; border-radius: 12px; border: 1px solid var(--border-input);
+  background: var(--bg-elev); color: var(--text-bright); font-size: 13.5px; outline: none; transition: border-color 0.15s;
+}
+.act-field input:focus { border-color: rgba(168, 85, 247, 0.6); }
+.act-btn {
+  padding: 0 22px; border: none; border-radius: 12px; background: var(--grad); color: #fff;
+  font-size: 13.5px; font-weight: 700; cursor: pointer; transition: filter 0.15s;
+}
+.act-btn:hover { filter: brightness(1.08); }
+.act-btn:disabled { opacity: 0.6; cursor: default; }
+.act-steps { margin: 26px 0 0; padding-left: 20px; color: var(--text-muted); font-size: 12.8px; line-height: 2; text-align: left; }
+.act-url { font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); background: var(--bg-elev); border: 1px solid var(--border-soft); border-radius: 6px; padding: 2px 7px; }
+.act-foot { margin-top: 22px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.act-note { font-size: 11px; color: var(--text-faint); }
+.act-left .activation-error {
+  margin: 14px 0 0; padding: 10px 13px; border-radius: 10px; max-width: 430px;
+  background: rgba(248, 113, 113, 0.1); border: 1px solid rgba(248, 113, 113, 0.35);
+  color: var(--red); font-size: 12.8px; line-height: 1.5; text-align: left;
+}
+
+/* ---------- Onboarding import step + chats tree ---------- */
+.ob-import { margin-top: 22px; max-height: 340px; overflow-y: auto; text-align: left; }
+.chats-proj-head {
+  display: flex; align-items: center; gap: 7px;
+  padding: 12px 10px 5px; color: var(--text-faint);
+  font-size: 11px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase;
+}
+.chats-proj-head:first-child { padding-top: 4px; }
+
+/* ---------- Rail: evenly spread dashes across the column ---------- */
+.chat-rail { justify-content: space-between; gap: 0; width: 16px; }
+.chat-rail .rail-dot { width: 13px; }
+.chat-rail .rail-dot.active { width: 13px; transform: none; background: var(--text-3); }
+.chat-rail .rail-dot.active:last-child { background: var(--purple-light); }
+
+/* ---------- Composer: one clustered control, aligned right group ---------- */
+.composer-cluster {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border-card);
+  border-radius: 11px;
+  background: var(--bg-elev);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.composer-cluster .icon-btn,
+.composer-cluster .pill-btn {
+  border: none;
+  background: none;
+  border-radius: 0;
+  box-shadow: none;
+  height: 34px;
+  padding: 0 11px;
+  color: var(--text-dim);
+}
+.composer-cluster .icon-btn:hover,
+.composer-cluster .pill-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
+.composer-cluster .menu-wrap { height: 100%; display: flex; }
+.composer-cluster .pill-btn { height: 100%; }
+/* pop menus anchor snugly to their button, no floating gap */
+.composer-cluster .pop-menu.left { bottom: calc(100% + 6px); left: 0; }
+/* right-side controls breathe evenly, clear of the native overlay strip */
+.composer-toolbar .access-chip,
+.composer-toolbar .menu-wrap:last-of-type { margin-left: 8px; }
+.composer-toolbar { gap: 8px; align-items: center; }
+/* topbar: project left, controls grouped right with even rhythm */
+.topbar .auto-approve { margin-left: auto; }
+.topbar .topbar-actions { gap: 4px; }
+.platform-win .topbar { padding-right: 146px; }
+
+/* Pages scroll clear of the docked composer instead of sliding behind it */
+.page-inner { padding-bottom: 170px; }
+
+/* ---------- Composer: one + for attach / context / commands ---------- */
+.plus-btn { width: 34px; height: 34px; border-radius: 10px; }
+#plusMenu { min-width: 260px; }
+#plusMenu .menu-item { display: flex; align-items: center; gap: 12px; padding: 9px 10px; }
+#plusMenu .mi-ico { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; background: rgba(168, 85, 247, 0.12); color: var(--purple-light); font-family: var(--mono); font-size: 13px; font-weight: 700; flex: none; }
+#plusMenu b { display: block; font-size: 13px; color: var(--text-bright); font-weight: 600; }
+#plusMenu small { display: block; font-size: 11.5px; color: var(--text-3); margin-top: 1px; }
+.composer-cluster { position: relative; }
+.composer-cluster > .menu-wrap { position: absolute; left: 0; bottom: 0; width: 0; height: 0; overflow: visible; }
+.composer-cluster { overflow: visible; } /* the + menu opens out of it */

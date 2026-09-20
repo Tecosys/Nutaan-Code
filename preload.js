@@ -108,6 +108,12 @@ contextBridge.exposeInMainWorld("nutaan", {
     authIntercept: (provider) => ipcRenderer.invoke("gateway:auth-intercept", provider),
   },
 
+  // Import setup from other AI coding tools on this device (Claude Code, Codex, Antigravity…)
+  import: {
+    detect: () => ipcRenderer.invoke("import:detect"),
+    apply: (payload) => ipcRenderer.invoke("import:apply", payload),
+  },
+
   // ---- autonomous layer ----
   workers: {
     list: () => ipcRenderer.invoke("workers:list"),
