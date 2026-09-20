@@ -399,27 +399,43 @@
           </aside>
 
           <div class="dz-main">
-            <div class="dz-tabs" id="dzTabs"></div>
-            <div class="dz-toolbar">
-              <div class="dz-seg" id="dzViewMode">
+            <div class="dz-bar">
+              <button class="dz-back" id="dzBackToLibrary" type="button" title="All designs">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M14 6l-6 6 6 6"/></svg>
+              </button>
+              <div class="dz-bar-title">
+                <div class="dz-bar-name" id="dzBarName"></div>
+                <div class="dz-bar-sub" id="dzBarSub"></div>
+              </div>
+
+              <div class="spacer"></div>
+
+              <div class="dz-group" id="dzViewMode">
                 <button type="button" class="active" data-mode="preview">Preview</button>
                 <button type="button" data-mode="code">Code</button>
               </div>
-              <select class="st-select dz-inline" id="dzDevice">
-                <option value="fit">Fit</option>
+
+              <div class="dz-group">
+                <button class="dz-g-btn" id="dzZoomOut" type="button" title="Zoom out">−</button>
+                <span class="dz-zoom" id="dzZoomLabel">100%</span>
+                <button class="dz-g-btn" id="dzZoomIn" type="button" title="Zoom in">+</button>
+                <button class="dz-g-btn wide" id="dzFit" type="button" title="Fit">Fit</button>
+              </div>
+
+              <select class="st-select dz-inline" id="dzDevice" title="Preview width">
+                <option value="fit">Artboard</option>
                 <option value="desktop">Desktop 1440</option>
                 <option value="laptop">Laptop 1280</option>
                 <option value="tablet">Tablet 834</option>
                 <option value="mobile">Mobile 390</option>
               </select>
-              <span class="spacer"></span>
-              <button class="dz-mini" id="dzZoomOut" type="button">−</button>
-              <span class="dz-zoom" id="dzZoomLabel">100%</span>
-              <button class="dz-mini" id="dzZoomIn" type="button">+</button>
-              <span class="dz-sep"></span>
-              <button class="btn-secondary sm" id="dzUseToBuild" type="button" title="Take this design into your project and build it for real">Use this design to build</button>
+
+              <button class="dz-outline" id="dzUseToBuild" type="button" title="Take this design into your project and build it for real">Use this design to build</button>
               <select class="st-select dz-inline" id="dzFormat"><option value="png">PNG</option><option value="pdf">PDF</option><option value="html">HTML</option></select>
-              <button class="btn-primary sm" id="dzExport" type="button">Export</button>
+              <button class="dz-export" id="dzExport" type="button">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19h14"/></svg>
+                <span>Export</span>
+              </button>
             </div>
 
             <div class="dz-stagewrap" id="dzStageWrap">

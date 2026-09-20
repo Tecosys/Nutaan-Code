@@ -19,6 +19,11 @@
       ask: "a screen design, as one self-contained HTML artboard" },
     { id: "mobile", label: "Mobile app", preset: "mobile", icon: "▯",
       ask: "a mobile app screen at 390×844, as one self-contained HTML artboard" },
+    { id: "dashboard", label: "Dashboard", preset: "desktop", icon: "▥",
+      ask: "an analytics dashboard: a left nav or top bar, a row of KPI tiles with real numbers and deltas, " +
+           "at least two charts drawn as inline SVG (bars, a line with a filled area, or a donut — real paths " +
+           "with axis labels and gridlines, never an image placeholder), and a data table with sensible column " +
+           "alignment. Dense and scannable, the way a real product dashboard is" },
     { id: "wireframe", label: "Wireframe", preset: "desktop", icon: "▤",
       ask: "a low-fidelity wireframe — greyscale, boxes and placeholder type, no colour or imagery" },
     { id: "deck", label: "Slide deck", preset: "slide", icon: "▭",
@@ -64,6 +69,7 @@
     box.innerHTML = S.list.length
       ? S.list.map((d) => `
           <div class="dz-card" data-id="${esc(d.id)}">
+            <div class="dz-card-thumb">${d.thumb ? `<img src="${esc(d.thumb)}" alt="" />` : ""}</div>
             <div class="dz-card-name">${esc(d.name)}</div>
             <div class="dz-card-sub">${d.artboards} artboard${d.artboards === 1 ? "" : "s"} · ${timeAgo(d.updatedAt)}</div>
             ${d.brief ? `<div class="dz-card-brief">${esc(d.brief)}</div>` : ""}
@@ -80,12 +86,17 @@
       return `In the Design canvas, revise the design "${S.doc.name}" (design_id ${S.doc.id}).\n\n` +
         `${text}\n\n` +
         `Call design_read first to see the artboards as they are now, then design_update the ones that need to change ` +
-        `(or design_artboard for a genuinely new screen). Keep the established look unless I asked you to change it.
+        `(or design_artboard for a genuinely new screen). Read the brand back too and keep using it.
 
 ` +
         `Then design_verify every artboard you touched and fix what it finds, repeating until it comes back clean.`;
     }
     return `Design ${k.ask}.\n\n${text}\n\n` +
+      `First call design_brand. If no brand is set, ask me for my colours and logo before you draw anything — propose ` +
+      `a palette you think fits and let me confirm it. Then use exactly those colours in every artboard, and place the ` +
+      `logo with <img src="{{logo}}"> wherever it belongs.
+
+` +
       `Use the Design canvas: call design_new with a name and a brief (audience, tone, palette, the copy that matters), ` +
       `then design_artboard with preset "${k.preset}" for each screen or page. Write complete, self-contained HTML with inline ` +
       `<style> — real layout, a proper type scale, and no external files.
@@ -121,7 +132,7 @@
     S.tab = focusBoard || (doc.artboards[0] && doc.artboards[0].id) || null;
     el("dzName").value = doc.name;
     showWork(true);
-    renderTabs();
+    renderBar();
     renderSide();
     renderBoard();
   }
@@ -130,13 +141,75 @@
     return S.doc && S.doc.artboards.find((b) => b.id === S.tab);
   }
 
-  function renderTabs() {
-    const box = el("dzTabs");
+  // No tab strip any more: the artboard list on the left is the switcher, and the board carries
+  // its own label — which is how the design this follows lays it out.
+  function renderBar() {
     if (!S.doc) return;
-    box.innerHTML = S.doc.artboards.map((b) =>
-      `<button type="button" class="dz-tab${b.id === S.tab ? " active" : ""}" data-id="${esc(b.id)}">
-         ${esc(b.name)}<span class="dz-tab-x" data-close="${esc(b.id)}">✕</span></button>`).join("") +
-      `<button type="button" class="dz-tab add" id="dzAddBoard" title="Add an empty artboard">+</button>`;
+    const b = board();
+    const name = el("dzBarName");
+    const sub = el("dzBarSub");
+    if (name) name.textContent = S.doc.name;
+    if (sub) {
+      sub.textContent = b
+        ? `${b.name} · ${b.w}×${b.h}` + (S.doc.artboards.length > 1 ? ` · ${S.doc.artboards.length} artboards` : "")
+        : `${S.doc.artboards.length} artboards`;
+    }
+  }
+
+  // ---------- brand ----------
+  // Colours and a logo belong to the design, so every artboard and every later turn uses the same
+  // ones. The agent reads this back; the user can set it here without saying a word to the model.
+  const BRAND_FIELDS = [
+    ["primary", "Primary"], ["secondary", "Secondary"], ["accent", "Accent"],
+    ["bg", "Background"], ["text", "Text"],
+  ];
+
+  function brandHtml() {
+    const b = (S.doc && S.doc.brand) || {};
+    return `<div class="dz-side-title">Brand</div>
+      <div class="dz-brand">
+        <div class="dz-brand-swatches">
+          ${BRAND_FIELDS.map(([k, label]) => `
+            <label class="dz-sw" title="${esc(label)}">
+              <input type="color" data-brand="${k}" value="${esc(b[k] || (k === "bg" ? "#ffffff" : k === "text" ? "#111111" : "#6366f1"))}" />
+              <span class="${b[k] ? "set" : ""}">${esc(label)}</span>
+            </label>`).join("")}
+        </div>
+        <input class="dz-brand-font" id="dzBrandFont" placeholder="Font stack — e.g. Inter, system-ui" value="${esc(b.font || "")}" />
+        <div class="dz-brand-logo">
+          ${b.logo
+            ? `<img src="${esc(b.logo)}" alt="" /><button class="dz-mini" id="dzLogoReplace" type="button">Replace</button><button class="dz-mini danger" id="dzLogoClear" type="button">Remove</button>`
+            : `<button class="dz-mini" id="dzLogoAdd" type="button">+ Add logo</button><span class="dz-brand-hint">PNG, SVG or JPG — it is embedded in the design</span>`}
+        </div>
+      </div>`;
+  }
+
+  function wireBrand() {
+    const box = el("dzSideBody");
+    if (!box || !S.doc) return;
+    for (const input of box.querySelectorAll("[data-brand]")) {
+      input.addEventListener("change", async (e) => {
+        S.doc.brand = await api().setBrand(S.doc.id, { [e.target.dataset.brand]: e.target.value });
+        renderSide();
+        flash("Brand saved");
+      });
+    }
+    const font = el("dzBrandFont");
+    if (font) font.addEventListener("change", async (e) => {
+      S.doc.brand = await api().setBrand(S.doc.id, { font: e.target.value });
+      flash("Brand saved");
+    });
+    const add = el("dzLogoAdd") || el("dzLogoReplace");
+    if (add) add.addEventListener("click", async () => {
+      const res = await api().pickLogo(S.doc.id);
+      if (res && res.ok) { S.doc.brand = res.brand; renderSide(); flash("Logo added"); }
+      else if (res && res.error) alert(res.error);
+    });
+    const clear = el("dzLogoClear");
+    if (clear) clear.addEventListener("click", async () => {
+      S.doc.brand = await api().setBrand(S.doc.id, { logo: "", logoAlt: "" });
+      renderSide();
+    });
   }
 
   function renderSide() {
@@ -145,7 +218,10 @@
     const boards = S.doc.artboards;
     box.innerHTML =
       (S.doc.brief ? `<div class="dz-brief"><div class="dz-brief-h">Brief</div>${esc(S.doc.brief)}</div>` : "") +
-      `<div class="dz-side-title">Artboards <span class="count">${boards.length}</span></div>` +
+      brandHtml() +
+      `<div class="dz-side-title">Artboards <span class="count">${boards.length}</span>
+         <span class="spacer"></span>
+         <button class="dz-mini" id="dzAddBoard" type="button" title="Add an empty artboard">+</button></div>` +
       (boards.length
         ? boards.map((b) => `
             <div class="dz-side-row${b.id === S.tab ? " active" : ""}" data-id="${esc(b.id)}">
@@ -153,7 +229,8 @@
               <span class="dz-side-size">${b.w}×${b.h}</span>
             </div>`).join("")
         : `<div class="st-note">Nothing drawn yet. Ask below and it appears here.</div>`) +
-      `<div class="st-note dz-hint">Click anything in the preview to select it — you can retype its text and change its colours, size and spacing, and the change is written into the design the agent reads next.</div>`;
+      `<div class="st-note dz-hint">Click anything in the preview to select it — text, colour, type, spacing and size are all editable, and every change is written into the design the agent reads next.</div>`;
+    wireBrand();
   }
 
   function deviceWidth() {
@@ -185,6 +262,9 @@
     el("dzZoomLabel").textContent = Math.round(scale * 100) + "%";
 
     holder.innerHTML = `<div class="dz-board" style="width:${w}px;height:${b.h}px;transform:scale(${scale})">
+        <div class="dz-board-label">${esc(b.name)}</div>
+        <div class="dz-board-frame"></div>
+        <span class="dz-h tl"></span><span class="dz-h tr"></span><span class="dz-h bl"></span><span class="dz-h br"></span>
         <iframe class="dz-frame" sandbox="allow-same-origin" scrolling="no"></iframe>
       </div>`;
     const frame = holder.querySelector(".dz-frame");
@@ -272,39 +352,95 @@
     }, 400);
   }
 
+  // Everything inside an artboard is editable, not just its text and two colours: type, weight,
+  // alignment, spacing, size and borders — and for an image, swapping the file and resizing it.
+  // Each change is written straight back into the artboard's HTML, which is the same HTML the
+  // agent reads on its next turn, so hand edits and model edits never diverge.
   function renderInspect() {
     const box = el("dzInspect");
     const node = selectedNode();
     if (!node) {
-      box.innerHTML = `<span class="dz-i-hint">Click anything in the design to edit it here.</span>`;
+      box.innerHTML = `<span class="dz-i-hint">Click anything in the design to edit it — text, colour, type, spacing, size. Double-click text to edit it in place.</span>`;
       return;
     }
-    const cs = node.ownerDocument.defaultView.getComputedStyle(node);
+    const win = node.ownerDocument.defaultView;
+    const cs = win.getComputedStyle(node);
+    const px = (v) => Math.round(parseFloat(v) || 0);
     const hex = (v) => {
-      const m = (v || "").match(/\d+/g);
-      return m && m.length >= 3 ? "#" + m.slice(0, 3).map((x) => Number(x).toString(16).padStart(2, "0")).join("") : "#000000";
+      const m = (v || "").match(/[\d.]+/g);
+      if (!m || m.length < 3) return "#000000";
+      if (m[3] !== undefined && Number(m[3]) === 0) return "#ffffff";
+      return "#" + m.slice(0, 3).map((x) => Number(x).toString(16).padStart(2, "0")).join("");
     };
-    const isText = [...node.childNodes].every((n) => n.nodeType === 3) && node.textContent.trim().length > 0;
+    const isImg = S.sel.tag === "img";
+    const isText = [...node.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
+
+    const num = (id, label, value, min, max) =>
+      `<label class="dz-i-f">${label}<input type="number" id="${id}" min="${min}" max="${max}" value="${value}" /></label>`;
+
     box.innerHTML =
       `<span class="dz-i-tag">&lt;${esc(S.sel.tag)}&gt;</span>` +
       (isText ? `<input class="dz-i-text" id="dzIText" value="${esc(node.textContent.trim())}" />` : "") +
+      (isImg
+        ? `<button class="dz-mini" id="dzIImg" type="button">Replace image</button>` +
+          num("dzIW", "W", px(cs.width), 8, 4000) + num("dzIH", "H", px(cs.height), 8, 4000) +
+          `<label class="dz-i-f">Fit<select id="dzIFit">
+             ${["contain", "cover", "fill", "none"].map((v) => `<option ${cs.objectFit === v ? "selected" : ""}>${v}</option>`).join("")}
+           </select></label>`
+        : "") +
       `<label class="dz-i-f">Text<input type="color" id="dzIColor" value="${hex(cs.color)}" /></label>` +
       `<label class="dz-i-f">Fill<input type="color" id="dzIBg" value="${hex(cs.backgroundColor)}" /></label>` +
-      `<label class="dz-i-f">Size<input type="number" id="dzIFs" min="8" max="160" value="${parseInt(cs.fontSize, 10) || 16}" /></label>` +
-      `<label class="dz-i-f">Pad<input type="number" id="dzIPad" min="0" max="160" value="${parseInt(cs.paddingTop, 10) || 0}" /></label>` +
-      `<label class="dz-i-f">Radius<input type="number" id="dzIRad" min="0" max="120" value="${parseInt(cs.borderRadius, 10) || 0}" /></label>` +
-      `<button class="dz-mini" id="dzIParent" type="button">Parent</button>` +
+      num("dzIFs", "Size", px(cs.fontSize), 6, 200) +
+      `<label class="dz-i-f">Weight<select id="dzIFw">
+         ${[300, 400, 500, 600, 700, 800, 900].map((w) => `<option ${String(px(cs.fontWeight)) === String(w) ? "selected" : ""}>${w}</option>`).join("")}
+       </select></label>` +
+      `<label class="dz-i-f">Align<select id="dzIAlign">
+         ${["left", "center", "right", "justify"].map((a) => `<option ${cs.textAlign === a ? "selected" : ""}>${a}</option>`).join("")}
+       </select></label>` +
+      num("dzILh", "Line", Math.round((parseFloat(cs.lineHeight) / (parseFloat(cs.fontSize) || 16)) * 100) || 140, 80, 300) +
+      num("dzILs", "Track", Math.round((parseFloat(cs.letterSpacing) || 0) * 10) / 10, -5, 30) +
+      num("dzIPad", "Pad", px(cs.paddingTop), 0, 200) +
+      num("dzIGap", "Gap", px(cs.gap), 0, 200) +
+      num("dzIRad", "Radius", px(cs.borderRadius), 0, 200) +
+      `<button class="dz-mini" id="dzIUp" type="button" title="Select the element around this one">↑ Parent</button>` +
+      `<button class="dz-mini" id="dzIDup" type="button" title="Duplicate it">Duplicate</button>` +
       `<button class="dz-mini danger" id="dzIDel" type="button">Remove</button>`;
 
     const set = (prop, v) => { node.style[prop] = v; commit(); };
+    const onNum = (id, fn) => { const e2 = el(id); if (e2) e2.addEventListener("input", (e) => fn(e.target.value)); };
+
     const t = el("dzIText");
     if (t) t.addEventListener("input", (e) => { node.textContent = e.target.value; commit(); });
     el("dzIColor").addEventListener("input", (e) => set("color", e.target.value));
     el("dzIBg").addEventListener("input", (e) => set("backgroundColor", e.target.value));
-    el("dzIFs").addEventListener("input", (e) => set("fontSize", e.target.value + "px"));
-    el("dzIPad").addEventListener("input", (e) => set("padding", e.target.value + "px"));
-    el("dzIRad").addEventListener("input", (e) => set("borderRadius", e.target.value + "px"));
-    el("dzIParent").addEventListener("click", () => { if (node.parentElement) select(S.sel.boardId, node.parentElement); });
+    onNum("dzIFs", (v) => set("fontSize", v + "px"));
+    onNum("dzIPad", (v) => set("padding", v + "px"));
+    onNum("dzIGap", (v) => set("gap", v + "px"));
+    onNum("dzIRad", (v) => set("borderRadius", v + "px"));
+    onNum("dzILh", (v) => set("lineHeight", (Number(v) / 100).toFixed(2)));
+    onNum("dzILs", (v) => set("letterSpacing", v + "px"));
+    onNum("dzIW", (v) => set("width", v + "px"));
+    onNum("dzIH", (v) => set("height", v + "px"));
+    el("dzIFw").addEventListener("change", (e) => set("fontWeight", e.target.value));
+    el("dzIAlign").addEventListener("change", (e) => set("textAlign", e.target.value));
+    const fit = el("dzIFit");
+    if (fit) fit.addEventListener("change", (e) => set("objectFit", e.target.value));
+
+    const img = el("dzIImg");
+    if (img) img.addEventListener("click", async () => {
+      // Reuses the logo picker: it returns a data URI, which is what an artboard needs to stay
+      // self-contained.
+      const res = await api().pickLogo(S.doc.id);
+      if (res && res.ok && res.brand && res.brand.logo) { node.setAttribute("src", res.brand.logo); commit(); }
+    });
+
+    el("dzIUp").addEventListener("click", () => { if (node.parentElement) select(S.sel.boardId, node.parentElement); });
+    el("dzIDup").addEventListener("click", () => {
+      const copy = node.cloneNode(true);
+      copy.removeAttribute("data-nd-sel");
+      node.parentElement && node.parentElement.insertBefore(copy, node.nextSibling);
+      commit();
+    });
     el("dzIDel").addEventListener("click", () => { node.remove(); commit(); S.sel = null; renderInspect(); });
   }
 
@@ -463,7 +599,7 @@
       // Something new arrived: show it.
       S.tab = doc.artboards[doc.artboards.length - 1].id;
     }
-    renderTabs();
+    renderBar();
     if (LIVE.on) liveRenderSide();
     else { renderSide(); renderBoard(); }
   }
@@ -522,31 +658,18 @@
       if (card) open(card.dataset.id);
     });
 
-    el("dzTabs").addEventListener("click", async (e) => {
-      const close = e.target.closest("[data-close]");
-      if (close) {
-        e.stopPropagation();
-        if (!confirm("Remove this artboard?")) return;
-        await api().removeArtboard(S.doc.id, close.dataset.close);
-        S.doc = await api().read(S.doc.id);
-        S.tab = (S.doc.artboards[0] || {}).id || null;
-        renderTabs(); renderSide(); renderBoard();
-        return;
-      }
-      if (e.target.closest("#dzAddBoard")) {
-        const preset = el("dzPreset").value || S.kind.preset;
-        const nb = await api().addArtboard(S.doc.id, {
-          name: (S.presets.find((p) => p.id === preset) || {}).label || "Artboard",
-          preset,
-          html: `<div style="display:grid;place-items:center;height:100%;color:#9aa0ac;font:500 15px system-ui">Empty artboard — ask below</div>`,
-        });
-        S.doc = await api().read(S.doc.id);
-        S.tab = nb.id;
-        renderTabs(); renderSide(); renderBoard();
-        return;
-      }
-      const tab = e.target.closest(".dz-tab[data-id]");
-      if (tab) { S.tab = tab.dataset.id; S.sel = null; renderTabs(); renderSide(); renderBoard(); renderInspect(); }
+    // Adding an artboard now lives with the artboard list on the left.
+    el("dzSideBody").addEventListener("click", async (e) => {
+      if (!e.target.closest("#dzAddBoard")) return;
+      const preset = el("dzPreset").value || S.kind.preset;
+      const nb = await api().addArtboard(S.doc.id, {
+        name: (S.presets.find((p) => p.id === preset) || {}).label || "Artboard",
+        preset,
+        html: `<div style="display:grid;place-items:center;height:100%;color:#9aa0ac;font:500 15px system-ui">Empty artboard — ask below</div>`,
+      });
+      S.doc = await api().read(S.doc.id);
+      S.tab = nb.id;
+      renderBar(); renderSide(); renderBoard();
     });
 
     el("dzSideBody").addEventListener("click", (e) => {
@@ -554,7 +677,7 @@
       if (!row) return;
       S.tab = row.dataset.id;
       S.sel = null;
-      renderTabs(); renderSide(); renderBoard(); renderInspect();
+      renderBar(); renderSide(); renderBoard(); renderInspect();
     });
 
     el("dzViewMode").addEventListener("click", (e) => {
@@ -631,7 +754,7 @@
       // a fresh launch, coming back after closing one — lands on the home screen.
       const inWork = !!(S.doc && S.tab);
       showWork(inWork);
-      if (inWork) { renderTabs(); renderSide(); renderBoard(); }
+      if (inWork) { renderBar(); renderSide(); renderBoard(); }
     },
     onHide() {},
     // Someone asked for a design while a project is open: this is how the chat side hands it over.

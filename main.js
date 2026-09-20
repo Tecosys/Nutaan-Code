@@ -3405,6 +3405,35 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "design_brand",
+      description:
+        "Read or set the brand a design is built from: colours, font, and whether a logo has been added. " +
+        "CALL THIS BEFORE YOUR FIRST ARTBOARD. If it comes back incomplete, STOP and ask the user — in one short message — for their brand colours and logo, the way you would ask about anything else you genuinely need. Offer a palette you think fits and ask them to confirm or correct it; do not silently invent a brand and do not design around a placeholder. " +
+        "Once they answer, save it here and use exactly those values in every artboard: the user pastes hex codes or says 'use my logo', and from then on every screen, slide and page in this design matches. " +
+        "If they tell you to just pick something, save what you picked so the rest of the design stays consistent with it.",
+      parameters: {
+        type: "object",
+        properties: {
+          set: {
+            type: "object",
+            description: "Values to save. Omit to only read.",
+            properties: {
+              primary: { type: "string", description: "Main brand colour as hex, e.g. #4f46e5" },
+              secondary: { type: "string" },
+              accent: { type: "string" },
+              bg: { type: "string", description: "Page background" },
+              text: { type: "string", description: "Body text colour" },
+              font: { type: "string", description: "Font family stack to use throughout" },
+            },
+          },
+          design_id: { type: "string" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "design_verify",
       description:
         "Render an artboard exactly as it will be exported, look at it, and measure it. Returns a SCREENSHOT plus the real problems found in the rendered page: content running past the canvas, elements off-frame, text under 11px, contrast below WCAG AA, images that failed to load. " +
@@ -4114,6 +4143,20 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
       emitToWindow("design:opened", { id, focus: board.id });
       return { artboard_id: board.id, name: board.name, updated: true };
     }
+    case "design_brand": {
+      const id = args.design_id || design.openId;
+      if (!id) return { error: "No design is open — call design_new first." };
+      if (args.set && Object.keys(args.set).length) await design.setBrand(id, args.set);
+      const doc = await design.read(id);
+      const sum = design.brandSummary(doc);
+      emitToWindow("design:opened", { id });
+      return {
+        ...sum,
+        note: sum.complete
+          ? "Use exactly these values in every artboard of this design."
+          : "No brand is set. Ask the user for their colours and logo before you design — propose a palette and ask them to confirm. The logo is added from the Design tab (Brand → Add logo); tell them that if they have one.",
+      };
+    }
     case "design_verify": {
       const id = args.design_id || design.openId;
       if (!id) return { error: "No design is open." };
@@ -4147,10 +4190,15 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
       if (!id) return { error: "No design is open — call design_new first, or design_list to find one." };
       const doc = await design.read(id);
       const withHtml = args.include_html !== false;
+      const brand = design.brandSummary(doc);
       return {
         design_id: doc.id,
         name: doc.name,
         brief: doc.brief || "",
+        brand,
+        // The logo is a data URI held with the design; drop it into an artboard with
+        // <img src="{{logo}}"> and it is substituted when the artboard is saved.
+        logo_placeholder: brand.hasLogo ? "{{logo}}" : null,
         artboards: doc.artboards.map((b) => ({
           artboard_id: b.id, name: b.name, size: `${b.w}x${b.h}`, preset: b.preset,
           ...(withHtml ? { html: b.html } : { html_length: (b.html || "").length }),
@@ -4714,7 +4762,7 @@ const TOOL_FAMILIES = {
     re: /\b(knowledge ?base|kb|docs?|documentation|reference|ingest)\b|index (this|the)|remember this/i,
   },
   design: {
-    names: ["design_new", "design_artboard", "design_update", "design_verify", "design_read", "design_list"],
+    names: ["design_new", "design_artboard", "design_update", "design_verify", "design_brand", "design_read", "design_list"],
     re: /\b(design|mockup|wireframe|landing ?page|ui|ux|layout|screen|deck|slide|poster|flyer|banner|brand|logo|figma|prototype|artboard|canvas|dashboard|palette|typography)\b/i,
   },
   storage: {
@@ -6116,6 +6164,37 @@ ipcMain.handle("design:set-artboard", (_e, id, boardId, patch) => designCall(() 
 ipcMain.handle("design:remove-artboard", (_e, id, boardId) => designCall(() => design.removeArtboard(id, boardId)));
 ipcMain.handle("design:set-canvas", (_e, id, canvas) => designCall(() => design.setCanvas(id, canvas || {})));
 ipcMain.handle("design:verify", (_e, { id, boardId } = {}) => designCall(() => design.verify(id, boardId)));
+ipcMain.handle("design:set-brand", (_e, id, patch) => designCall(() => design.setBrand(id, patch || {})));
+// Pick a logo and bring it in as a data URI, scaled to something an artboard can use. A path on
+// this machine would not survive an export or reach anyone the design is sent to.
+ipcMain.handle("design:pick-logo", async (_e, id) => {
+  try {
+    const res = await dialog.showOpenDialog(win, {
+      title: "Choose a logo",
+      properties: ["openFile"],
+      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "svg", "webp", "gif"] }],
+    });
+    if (res.canceled || !res.filePaths?.length) return { ok: false, canceled: true };
+    const file = res.filePaths[0];
+    const ext = path.extname(file).slice(1).toLowerCase();
+    const raw = await fs.readFile(file);
+    let dataUrl;
+    if (ext === "svg") {
+      dataUrl = "data:image/svg+xml;base64," + raw.toString("base64");
+    } else {
+      const { nativeImage } = require("electron");
+      let img = nativeImage.createFromBuffer(raw);
+      const size = img.getSize();
+      // 600px wide is plenty for any artboard and keeps the design file small.
+      if (size.width > 600) img = img.resize({ width: 600, quality: "best" });
+      dataUrl = "data:image/png;base64," + img.toPNG().toString("base64");
+    }
+    const brand = await design.setBrand(id, { logo: dataUrl, logoAlt: path.basename(file, path.extname(file)) });
+    return { ok: true, brand, bytes: dataUrl.length };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
 ipcMain.handle("design:export", async (_e, { id, boardId, format, scale } = {}) => {
   try {
     const doc = await design.read(id);

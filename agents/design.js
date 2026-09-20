@@ -70,6 +70,7 @@ class Design {
           id: d.id, name: d.name, createdAt: d.createdAt, updatedAt: d.updatedAt,
           artboards: (d.artboards || []).length,
           brief: (d.brief || "").slice(0, 140),
+          thumb: d.thumb || "",
         });
       } catch {}
     }
@@ -105,6 +106,9 @@ class Design {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       canvas: { zoom: 0.6, panX: 0, panY: 0 },
+      // The brand is part of the design, not a prompt someone has to remember to repeat. Empty
+      // until it is set or asked for — the agent is told to ask rather than invent one.
+      brand: { primary: "", secondary: "", accent: "", bg: "", text: "", font: "", logo: "", logoAlt: "" },
       artboards: [],
     };
     await this.write(doc);
@@ -133,6 +137,17 @@ class Design {
     return { x: right + 120, y: top };
   }
 
+  // The agent writes {{logo}} where the logo goes; it is substituted here so each artboard stays
+  // self-contained without the model having to carry a base64 blob through the conversation.
+  withBrand(doc, html) {
+    const logo = (doc.brand && doc.brand.logo) || "";
+    let out = String(html || "");
+    if (logo) out = out.split("{{logo}}").join(logo);
+    else out = out.split("{{logo}}").join("data:image/svg+xml;base64," +
+      Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="160" height="40"><rect width="160" height="40" rx="8" fill="#e5e7eb"/><text x="80" y="25" font-family="sans-serif" font-size="13" fill="#6b7280" text-anchor="middle">logo</text></svg>').toString("base64"));
+    return out;
+  }
+
   async addArtboard(id, { name, preset, width, height, html } = {}) {
     const doc = await this.read(id);
     const p = PRESETS[preset] || PRESETS.desktop;
@@ -144,11 +159,12 @@ class Design {
       name: (name || p.label).slice(0, 60),
       preset: PRESETS[preset] ? preset : "custom",
       x: at.x, y: at.y, w, h,
-      html: String(html || "").slice(0, MAX_HTML_BYTES),
+      html: this.withBrand(doc, html).slice(0, MAX_HTML_BYTES),
       updatedAt: Date.now(),
     };
     doc.artboards.push(board);
     await this.write(doc);
+    this.queueThumb(id);
     return board;
   }
 
@@ -156,11 +172,12 @@ class Design {
     const doc = await this.read(id);
     const b = doc.artboards.find((x) => x.id === boardId);
     if (!b) throw new Error("no such artboard");
-    if (typeof patch.html === "string") b.html = patch.html.slice(0, MAX_HTML_BYTES);
+    if (typeof patch.html === "string") b.html = this.withBrand(doc, patch.html).slice(0, MAX_HTML_BYTES);
     if (typeof patch.name === "string") b.name = patch.name.slice(0, 60);
     for (const k of ["x", "y", "w", "h"]) if (typeof patch[k] === "number") b[k] = Math.round(patch[k]);
     b.updatedAt = Date.now();
     await this.write(doc);
+    this.queueThumb(id);
     return b;
   }
 
@@ -176,6 +193,61 @@ class Design {
     doc.canvas = { ...doc.canvas, ...canvas };
     await this.write(doc);
     return doc.canvas;
+  }
+
+  async setBrand(id, patch = {}) {
+    const doc = await this.read(id);
+    doc.brand = { ...(doc.brand || {}), ...patch };
+    // A logo is stored with the design as a data URI: an artboard has to be self-contained, and a
+    // path to a file on this machine would not survive an export or reach anyone else.
+    if (typeof patch.logo === "string" && patch.logo && !/^data:image\//.test(patch.logo)) {
+      delete doc.brand.logo;
+    }
+    await this.write(doc);
+    return doc.brand;
+  }
+
+  brandSummary(doc) {
+    const b = doc.brand || {};
+    const set = Object.entries({ primary: b.primary, secondary: b.secondary, accent: b.accent, bg: b.bg, text: b.text })
+      .filter(([, v]) => v);
+    return {
+      colours: Object.fromEntries(set),
+      font: b.font || "",
+      hasLogo: !!b.logo,
+      logoAlt: b.logoAlt || "",
+      complete: set.length >= 2,
+    };
+  }
+
+  // A card that shows a grey rectangle tells you nothing about which design it is. The first
+  // artboard is rendered small and kept with the design, refreshed in the background whenever the
+  // design changes so saving never waits on a screenshot.
+  async refreshThumb(id) {
+    if (this.thumbBusy && this.thumbBusy.has(id)) return;
+    (this.thumbBusy || (this.thumbBusy = new Set())).add(id);
+    try {
+      const doc = await this.read(id);
+      const first = doc.artboards[0];
+      if (!first || !first.html) return;
+      const png = await this.withArtboardPage(first, async (win, zoom) => {
+        const img = await win.webContents.capturePage();
+        return img.resize({ width: 480, quality: "good" }).toPNG();
+      });
+      const fresh = await this.read(id);
+      fresh.thumb = "data:image/png;base64," + png.toString("base64");
+      await this.write(fresh);
+    } catch (err) {
+      this.log("thumbnail failed: " + err.message);
+    } finally {
+      this.thumbBusy.delete(id);
+    }
+  }
+
+  // Coalesced: a run that writes six artboards should not render six thumbnails.
+  queueThumb(id) {
+    clearTimeout(this._thumbTimer);
+    this._thumbTimer = setTimeout(() => this.refreshThumb(id).catch(() => {}), 1500);
   }
 
   async rename(id, name) {

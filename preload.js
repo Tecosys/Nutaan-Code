@@ -179,6 +179,8 @@ contextBridge.exposeInMainWorld("nutaan", {
     removeArtboard: (id, boardId) => ipcRenderer.invoke("design:remove-artboard", id, boardId),
     setCanvas: (id, canvas) => ipcRenderer.invoke("design:set-canvas", id, canvas),
     verifyBoard: (payload) => ipcRenderer.invoke("design:verify", payload),
+    setBrand: (id, patch) => ipcRenderer.invoke("design:set-brand", id, patch),
+    pickLogo: (id) => ipcRenderer.invoke("design:pick-logo", id),
     export: (payload) => ipcRenderer.invoke("design:export", payload),
     onChanged: (callback) => {
       const listener = (_e, data) => callback(data);
