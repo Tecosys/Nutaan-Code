@@ -4046,7 +4046,9 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
       if (occurrences === 0) throw new Error("old_string not found in file");
       if (occurrences > 1) throw new Error(`old_string is not unique (${occurrences} matches) — include more context`);
       await fs.writeFile(target, content.replace(args.old_string, args.new_string), "utf8");
-      return { ok: true };
+      // The change itself goes back with the result, so the thread can show +n −m and the diff
+      // without a second read of the file.
+      return { ok: true, diff: { oldString: args.old_string, newString: args.new_string } };
     }
     case "web_fetch":
       return webFetch(args.url);

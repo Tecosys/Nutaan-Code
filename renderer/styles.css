@@ -4443,3 +4443,30 @@ main.chat.home .thread { max-width: 860px; }
 .today-toggle { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 12px; color: var(--text-3); background: none; border: 0; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
 .today-toggle:hover { color: var(--text-1); background: var(--bg-hover-soft); }
 .today.collapsed .today-chev { display: inline-block; transform: rotate(-90deg); }
+
+/* ---------- Tool rows: kind icon, label, inline snippet, stat ---------- */
+.tool-header { gap: 9px; min-width: 0; }
+.tool-ico { width: 24px; height: 24px; border-radius: 7px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: rgba(168, 85, 247, 0.13); color: #c084fc; }
+.kind-terminal .tool-ico { background: rgba(96, 165, 250, 0.13); color: #60a5fa; }
+.kind-read .tool-ico, .kind-files .tool-ico { background: rgba(148, 163, 184, 0.14); color: #cbd5e1; }
+.kind-browser .tool-ico { background: rgba(74, 222, 128, 0.12); color: #4ade80; }
+.kind-system .tool-ico { background: rgba(251, 146, 60, 0.13); color: #fb923c; }
+.kind-search .tool-ico { background: rgba(192, 132, 252, 0.13); color: #c084fc; }
+.kind-design .tool-ico { background: rgba(244, 114, 182, 0.13); color: #f472b6; }
+.kind-skill .tool-ico { background: rgba(250, 204, 21, 0.13); color: #facc15; }
+.kind-mcp .tool-ico { background: rgba(236, 72, 153, 0.12); color: #f472b6; }
+.kind-edit .tool-ico { background: rgba(168, 85, 247, 0.13); color: #c084fc; }
+.tool-card .tool-title { flex: 0 0 auto; font-size: 12.5px; font-weight: 700; color: var(--text-2); }
+.tool-cmd { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; color: var(--text-1); background: rgba(255,255,255,0.04); border: 1px solid var(--border-card); border-radius: 6px; padding: 2px 8px; }
+.tool-card .tool-stat { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.tool-card.ok .tool-stat { color: var(--green); }
+.tool-card.err .tool-stat { color: var(--red); }
+.tool-stat:empty { display: none; }
+
+/* Numbered diff gutters */
+.diff.diff-numbered { white-space: normal; padding: 0; }
+.diff-numbered .diff-line { display: grid; grid-template-columns: 3.2em 3.2em 1.2em 1fr; gap: 0; margin: 0; padding: 0; white-space: pre-wrap; }
+.diff-numbered .diff-no { text-align: right; padding-right: 8px; color: var(--text-faint); user-select: none; font-size: 10.5px; line-height: inherit; }
+.diff-numbered .diff-sign { color: inherit; opacity: 0.8; user-select: none; text-align: center; }
+.diff-numbered .diff-text { padding-right: 8px; word-break: break-word; }
+.diff-numbered .diff-ctx { color: var(--text-dim); }

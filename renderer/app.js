@@ -2274,14 +2274,67 @@
     return escapeHtml(name);
   }
 
+  // A tool call is one row: what kind of thing it did (icon), a short label, the file or command
+  // inline, and — once it has run — a stat (+11 −5, 3 matches, exit 1). The sentence that used
+  // to be the title is the tooltip. Each kind has a colour, so a run reads at a glance.
+  const TOOL_ICONS = {
+    terminal: "<svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5 7l4 4-4 4M12 16h7\"/></svg>",
+    edit: "<svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z\"/></svg>",
+    read: "<svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z\"/><path d=\"M4 5.5v15\"/></svg>",
+    search: "<svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"11\" cy=\"11\" r=\"7\"/><path d=\"M20 20l-3.2-3.2\"/></svg>",
+    files: "<svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 7a2 2 0 0 1 2-2h3.6l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/></svg>",
+    browser: "<svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M3.4 9.5h17.2M3.4 14.5h17.2M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18\"/></svg>",
+    design: "<svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z\"/></svg>",
+    skill: "<svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 19.5A2.5 2.5 0 0 1 6.5 17H20\"/><path d=\"M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z\"/></svg>",
+    system: "<svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"4\" y=\"4\" width=\"16\" height=\"16\" rx=\"2\"/><path d=\"M9 1.5V4M15 1.5V4M9 20v2.5M15 20v2.5M1.5 9H4M1.5 15H4M20 9h2.5M20 15h2.5\"/></svg>",
+    mcp: "<svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7\"/><path d=\"M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7\"/></svg>",
+    generic: "<svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M14.7 6.3a4 4 0 0 0-5.4 5.4l-6 6a1.5 1.5 0 0 0 2 2l6-6a4 4 0 0 0 5.4-5.4l-2.3 2.3-2-2 2.3-2.3z\"/></svg>",
+  };
+  function toolKind(name) {
+    if (/^(run_command|run_background|check_background_task|list_background_tasks|stop_background_task)$/.test(name)) return { kind: "terminal", label: "Terminal" };
+    if (name === "edit_file") return { kind: "edit", label: "Edit" };
+    if (name === "write_file") return { kind: "edit", label: "Write" };
+    if (name === "read_file" || name === "view_image") return { kind: "read", label: name === "view_image" ? "View" : "Read" };
+    if (name === "search_files" || name === "web_search") return { kind: "search", label: name === "web_search" ? "Web" : "Search" };
+    if (name === "web_fetch") return { kind: "browser", label: "Fetch" };
+    if (name === "list_dir") return { kind: "files", label: "Files" };
+    if (/^browser_/.test(name)) return { kind: "browser", label: "Browser" };
+    if (/^design_/.test(name)) return { kind: "design", label: { design_new: "Design", design_artboard: "Artboard", design_update: "Revise", design_verify: "Verify", design_brand: "Brand", design_read: "Design", design_list: "Designs", design_export: "Export" }[name] || "Design" };
+    if (name === "use_skill" || name === "list_skills") return { kind: "skill", label: "Skill" };
+    if (/^kb_|^memory_/.test(name)) return { kind: "search", label: /^kb_/.test(name) ? "Knowledge" : "Memory" };
+    if (/^os_|^cleanup_storage$|^task_/.test(name)) return { kind: "system", label: /^task_/.test(name) ? "Plan" : "System" };
+    if (/^mcp__/.test(name)) return { kind: "mcp", label: name.split("__")[1] || "MCP" };
+    return { kind: "generic", label: name.replace(/_/g, " ") };
+  }
+  function toolSnippet(name, args) {
+    const a = args || {};
+    if (/^(run_command|run_background)/.test(name)) return String(a.command || "").replace(/\s+/g, " ").trim();
+    if (name === "edit_file" || name === "write_file" || name === "read_file" || name === "view_image") return String(a.path || "");
+    if (name === "search_files") return String(a.pattern || a.query || "");
+    if (name === "web_search") return String(a.query || "");
+    if (name === "web_fetch" || /^browser_/.test(name)) return String(a.url || a.selector || a.text || a.action || a.size || "");
+    if (name === "list_dir") return String(a.path || ".") || ".";
+    if (name === "use_skill") return String(a.id || "") + (a.file ? " · " + a.file : "");
+    if (/^design_/.test(name)) return String(a.name || a.artboard_id || a.id || "");
+    if (/^mcp__/.test(name)) return name.split("__").slice(2).join("/");
+    return "";
+  }
+  function toolHeaderHtml(name, args) {
+    const { kind, label } = toolKind(name);
+    const snippet = toolSnippet(name, args);
+    const shown = snippet.length > 80 ? snippet.slice(0, 80) + "…" : snippet;
+    return `<span class="tool-ico">${TOOL_ICONS[kind] || TOOL_ICONS.generic}</span>` +
+      `<span class="tool-title">${escapeHtml(label)}</span>` +
+      (snippet ? `<code class="tool-cmd" title="${escapeHtml(snippet)}">${escapeHtml(shown)}</code>` : "") +
+      `<span class="tool-chev">▸</span>`;
+  }
+
   function appendToolCard(id, name, args) {
     const wrap = document.createElement("div");
-    wrap.className = "tool-card pending";
+    wrap.className = `tool-card pending kind-${toolKind(name).kind}`;
+    wrap.title = toolLabel(name, args).replace(/<[^>]+>/g, "");
     wrap.innerHTML = `
-      <div class="tool-header">
-        <span class="tool-title">${toolLabel(name, args)}</span>
-        <span class="tool-chev">▸</span>
-      </div>
+      <div class="tool-header">${toolHeaderHtml(name, args)}</div>
       <div class="tool-detail" hidden></div>
     `;
     const header = wrap.querySelector(".tool-header");
@@ -2335,15 +2388,20 @@
     };
   }
 
+  // Old and new line numbers in two gutters, the sign in a third, the text after: the shape of
+  // a change reads from the gutters alone, and a line can be found in the editor by its number.
   function diffHtml(diff) {
     const { rows } = diffStat(diff);
+    let oldNo = 1, newNo = 1;
     const body = rows
       .map((r) => {
         const cls = r.t === "+" ? "diff-add" : r.t === "-" ? "diff-del" : "diff-ctx";
-        return `<div class="diff-line ${cls}">${r.t} ${escapeHtml(r.l)}</div>`;
+        const o = r.t === "+" ? "" : oldNo++;
+        const nn = r.t === "-" ? "" : newNo++;
+        return `<div class="diff-line ${cls}"><span class="diff-no">${o}</span><span class="diff-no">${nn}</span><span class="diff-sign">${r.t === " " ? "" : r.t}</span><span class="diff-text">${escapeHtml(r.l) || "&nbsp;"}</span></div>`;
       })
       .join("");
-    return `<pre class="diff">${body}</pre>`;
+    return `<pre class="diff diff-numbered">${body}</pre>`;
   }
 
   function permissionStat(req) {
@@ -2542,6 +2600,14 @@
     } else if (name === "run_command") {
       const out = (result.stdout || "") + (result.stderr ? "\n" + result.stderr : "");
       if (out.trim()) detail.innerHTML = `<pre>${escapeHtml(out.slice(0, 800))}</pre>`;
+      if (typeof result.exitCode === "number") setToolStat(cardEl, `exit ${result.exitCode}`);
+    } else if ((name === "edit_file" || name === "write_file") && !isError) {
+      if (result.diff) {
+        const { added, removed } = diffStat(result.diff);
+        setToolStat(cardEl, `+${added} −${removed}`);
+        detail.innerHTML = diffHtml(result.diff);
+      }
+      else if (name === "write_file") setToolStat(cardEl, result.bytes ? `${result.bytes} bytes` : "written");
     } else if (name === "search_files" && result.matches) {
       setToolStat(cardEl, `${result.matches.length} match${result.matches.length === 1 ? "" : "es"}`);
       const lines = result.matches.slice(0, 30).map((m) => `${m.file}:${m.line}: ${m.text}`).join("\n");
