@@ -5894,9 +5894,12 @@ ipcMain.handle("reclaim:plan", (_e, paths) => {
   const { items, refused, bytes } = reclaim.plan(paths || []);
   return { bytes, refused, items: items.map((i) => ({ id: i.id, label: i.label, path: i.path, bytes: i.bytes, kind: i.kind || null, group: i.group })) };
 });
-ipcMain.handle("reclaim:apply", async (_e, paths) => {
+// Two steps on purpose: the review window authorises a specific selection, and only the token that
+// produces can run a delete. The agent can reach neither — it has no tool for either channel.
+ipcMain.handle("reclaim:authorize", (_e, paths) => reclaim.authorize(paths || []));
+ipcMain.handle("reclaim:apply", async (_e, { paths, token } = {}) => {
   try {
-    return await reclaim.apply(paths || [], { onProgress: (p) => emitToWindow("reclaim:progress", p) });
+    return await reclaim.apply(paths || [], { token, onProgress: (p) => emitToWindow("reclaim:progress", p) });
   } catch (err) {
     return { error: err.message, freed: 0, removed: 0, failed: 0, results: [] };
   }

@@ -327,6 +327,13 @@
       (hasSystem ? `\n\nYour system will ask for administrator permission for the system-level items.` : "")
     );
     if (!okToGo) return;
+    // The confirmation itself is what authorises the delete: this call mints a token bound to
+    // exactly these paths, and apply() refuses without it.
+    const auth = await api2.authorize(paths);
+    if (!auth || !auth.ok) {
+      alert("Could not confirm that selection: " + ((auth && auth.error) || "unknown error"));
+      return;
+    }
     RC.busy = true;
     el("rcDelete").disabled = true;
     el("rcDelete").textContent = "Deleting…";
@@ -334,7 +341,7 @@
     el("rcScanning").hidden = false;
     el("rcScanLabel").textContent = "Deleting…";
     let res = null;
-    try { res = await api2.apply(paths); } catch (e) { res = { error: e.message }; }
+    try { res = await api2.apply(paths, auth.token); } catch (e) { res = { error: e.message }; }
     RC.busy = false;
     el("rcScanning").hidden = true;
     const box = el("rcResult");

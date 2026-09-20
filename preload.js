@@ -152,7 +152,8 @@ contextBridge.exposeInMainWorld("nutaan", {
   reclaim: {
     scan: (opts) => ipcRenderer.invoke("reclaim:scan", opts),
     plan: (paths) => ipcRenderer.invoke("reclaim:plan", paths),
-    apply: (paths) => ipcRenderer.invoke("reclaim:apply", paths),
+    authorize: (paths) => ipcRenderer.invoke("reclaim:authorize", paths),
+    apply: (paths, token) => ipcRenderer.invoke("reclaim:apply", { paths, token }),
     uninstall: (id) => ipcRenderer.invoke("reclaim:uninstall", id),
     onProgress: (callback) => {
       const listener = (_e, data) => callback(data);
