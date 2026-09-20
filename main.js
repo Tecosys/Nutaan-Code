@@ -166,7 +166,8 @@ function createWindow() {
     // Frameless with a dark system-drawn overlay strip: kills the white native title bar that
     // otherwise sat above the app's own dark header. The overlay paints the min/max/close in
     // the app's palette on Windows; macOS keeps its traffic lights inset automatically.
-    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "hidden",
+    // Linux keeps the native frame: frameless there would mean no close/minimise buttons at all.
+    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : process.platform === "win32" ? "hidden" : "default",
     titleBarOverlay: process.platform === "win32"
       ? { color: "#0f1117", symbolColor: "#c7cad2", height: 60 } // same height as .topbar, so the buttons sit on its line
       : false,

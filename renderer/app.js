@@ -4,6 +4,7 @@
   // Windows draws the min/max/close overlay on the frameless window; the topbar keeps its
   // interactive children clear of that strip via this class.
   if (/Win/i.test(navigator.userAgent || "")) document.documentElement.classList.add("platform-win");
+  else if (/Mac/i.test(navigator.userAgent || "")) document.documentElement.classList.add("platform-darwin");
 
   // ---------- Elements ----------
   const appEl = el("app");

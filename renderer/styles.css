@@ -4800,3 +4800,7 @@ main.chat.home .thread { max-width: 860px; }
 .fc-where { font-size: 11px; color: var(--text-3); font-family: var(--mono); margin-top: 3px; overflow-wrap: anywhere; }
 .fc-actions { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
 .fc-actions .btn-primary { padding: 7px 14px; font-size: 12.5px; }
+
+/* macOS: the traffic lights sit inset at the top-left of the frameless window; leave them room. */
+.platform-darwin .topbar { padding-left: 76px; }
+.platform-darwin .topbar { padding-right: 14px; }
