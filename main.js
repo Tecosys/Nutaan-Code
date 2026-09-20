@@ -164,7 +164,7 @@ function createWindow() {
     // the app's palette on Windows; macOS keeps its traffic lights inset automatically.
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "hidden",
     titleBarOverlay: process.platform === "win32"
-      ? { color: "#0f1117", symbolColor: "#c7cad2", height: 38 }
+      ? { color: "#0f1117", symbolColor: "#c7cad2", height: 60 } // same height as .topbar, so the buttons sit on its line
       : false,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),

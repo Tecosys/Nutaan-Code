@@ -2103,24 +2103,31 @@
   // ---------- Chat rail: a strip on the chat's left edge ----------
   // One dash per thread block; it grows as work happens, follows scroll, and jumps on click.
   const chatRail = el("chatRail");
+  // A map of the conversation, not a decoration: every block is a mark at the place it actually
+  // sits in the scroll, your own messages longer than the rest, and the one in view is lit. It
+  // only appears once there is something to move between.
+  let railBlocks = [];
   function renderChatRail() {
     if (!chatRail) return;
-    const blocks = [...thread.children].filter((c) => !c.hidden && c.id !== "emptyState");
-    if (blocks.length < 3) { chatRail.innerHTML = ""; return; }
-    chatRail.innerHTML = blocks.slice(0, 60).map((b, i) =>
-      `<button type="button" class="rail-dot" data-i="${i}" title="${escapeHtml((b.textContent || "").trim().slice(0, 70))}"></button>`).join("");
+    railBlocks = [...thread.children].filter((c) => !c.hidden && c.id !== "emptyState" && c.id !== "coworkerHero" && !c.classList.contains("thinking-row"));
+    if (railBlocks.length < 2 || threadScroll.scrollHeight <= threadScroll.clientHeight + 40) { chatRail.innerHTML = ""; return; }
+    const total = threadScroll.scrollHeight || 1;
+    chatRail.innerHTML = railBlocks.slice(0, 200).map((b, i) =>
+      `<button type="button" class="rail-dot${b.classList.contains("user") ? " you" : ""}" data-i="${i}" style="top:${((b.offsetTop / total) * 100).toFixed(2)}%" title="${escapeHtml((b.textContent || "").trim().slice(0, 70))}"></button>`).join("");
     chatRail.querySelectorAll(".rail-dot").forEach((d) => {
-      d.addEventListener("click", () => blocks[Number(d.dataset.i)]?.scrollIntoView({ behavior: "smooth", block: "center" }));
+      d.addEventListener("click", () => railBlocks[Number(d.dataset.i)]?.scrollIntoView({ behavior: "smooth", block: "center" }));
     });
+    updateRailActive();
   }
-  threadScroll.addEventListener("scroll", () => {
+  function updateRailActive() {
     if (!chatRail || !chatRail.childElementCount) return;
-    const max = threadScroll.scrollHeight - threadScroll.clientHeight;
-    const ratio = max > 0 ? threadScroll.scrollTop / max : 1;
-    const dots = [...chatRail.children];
-    const active = Math.min(dots.length - 1, Math.floor(ratio * dots.length));
-    dots.forEach((d, i) => d.classList.toggle("active", i === active));
-  }, { passive: true });
+    const mid = threadScroll.scrollTop + threadScroll.clientHeight / 2;
+    let best = 0, bestD = Infinity;
+    railBlocks.forEach((b, i) => { const d = Math.abs(b.offsetTop + b.offsetHeight / 2 - mid); if (d < bestD) { bestD = d; best = i; } });
+    [...chatRail.children].forEach((d, i) => d.classList.toggle("active", i === best));
+  }
+  threadScroll.addEventListener("scroll", updateRailActive, { passive: true });
+  new ResizeObserver(() => renderChatRail()).observe(thread);
 
   // Home puts the composer under the greeting, in the middle of the screen, the way a search box
   // sits on a start page; the moment the conversation has content it docks to the bottom.
@@ -3921,6 +3928,7 @@
     if (item.dataset.act === "attach") attachBtn.click();
     if (item.dataset.act === "context") contextBtn.click();
     if (item.dataset.act === "slash") slashBtn.click();
+    if (item.dataset.act === "kb") { contextTab = "kb"; contextBtn.click(); }
   });
 
   attachBtn.addEventListener("click", async (e) => {
@@ -4727,16 +4735,32 @@
     appendNoticeCard("Compacting conversation to make room for more context…");
   });
 
-  onAgentEvent("agent:retrying", ({ message, attempt, max, delayMs }) => {
-    appendNoticeCard(`Provider hiccup (${escapeHtml(message || "")}) — retrying in ${Math.round(delayMs / 1000)}s… (${attempt}/${max})`);
+  // A provider stumbling is the app's problem, not the user's: retries show in the run strip and
+  // nowhere else, and a model switch is one quiet line in the thread — not three cards. A new
+  // user's first chat must not open with a wall of failure.
+  onAgentEvent("agent:retrying", ({ message, delayMs }) => {
+    runActivity.textContent = `Model busy — retrying in ${Math.max(1, Math.round((delayMs || 0) / 1000))}s`;
+    showThinking(/rate.?limit/i.test(message || "") ? "Model busy, waiting" : "Retrying");
   });
 
   onAgentEvent("agent:model-switched", ({ from, to }) => {
     settings.model = to;
     window.nutaan.setSettings(settings);
     updateModelBadge();
-    appendNoticeCard(`"${escapeHtml(from)}" wasn't responding, so switched to "${escapeHtml(to)}" and kept going…`);
+    appendSystemLine(`Switched to ${basename(to)} — ${basename(from)} was busy`);
+    showThinking();
   });
+
+  function appendSystemLine(text) {
+    hideThinking();
+    finalizeStream();
+    const line = document.createElement("div");
+    line.className = "sys-line";
+    line.textContent = text;
+    thread.appendChild(line);
+    renderEmptyVisibility();
+    scrollToBottom();
+  }
 
   const FILE_VIEW_TOOLS = new Set(["read_file", "write_file", "edit_file"]);
   async function maybeShowInCodeTab(id, name, result) {
@@ -5589,9 +5613,6 @@
     }
   });
 
-  window.nutaan?.onAgentEvent("agent:model-switched", ({ from, to }) => {
-    if (to) appendBubble("error", `⚡ Auto-switched model: ${from} → ${to}`);
-  });
 
   // ---------- Tools (MCP servers, other coding agents, apps, signed-in web apps) ----------
   // Everything the panel shows comes from the main process's status(); the renderer never

@@ -4725,3 +4725,18 @@ main.chat.home .thread { max-width: 860px; }
 .composer-cluster { position: relative; }
 .composer-cluster > .menu-wrap { position: absolute; left: 0; bottom: 0; width: 0; height: 0; overflow: visible; }
 .composer-cluster { overflow: visible; } /* the + menu opens out of it */
+
+/* ---------- Rail: marks at the blocks' real positions ---------- */
+.chat-rail { display: block; position: absolute; left: 8px; top: 12px; bottom: 130px; width: 16px; overflow: visible; justify-content: normal; }
+.chat-rail .rail-dot { position: absolute; left: 2px; width: 10px; height: 2px; transform: none; background: var(--border-strong); }
+.chat-rail .rail-dot.you { width: 14px; left: 0; background: var(--text-3); }
+.chat-rail .rail-dot.active { background: var(--purple-light); width: 14px; left: 0; transform: none; animation: none; }
+.chat-rail .rail-dot:hover { background: var(--text-1); }
+
+/* One quiet line for a model switch — the thread is for the work, not for provider weather. */
+.sys-line { align-self: center; font-size: 11.5px; color: var(--text-3); padding: 2px 10px; border-radius: 999px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-card); }
+
+/* The system window buttons live inside the top bar's own row: the bar leaves them their space
+   (the overlay's width, from the platform) and everything in it lines up on one 60px line. */
+.topbar { padding-right: calc(100vw - env(titlebar-area-width, 100vw) + 8px); }
+.topbar-right, .topbar .topbar-actions { -webkit-app-region: no-drag; }
