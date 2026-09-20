@@ -147,6 +147,9 @@
             <img class="empty-mark" src="../assets/logo.png" alt="" />
             <h1 id="emptyTitle">Build anything with <span class="grad-text">Nutaan Code</span></h1>
             <p class="empty-sub" id="emptySub">Your AI coding agent that understands your entire project.</p>
+            <!-- Home: the composer sits here, under the greeting, until the conversation has content —
+                 then it docks back to the bottom of the chat. -->
+            <div class="composer-slot" id="composerSlot"></div>
 
             <!-- Outcome mode: the user names the result, Nutaan Swarm picks the team and the workflow. -->
             <div class="outcome-chips" id="outcomeChips" hidden></div>
@@ -156,6 +159,7 @@
               <div class="today-head">
                 <span class="today-date" id="todayDate"></span>
                 <span class="today-headline" id="todayHeadline"></span>
+                <button class="today-toggle" id="todayToggle" type="button" title="Show or hide the cards"><span id="todayToggleLabel">Show</span> <span class="today-chev">▾</span></button>
                 <button class="icon-btn tiny" id="todayRefresh" title="Recompute from the project">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4.5V10h-5.4"/></svg>
                 </button>
@@ -866,6 +870,52 @@
   </div>
 </div>
 
+<!-- First run, right after the key is accepted: who is this for, and how should it work. Both
+     answers change the app — the role goes into every new chat's system prompt, the mode decides
+     whether the code panel is in the way. -->
+<div class="overlay ob-overlay" id="obOverlay" hidden>
+  <div class="ob">
+    <div class="ob-left">
+      <div class="ob-progress"><span class="ob-seg on" data-seg="0"></span><span class="ob-seg" data-seg="1"></span></div>
+
+      <section class="ob-step" data-step="0">
+        <h2>What do you do?</h2>
+        <p class="ob-lead">Choose the closest match to your everyday work. Nutaan Code explains things and picks defaults for that kind of work.</p>
+        <div class="ob-grid" id="obRoles"></div>
+      </section>
+
+      <section class="ob-step" data-step="1" hidden>
+        <h2>How should it work for you?</h2>
+        <p class="ob-lead">You can switch any time from Settings.</p>
+        <div class="ob-modes">
+          <button type="button" class="ob-mode" data-uimode="coding">
+            <span class="ob-mode-icon">‹/›</span>
+            <span class="ob-mode-name">Coding workspace</span>
+            <span class="ob-mode-desc">Project explorer, code panel, terminal and browser beside the chat. Built for people who read diffs.</span>
+          </button>
+          <button type="button" class="ob-mode" data-uimode="office">
+            <span class="ob-mode-icon">☰</span>
+            <span class="ob-mode-name">Co-worker mode</span>
+            <span class="ob-mode-desc">Chat first, files and design in front, the code panel out of the way until you ask for it.</span>
+          </button>
+        </div>
+      </section>
+
+      <div class="ob-actions">
+        <button type="button" class="link-btn" id="obBack" hidden>Back</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn-primary" id="obNext">Next</button>
+      </div>
+    </div>
+    <div class="ob-right">
+      <img class="ob-mark" src="../assets/logo.png" alt="" />
+      <div class="ob-tag">Nutaan Code</div>
+      <h3 id="obRightTitle">Build, design, and get work done — with the model you already pay for.</h3>
+      <p id="obRightSub">One key, every model on nutaan.com. Nothing else to install.</p>
+    </div>
+  </div>
+</div>
+
 <div class="overlay" id="gitOverlay" hidden>
   <div class="modal">
     <h3>Commit &amp; push</h3>
@@ -1031,6 +1081,10 @@
       <button class="settings-tab" data-tab="tools" type="button">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4l-6 6a1.5 1.5 0 0 0 2 2l6-6a4 4 0 0 0 5.4-5.4l-2.3 2.3-2-2 2.3-2.3z"/></svg>
         Tools
+      </button>
+      <button class="settings-tab" data-tab="skills" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/></svg>
+        Skills
       </button>
       <button class="settings-tab" data-tab="agentbridge" type="button">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
@@ -1349,6 +1403,19 @@
         </div>
 
         <!-- TAB: ADVANCED -->
+        <div class="settings-page" data-page="skills" hidden>
+          <section class="settings-section">
+            <div class="sk-head">
+              <input class="sk-search" id="skillSearch" type="search" placeholder="Search skills…" spellcheck="false" />
+              <span class="sk-count" id="skillCount"></span>
+              <span class="spacer"></span>
+              <button class="btn-secondary" id="skillRefresh" type="button">Refresh</button>
+              <button class="btn-secondary" id="skillOpenUser" type="button" title="Drop a folder with a SKILL.md here and it shows up on refresh">Add a skill…</button>
+            </div>
+            <div class="note">Every skill the agent can load with use_skill, in the order it looks: built in, then your Claude Code skills, then this project's. A skill is a folder with a SKILL.md — drop one in and press Refresh.</div>
+            <div class="sk-list" id="skillList"></div>
+          </section>
+        </div>
         <div class="settings-page" data-page="advanced" hidden>
           <details class="advanced" id="advancedDetails" open>
             <summary>Image model</summary>

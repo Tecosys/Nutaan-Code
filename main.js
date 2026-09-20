@@ -1192,6 +1192,9 @@ ipcMain.handle("arsenal:quick-recon", async (_e, target, type = "all") => {
 const APP_SKILLS_DIR = path.join(__dirname, "skills");
 
 function parseSkillFile(raw) {
+  // A Windows checkout (or a skill written in Notepad) has CRLF line endings; without this the
+  // frontmatter never matches and every skill loses its name and description.
+  raw = String(raw || "").replace(/\r\n?/g, "\n");
   const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!match) return { name: null, description: null, body: raw.trim() };
   const meta = {};
@@ -6254,6 +6257,19 @@ ipcMain.handle("reclaim:uninstall", (_e, id) => reclaim.uninstall(id));
 const designCall = async (fn) => { try { return await fn(); } catch (err) { return { error: err.message }; } };
 ipcMain.handle("design:list", () => designCall(() => design.list()));
 ipcMain.handle("design:presets", () => design.presets());
+
+// The Skills page: everything the agent can use_skill, with where each one came from, so the
+// list is the same one list_skills gives the model — not a second, hand-maintained catalogue.
+ipcMain.handle("skills:list", async (_e, root) => {
+  const dirs = skillSearchDirs(root || os.homedir());
+  const labels = ["Built in", "Claude Code (user)", "Project (.claude)", "Project (.nutaan)"];
+  const byId = new Map();
+  for (let i = 0; i < dirs.length; i++) {
+    for (const s of await listSkillsIn(dirs[i])) byId.set(s.id, { ...s, source: labels[i], dir: path.join(dirs[i], s.id) });
+  }
+  return { skills: [...byId.values()].sort((a, b) => a.id.localeCompare(b.id)), dirs: dirs.map((d, i) => ({ dir: d, label: labels[i] })) };
+});
+ipcMain.handle("skills:open-folder", async (_e, dir) => { try { await fs.mkdir(dir, { recursive: true }); } catch {} return shell.openPath(dir); });
 ipcMain.handle("design:create", (_e, spec) => designCall(() => design.create(spec || {})));
 ipcMain.handle("design:read", (_e, id) => designCall(() => design.read(id)));
 ipcMain.handle("design:remove", (_e, id) => designCall(() => design.remove(id)));

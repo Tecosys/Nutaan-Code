@@ -167,6 +167,10 @@ contextBridge.exposeInMainWorld("nutaan", {
       return () => ipcRenderer.removeListener("reclaim:review", listener);
     },
   },
+  skills: {
+    list: (root) => ipcRenderer.invoke("skills:list", root),
+    openFolder: (dir) => ipcRenderer.invoke("skills:open-folder", dir),
+  },
   design: {
     list: () => ipcRenderer.invoke("design:list"),
     presets: () => ipcRenderer.invoke("design:presets"),

@@ -431,7 +431,128 @@
     activationOverlay.hidden = true;
     activationError.hidden = true;
     renderAccountRow();
+    // The first time a key is accepted, ask who this is for before the app opens.
+    if (!settings.onboarded) showOnboarding();
     await refreshModels();
+  }
+
+  // ---------- First run ----------
+  // Two answers, both of which change the app: the role is written into every new chat's system
+  // prompt so the agent explains things at the right level and picks the right defaults, and the
+  // mode decides whether the code panel is on screen at all.
+  const ROLES = [
+    { id: "software", label: "Software / Data / AI", icon: "‹/›", mode: "coding" },
+    { id: "founder", label: "Entrepreneurship / Freelancing / OPC", icon: "▲", mode: "office" },
+    { id: "qa", label: "QA / Operations / Security", icon: "◈", mode: "coding" },
+    { id: "product", label: "Product / Project / Solutions", icon: "▦", mode: "coding" },
+    { id: "design", label: "UI / UX / Visual Design", icon: "✎", mode: "office" },
+    { id: "student", label: "Students / Teaching / Research", icon: "≡", mode: "office" },
+    { id: "finance", label: "Finance / Accounting / Consulting", icon: "₹", mode: "office" },
+    { id: "media", label: "Media / Content Creation", icon: "▶", mode: "office" },
+    { id: "ops", label: "Operations / Commerce / Customer Service", icon: "◧", mode: "office" },
+    { id: "marketing", label: "Marketing / Brand / PR", icon: "◎", mode: "office" },
+    { id: "legal", label: "Legal / Administration / HR", icon: "§", mode: "office" },
+    { id: "other", label: "Other professions", icon: "…", mode: "office" },
+  ];
+  const obOverlay = el("obOverlay");
+  const obNext = el("obNext");
+  const obBack = el("obBack");
+  let obStep = 0;
+  let obRole = null;
+  let obMode = "coding";
+
+  function showOnboarding() {
+    const grid = el("obRoles");
+    grid.innerHTML = ROLES.map((r) =>
+      `<button type="button" class="ob-role${r.id === settings.role ? " selected" : ""}" data-role="${r.id}">
+         <span class="ob-role-icon">${r.icon}</span><span class="ob-role-name">${escapeHtml(r.label)}</span><span class="ob-role-radio"></span>
+       </button>`).join("");
+    obRole = ROLES.find((r) => r.id === settings.role) || null;
+    obMode = settings.uiMode || "coding";
+    obShow(0);
+    obOverlay.hidden = false;
+  }
+
+  function obShow(i) {
+    obStep = i;
+    obOverlay.querySelectorAll(".ob-step").forEach((s) => { s.hidden = Number(s.dataset.step) !== i; });
+    obOverlay.querySelectorAll(".ob-seg").forEach((s) => s.classList.toggle("on", Number(s.dataset.seg) <= i));
+    obBack.hidden = i === 0;
+    obNext.textContent = i === 0 ? "Next" : "Start";
+    if (i === 1) obOverlay.querySelectorAll(".ob-mode").forEach((m) => m.classList.toggle("selected", m.dataset.uimode === obMode));
+    el("obRightTitle").textContent = i === 0
+      ? "Build, design, and get work done — with the model you already pay for."
+      : obMode === "office" ? "Chat first. Code only when you ask for it." : "The whole workshop, beside the chat.";
+  }
+
+  obOverlay.addEventListener("click", (e) => {
+    const role = e.target.closest(".ob-role");
+    if (role) {
+      obRole = ROLES.find((r) => r.id === role.dataset.role) || null;
+      obMode = obRole ? obRole.mode : obMode;
+      obOverlay.querySelectorAll(".ob-role").forEach((b) => b.classList.toggle("selected", b === role));
+      return;
+    }
+    const mode = e.target.closest(".ob-mode");
+    if (mode) {
+      obMode = mode.dataset.uimode;
+      obOverlay.querySelectorAll(".ob-mode").forEach((b) => b.classList.toggle("selected", b === mode));
+      el("obRightTitle").textContent = obMode === "office" ? "Chat first. Code only when you ask for it." : "The whole workshop, beside the chat.";
+    }
+  });
+  obBack.addEventListener("click", () => obShow(0));
+  obNext.addEventListener("click", async () => {
+    if (obStep === 0) {
+      if (!obRole) { el("obRoles").classList.add("shake"); setTimeout(() => el("obRoles").classList.remove("shake"), 400); return; }
+      obShow(1);
+      return;
+    }
+    settings.role = obRole.id;
+    settings.roleLabel = obRole.label;
+    settings.uiMode = obMode;
+    settings.onboarded = true;
+    await window.nutaan.setSettings(settings);
+    obOverlay.hidden = true;
+    applyUiMode();
+    // The system prompt of the chat that is already open predates the answer; refresh it.
+    const chat = activeChat();
+    if (chat && chat.messages.length <= 1 && activePath) chat.messages = [{ role: "system", content: systemPrompt(activePath) }];
+  });
+
+  // Co-worker mode keeps the code panel out of the way until something opens it, and greets the
+  // person in their own terms. Coding mode is the app as it always was.
+  // The greeting is the time of day and, in co-worker mode, the person's own line of work.
+  function greeting() {
+    const h = new Date().getHours();
+    return h < 5 ? "Working late" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+  }
+  // The home greeting for the mode, written once here so nothing else on the page overwrites it.
+  function renderHomeCopy() {
+    const t = el("emptyTitle"), sub = el("emptySub");
+    if (!t || !sub) return;
+    if (settings.uiMode === "office") {
+      t.textContent = `${greeting()} — what are we getting done?`;
+      sub.textContent = settings.roleLabel ? `Your AI co-worker for ${settings.roleLabel.toLowerCase()}. It does the work and shows you the result.` : "Your AI co-worker. It does the work and shows you the result.";
+    } else {
+      t.innerHTML = `${greeting()}. <span class="grad-text">Build anything.</span>`;
+      sub.textContent = "Your AI coding agent that understands your entire project.";
+    }
+  }
+  function applyUiMode() {
+    const office = settings.uiMode === "office";
+    appEl.classList.toggle("office-mode", office);
+    const today = el("todaySection");
+    if (office) {
+      panel.hidden = true;
+      resizer.hidden = true;
+      input.placeholder = "What can I take off your plate? @ to add a file, / for commands";
+      if (today) today.hidden = true; // git and test cards are a coding-mode thing
+    } else {
+      input.placeholder = "Ask Nutaan Code anything, @ to add context, / for commands";
+    }
+    renderHomeCopy();
+    renderQuickActions();
+    placeComposer();
   }
 
   function renderAccountRow() {
@@ -1184,6 +1305,15 @@
     panel.hidden = false;
     resizer.hidden = false;
     if (mode) setPanelMode(mode);
+    if (!settings.panelOpen) { settings.panelOpen = true; window.nutaan.setSettings(settings).catch(() => {}); }
+  }
+
+  // The agent never opens the panel. Files it touches, pages it visits and processes it starts
+  // land in the panel's tabs in the background; if the panel is already open its tab switches to
+  // follow the work, and if it is closed it stays closed until you open it. A panel that keeps
+  // sliding open on its own is the single most-complained-about thing in this app.
+  function autoOpenPanel(mode) {
+    if (mode && !panel.hidden) setPanelMode(mode);
   }
 
   function renderFileTabs() {
@@ -1344,12 +1474,12 @@
     else openFiles.push({ path: absPath, content: res.content, external: true });
     if (openFiles.length > 8) openFiles.shift();
     activeFilePath = absPath;
-    openPanel("code");
+    autoOpenPanel("code");
     renderFileTabs();
     renderCodeView();
   }
 
-  async function openFileInPanel(relPath, { focus = true, diff = false } = {}) {
+  async function openFileInPanel(relPath, { focus = true, diff = false, fromAgent = false } = {}) {
     if (!activePath) return;
     let content;
     try {
@@ -1373,7 +1503,7 @@
     const treeRow = fileTreeEl.querySelector(`.tree-row[data-path="${CSS.escape(relPath)}"]`);
     if (treeRow) treeRow.classList.add("active");
 
-    openPanel("code");
+    if (focus && !fromAgent) openPanel("code"); else autoOpenPanel("code");
     renderFileTabs();
     renderCodeView();
   }
@@ -1480,11 +1610,15 @@
   panelCloseBtn.addEventListener("click", () => {
     panel.hidden = true;
     resizer.hidden = true;
+    settings.panelOpen = false;
+    window.nutaan.setSettings(settings).catch(() => {});
   });
   panelToggleBtn.addEventListener("click", () => {
     const show = panel.hidden;
     panel.hidden = !show;
     resizer.hidden = !show;
+    settings.panelOpen = show;
+    window.nutaan.setSettings(settings).catch(() => {});
     if (show && panelMode === "browser" && browserTabs.length === 0) addBrowserTab("about:blank");
   });
 
@@ -1731,17 +1865,19 @@
     loadbar.classList.add("active");
   }
 
+  let userDrivenNav = false;
   function navigateBrowser(value) {
     const url = normalizeUrl(value);
     if (!url) return;
-    openPanel("browser");
+    if (userDrivenNav) openPanel("browser"); else autoOpenPanel("browser");
+    userDrivenNav = false;
     const tab = activeBrowserTab() || addBrowserTab(url);
     tab.url = url;
     tab.view.src = url;
   }
 
   browserAddress.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") navigateBrowser(browserAddress.value);
+    if (e.key === "Enter") { userDrivenNav = true; navigateBrowser(browserAddress.value); }
   });
   browserBack.addEventListener("click", () => {
     const v = activeWebview();
@@ -1831,7 +1967,7 @@
       const btn = document.createElement("button");
       btn.className = "bookmark";
       btn.innerHTML = `<span class="dot" style="background:${b.hue}"></span><span>${escapeHtml(b.label)}</span>`;
-      btn.addEventListener("click", () => navigateBrowser(b.url));
+      btn.addEventListener("click", () => { userDrivenNav = true; navigateBrowser(b.url); });
       bookmarksEl.appendChild(btn);
     }
   }
@@ -1843,6 +1979,23 @@
     emptyState.hidden = hasContent || coworker;
     if (coworkerHero) coworkerHero.hidden = hasContent || !coworker;
     renderOutcomeEmpty();
+    placeComposer();
+  }
+
+  // Home puts the composer under the greeting, in the middle of the screen, the way a search box
+  // sits on a start page; the moment the conversation has content it docks to the bottom.
+  const composerSlot = el("composerSlot");
+  const chatMain = document.querySelector("main.chat");
+  function placeComposer() {
+    const composerWrap = document.querySelector(".composer-wrap"); // declared later in this file; looked up, not captured
+    if (!composerWrap || !composerSlot || !chatMain) return;
+    const home = !emptyState.hidden && sidebarView !== "coworker";
+    if (home) {
+      if (composerWrap.parentElement !== composerSlot) composerSlot.appendChild(composerWrap);
+    } else if (composerWrap.parentElement !== chatMain) {
+      chatMain.appendChild(composerWrap);
+    }
+    chatMain.classList.toggle("home", home);
   }
 
   // Outcome-oriented starters for the co-worker landing — clicking one drops it into the composer,
@@ -3146,9 +3299,26 @@
     },
   ];
 
+  // Co-worker mode starts from outcomes, not code tasks. Each one is real work the app can do
+  // end to end: the Design canvas, documents, decks, research, files on this computer.
+  const OFFICE_ACTIONS = [
+    { title: "Design a website", desc: "A clickable multi-page prototype, in the Design canvas.", prompt: "Design a website for ", color: "rgba(168,85,247,0.14)",
+      icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#c084fc" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5"/></svg>' },
+    { title: "Write a document", desc: "A proposal, report or memo, typeset and exportable.", prompt: "Write a document: ", color: "rgba(96,165,250,0.14)",
+      icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linecap="round"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/></svg>' },
+    { title: "Make a deck", desc: "Slides that carry an argument, one idea per slide.", prompt: "Make a slide deck about ", color: "rgba(244,114,182,0.14)",
+      icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#f472b6" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M12 17v4M8 21h8"/></svg>' },
+    { title: "Research something", desc: "Reads the web, checks sources, reports back.", prompt: "Research and summarise: ", color: "rgba(52,211,153,0.14)",
+      icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2"/></svg>' },
+    { title: "Sort out my files", desc: "Find, organise or summarise documents on this computer.", prompt: "On this computer, ", color: "rgba(251,191,36,0.14)",
+      icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="2" stroke-linecap="round"><path d="M3 7a2 2 0 0 1 2-2h3.6l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>' },
+    { title: "Draft an email", desc: "Says what you mean, in your tone, ready to send.", prompt: "Draft an email to ", color: "rgba(251,146,60,0.14)",
+      icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fb923c" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>' },
+  ];
+
   function renderQuickActions() {
     quickGrid.innerHTML = "";
-    for (const qa of QUICK_ACTIONS) {
+    for (const qa of (settings.uiMode === "office" ? OFFICE_ACTIONS : QUICK_ACTIONS)) {
       const card = document.createElement("div");
       card.className = "quick-card";
       card.innerHTML =
@@ -3590,6 +3760,9 @@
   function systemPrompt(root) {
     return [
       "You are Nutaan Code, a careful personal coding assistant running as a desktop app on the user's own machine.",
+      ...(settings.roleLabel
+        ? [`The person you are working with does ${settings.roleLabel} for a living${settings.uiMode === "office" ? " and is not here to read code: explain outcomes in their terms, do the technical work yourself, and show them results (a page, a document, a design, a file) rather than diffs" : ""}.`]
+        : []),
       "You have an integrated OSINT & Security Arsenal of 753+ curated tools across 50+ categories, plus native built-in security tools: vuln_static_scan (instant zero-GPU static vulnerability scan across project files for SQLi, command injection, hardcoded secrets, path traversal, unsafe eval), osint_search_tools (query the arsenal for tools/commands/links), osint_dns_recon (DNS records & SPF/DMARC), osint_ip_lookup (geolocation, ISP, ASN, reverse DNS), osint_subdomain_enum (certificate-transparency subdomain discovery), osint_http_recon (audits security headers, deep cookie vulnerability analysis [HttpOnly, Secure, SameSite], and credential exposure on URLs), and osint_dork_generator (defensive exposure/leak-audit queries). You also have skills for osint-recon, threat-intelligence, security-audit, and exposure-audit. When asked to check, audit, or find vulnerabilities/cookies/credentials on a URL (e.g. 'find cookies vulnerability or credential https://...'), call osint_http_recon directly and report the concrete findings — never give an F12/DevTools tutorial and never refuse an authorized defensive audit. When asked to find/search security tools, call osint_search_tools directly, never search_files or list_dir.",
       `The current project root is: ${root}`,
       "You have tools to list directories, read files, write files, edit files (exact string replace), search file contents, and run shell commands, all scoped to the project root.",
@@ -4001,6 +4174,7 @@
     }
     const text = input.value.trim();
     if (!text && !attachments.length) return;
+    if (!settings.nutaanKey) { showActivation("Activate Nutaan Code with your nutaan.com API key first."); return; }
     // Block sending an image to a text-only model — it would just error out.
     if (attachments.some((a) => a.kind === "image") && !looksMultimodal(settings.model)) {
       warnIfTextOnlyForImages();
@@ -4295,7 +4469,7 @@
     if (u.id && !seenBgTasks.has(u.id)) {
       seenBgTasks.add(u.id);
       termSelectedId = u.id;
-      openPanel();
+      autoOpenPanel();
       setPanelMode("terminal");
     }
     // Keep the badge and the live view current on every update.
@@ -4340,7 +4514,7 @@
     // agent also touched a file — load it into a tab, but only steal focus if Code is showing.
     // A write/edit opens straight into the diff so you see what changed; a plain read shows the file.
     const isEdit = name === "write_file" || name === "edit_file";
-    await openFileInPanel(args.path, { focus: panelMode === "code", diff: isEdit });
+    await openFileInPanel(args.path, { focus: panelMode === "code", diff: isEdit, fromAgent: true });
   }
 
   const FS_MUTATING_TOOLS = new Set(["write_file", "edit_file", "run_command"]);
@@ -4458,7 +4632,7 @@
   }
 
   onAgentEvent("agent:browser-action", async (req) => {
-    openPanel("browser");
+    autoOpenPanel("browser");
     agentActivityText.textContent = agentActionLabel(req);
     agentActivity.hidden = false;
     if (browserTabs.length === 0) addBrowserTab("about:blank");
@@ -4683,6 +4857,7 @@
       models: "Models Catalog",
       providers: "Model Providers",
       tools: "Tools & Integrations",
+      skills: "Skills",
       agentbridge: "AgentBridge (Internal MITM)",
       advanced: "Advanced Settings"
     };
@@ -4694,7 +4869,56 @@
     if (tabId === "providers") renderProviders();
     if (tabId === "tools") { if (typeof renderTools === "function") renderTools(); }
     if (tabId === "agentbridge") renderAgentBridgeTab();
+    if (tabId === "skills") renderSkillsPage();
   }
+
+  // ---------- Skills page ----------
+  // The same catalogue list_skills hands the model, grouped by where each skill lives.
+  let _skillsCache = null;
+  async function renderSkillsPage(force) {
+    const list = el("skillList");
+    if (!list) return;
+    if (!_skillsCache || force) {
+      list.innerHTML = `<div class="sk-empty">Looking for skills…</div>`;
+      try { _skillsCache = await window.nutaan.skills.list(activePath || null); }
+      catch (e) { list.innerHTML = `<div class="sk-empty">${escapeHtml(e.message)}</div>`; return; }
+    }
+    const q = (el("skillSearch").value || "").trim().toLowerCase();
+    const all = _skillsCache.skills || [];
+    const shown = q ? all.filter((k) => (k.id + " " + k.name + " " + k.description).toLowerCase().includes(q)) : all;
+    el("skillCount").textContent = q ? `${shown.length} of ${all.length}` : `${all.length} skills`;
+    const groups = new Map();
+    for (const d of _skillsCache.dirs || []) groups.set(d.label, { dir: d.dir, items: [] });
+    for (const k of shown) (groups.get(k.source) || groups.set(k.source, { dir: "", items: [] }).get(k.source)).items.push(k);
+    list.innerHTML = "";
+    for (const [label, g] of groups) {
+      if (!g.items.length && (q || label === "Built in")) continue;
+      const sec = document.createElement("div");
+      sec.className = "sk-group";
+      sec.innerHTML = `<div class="sk-group-h">${escapeHtml(label)} <span class="n">${g.items.length}</span>` +
+        (g.dir ? `<button class="link-btn" data-dir="${escapeHtml(g.dir)}" type="button">Open folder</button>` : "") + `</div>` +
+        (g.items.length
+          ? g.items.map((k) => `
+            <div class="sk-row" title="${escapeHtml(k.dir || "")}">
+              <span class="sk-icon">${escapeHtml((k.name || k.id).slice(0, 1).toUpperCase())}</span>
+              <div><div class="sk-name">${escapeHtml(k.id)}</div><div class="sk-desc">${escapeHtml(k.description || "No description in SKILL.md")}</div></div>
+              <span class="sk-src">${escapeHtml(label)}</span>
+            </div>`).join("")
+          : `<div class="sk-empty">Nothing here yet — a folder with a SKILL.md in ${escapeHtml(g.dir)} shows up on refresh.</div>`);
+      list.appendChild(sec);
+    }
+    if (!shown.length) list.innerHTML = `<div class="sk-empty">No skill matches "${escapeHtml(q)}".</div>`;
+  }
+  el("skillSearch")?.addEventListener("input", () => renderSkillsPage());
+  el("skillRefresh")?.addEventListener("click", () => renderSkillsPage(true));
+  el("skillOpenUser")?.addEventListener("click", async () => {
+    const user = (_skillsCache?.dirs || []).find((d) => /user/i.test(d.label)) || (_skillsCache?.dirs || [])[1];
+    if (user) await window.nutaan.skills.openFolder(user.dir);
+  });
+  el("skillList")?.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-dir]");
+    if (b) window.nutaan.skills.openFolder(b.dataset.dir);
+  });
 
   document.querySelectorAll(".settings-tab").forEach((btn) => {
     btn.addEventListener("click", (e) => {
@@ -6241,7 +6465,7 @@
     if (!activePath) { todaySection.hidden = true; return; }
     const token = ++todayToken;
     const root = activePath;
-    todaySection.hidden = false;
+    todaySection.hidden = settings.uiMode === "office";
     el("todayDate").textContent = new Date().toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" });
     if (!autonomous.today || autonomous.today.root !== root) {
       el("todayHeadline").textContent = "Reading the project…";
@@ -6293,6 +6517,19 @@
     }
   }
   el("todayRefresh").addEventListener("click", () => loadToday({ force: true }));
+  // The cards fold away by default so the home stays a greeting and a box; the headline still
+  // says what is going on, and one click opens the cards. Remembered.
+  function renderTodayFold() {
+    const open = !!settings.todayExpanded;
+    todaySection.classList.toggle("collapsed", !open);
+    el("todayToggleLabel").textContent = open ? "Hide" : "Show";
+  }
+  el("todayToggle").addEventListener("click", async () => {
+    settings.todayExpanded = !settings.todayExpanded;
+    renderTodayFold();
+    await window.nutaan.setSettings(settings);
+  });
+  renderTodayFold();
 
   // ---------- Outcome mode + Nutaan Swarm ----------
   const OUTCOMES = [
@@ -6323,8 +6560,7 @@
       emptyTitle.innerHTML = `What <span class="grad-text">outcome</span> do you want?`;
       emptySub.textContent = "Name the result, not the steps. Nutaan Swarm plans it, splits it across Planner · Developer · Browser QA · Researcher · Reviewer · DevOps, runs them in parallel and merges one report.";
     } else {
-      emptyTitle.innerHTML = `Build anything with <span class="grad-text">Nutaan Code</span>`;
-      emptySub.textContent = "Your AI coding agent that understands your entire project.";
+      renderHomeCopy();
     }
     outcomeChips.hidden = !outcome;
     quickGrid.hidden = outcome;
@@ -6486,6 +6722,9 @@
     renderBrowserTabs();
     setBrowserSize("desktop");
     setPanelMode("code");
+    // The panel opens when you open it, and comes back the way you left it — never on its own.
+    panel.hidden = !settings.panelOpen;
+    resizer.hidden = !settings.panelOpen;
     if (settings.sidebarCollapsed) appEl.classList.add("sidebar-collapsed");
 
     if (Array.isArray(saved.projects) && saved.projects.length) {
@@ -6531,6 +6770,12 @@
     loadWorkers();
     loadHealth();
     if (activePath) loadToday();
+
+    // Nothing works without a nutaan.com key: the activation screen is the only thing on screen
+    // until one is accepted, and the first accepted key leads straight into first-run setup.
+    if (!settings.nutaanKey) showActivation("");
+    else if (!settings.onboarded) showOnboarding();
+    applyUiMode();
 
     await refreshModels();
   })();
