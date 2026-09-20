@@ -240,6 +240,7 @@ contextBridge.exposeInMainWorld("nutaan", {
   sendAgentMessage: (payload) => ipcRenderer.send("agent:send", payload),
   stopAgent: (chatId) => ipcRenderer.send("agent:stop", chatId || null),
   respondToPermission: (id, approved) => ipcRenderer.send("agent:permission-response", { id, approved }),
+  outreachDecision: (payload) => ipcRenderer.send("outreach:decision", payload),
   respondToBrowserAction: (id, result) => ipcRenderer.send("agent:browser-action-response", { id, result }),
   onAgentEvent: (channel, callback) => {
     const valid = [
@@ -252,6 +253,7 @@ contextBridge.exposeInMainWorld("nutaan", {
       "agent:tool-start",
       "agent:tool-result",
       "agent:permission-request",
+      "agent:outreach-review",
       "agent:browser-action",
       "agent:compacting",
       "agent:retrying",

@@ -145,6 +145,7 @@
   let running = false;
   const runs = new Map(); // chatId -> { activity }
   let threadChatId = null; // the chat the thread on screen was built for
+  let threadPartial = false; // it was drawn from a mid-run snapshot and needs the finished transcript
   let sidebarView = "files"; // files | chats | recent
 
   // Every agent event carries the chat it belongs to. Events for the chat on screen go to the
@@ -161,6 +162,7 @@
       if (found) {
         if (channel === "agent:done" && data.messages) found.chat.messages = data.messages;
         if (channel === "agent:error" && data.message) found.chat.lastError = data.message;
+        delete found.chat.live;
         found.chat.updatedAt = new Date().toISOString();
         found.chat.unread = true;
         persistProjects();
@@ -170,13 +172,32 @@
     }
     const run = runs.get(data.chatId);
     if (!run) return;
-    if (channel === "agent:tool-start" || channel === "agent:tool-pending") run.activity = toolLabel(data.name, data.args).replace(/<[^>]+>/g, "");
+    if (channel === "agent:tool-start" || channel === "agent:tool-pending") run.activity = toolLabel(data.name, data.args || {}).replace(/<[^>]+>/g, "");
     if (channel === "agent:retrying") run.activity = "Retrying…";
     if (channel === "agent:compacting") run.activity = "Compacting…";
     renderExplorer();
   }
+  // What a run has done so far, kept in the shape of messages for every running chat — the one
+  // on screen too — so switching away and back redraws every tool call and reply in order. The
+  // finished transcript from agent:done replaces it.
+  function recordLive(channel, data) {
+    const found = data && data.chatId && runs.has(data.chatId) ? chatById(data.chatId) : null;
+    if (found) {
+      const live = found.chat.live || (found.chat.live = []);
+      const last = live[live.length - 1];
+      if (channel === "agent:assistant-delta" && data.content) {
+        if (last && last.role === "assistant" && !last.tool_calls) last.content = (last.content || "") + data.content;
+        else live.push({ role: "assistant", content: data.content });
+      } else if (channel === "agent:tool-start" && data.id) {
+        live.push({ role: "assistant", content: null, tool_calls: [{ id: data.id, type: "function", function: { name: data.name, arguments: JSON.stringify(data.args || {}) } }] });
+      } else if (channel === "agent:tool-result" && data.id) {
+        live.push({ role: "tool", tool_call_id: data.id, content: JSON.stringify(data.result || {}) });
+      }
+    }
+  }
   const onAgentEvent = (channel, handler) =>
     window.nutaan.onAgentEvent(channel, (data) => {
+      recordLive(channel, data);
       const mine = !data || !data.chatId || !activeChat() || data.chatId === activeChat().id;
       if (!mine) return backgroundEvent(channel, data);
       handler(data);
@@ -2125,7 +2146,9 @@
   document.body.appendChild(railTip);
   function renderChatRail() {
     if (!chatRail) return;
-    railBlocks = [...thread.children].filter((c) => !c.hidden && c.id !== "emptyState" && c.id !== "coworkerHero" && !c.classList.contains("thinking-row") && !c.classList.contains("sys-line"));
+    // One mark per turn — the things you asked — not per tool call or reply. A chat with one
+    // prompt has nowhere to jump to, so the rail waits for the second.
+    railBlocks = [...thread.children].filter((c) => !c.hidden && c.classList.contains("row") && c.classList.contains("user"));
     if (railBlocks.length < 2) { chatRail.innerHTML = ""; return; }
     chatRail.innerHTML = railBlocks.slice(0, 80).map((b, i) =>
       `<button type="button" class="rail-dot${b.classList.contains("user") ? " you" : ""}" data-i="${i}"></button>`).join("");
@@ -2148,7 +2171,9 @@
     if (!chatRail || !chatRail.childElementCount) return;
     const mid = threadScroll.scrollTop + threadScroll.clientHeight / 2;
     let best = 0, bestD = Infinity;
-    railBlocks.forEach((b, i) => { const d = Math.abs(b.offsetTop + b.offsetHeight / 2 - mid); if (d < bestD) { bestD = d; best = i; } });
+    // The turn in view is the last prompt at or above the middle of the screen.
+    railBlocks.forEach((b, i) => { if (b.offsetTop <= mid) best = i; });
+    void bestD;
     [...chatRail.children].forEach((d, i) => d.classList.toggle("active", i === best));
   }
   threadScroll.addEventListener("scroll", updateRailActive, { passive: true });
@@ -4106,8 +4131,9 @@
     if (chat) chat.unread = false;
     renderNav();
     renderExplorer();
-    renderThreadFromMessages(chat.messages);
+    renderThreadFromMessages(runs.has(chat.id) && chat.live ? [...chat.messages, ...chat.live] : chat.messages);
     threadChatId = chat.id;
+    threadPartial = runs.has(chat.id);
     // Landing in a chat that is still working: the transcript so far, then the live indicator.
     // Its new events stream in from here; the full history lands when it finishes.
     setRunning(runs.has(chat.id));
@@ -4693,7 +4719,7 @@
       "check_background_task", "list_background_tasks", "cleanup_storage", "os_system_stats",
     ];
     if (visibleTools.includes(name)) appendToolCard(id, name, args);
-    runActivity.textContent = toolLabel(name, args).replace(/<[^>]+>/g, "");
+    runActivity.textContent = toolLabel(name, args || {}).replace(/<[^>]+>/g, "");
   });
 
   onAgentEvent("agent:tool-arg-stream", ({ id, name, path, text }) => {
@@ -4717,6 +4743,63 @@
     const body = card.querySelector(".live-write-body");
     body.textContent = text;
     body.scrollTop = body.scrollHeight;
+    scrollToBottom();
+  });
+
+  // ---------- Outreach review: the gate every message passes through ----------
+  // One row per person: who, why they fit, the message (editable). Tick the ones to send, fix
+  // the wording where it is off, and only those go — in that order, one at a time.
+  onAgentEvent("agent:outreach-review", ({ id, campaign, channel, items }) => {
+    hideThinking();
+    finalizeStream();
+    const wrap = document.createElement("div");
+    wrap.className = "outreach-card";
+    wrap.innerHTML = `
+      <div class="or-head">
+        <div><div class="or-title">Review before sending — ${escapeHtml(campaign)}</div>
+        <div class="or-sub">${items.length} draft${items.length === 1 ? "" : "s"} · ${escapeHtml(channel)} · nothing goes out until you approve it here</div></div>
+        <label class="or-all"><input type="checkbox" checked /> All</label>
+      </div>
+      <div class="or-list">${items.map((it, i) => `
+        <div class="or-row" data-i="${i}">
+          <label class="or-pick"><input type="checkbox" checked /></label>
+          <div class="or-body">
+            <div class="or-who"><b>${escapeHtml(it.name || "")}</b>${it.title ? ` · ${escapeHtml(it.title)}` : ""}${it.company ? ` · ${escapeHtml(it.company)}` : ""}${it.url ? ` <a href="#" class="or-link" data-url="${escapeHtml(it.url)}">profile ↗</a>` : ""}</div>
+            ${it.why ? `<div class="or-why">${escapeHtml(it.why)}</div>` : ""}
+            <textarea class="or-msg" rows="4">${escapeHtml(it.message || "")}</textarea>
+            <div class="or-count"><span>${(it.message || "").length}</span> chars</div>
+          </div>
+        </div>`).join("")}</div>
+      <div class="or-actions">
+        <button type="button" class="btn-secondary or-cancel">Cancel — send nothing</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn-primary or-send">Approve <span class="or-n">${items.length}</span> and continue</button>
+      </div>`;
+    const rows = [...wrap.querySelectorAll(".or-row")];
+    const count = () => { const n = rows.filter((r) => r.querySelector("input").checked).length; wrap.querySelector(".or-n").textContent = n; wrap.querySelector(".or-send").disabled = n === 0; };
+    wrap.querySelector(".or-all input").addEventListener("change", (e) => { rows.forEach((r) => { r.querySelector("input").checked = e.target.checked; }); count(); });
+    rows.forEach((r) => {
+      r.querySelector("input").addEventListener("change", count);
+      const ta = r.querySelector(".or-msg");
+      ta.addEventListener("input", () => { r.querySelector(".or-count span").textContent = ta.value.length; });
+    });
+    wrap.querySelectorAll(".or-link").forEach((l) => l.addEventListener("click", (e) => { e.preventDefault(); userDrivenNav = true; openPanel("browser"); navigateBrowser(l.dataset.url); }));
+    const finish = (approved, cancelled) => {
+      wrap.classList.add("resolved");
+      wrap.querySelectorAll("input, textarea, button").forEach((el2) => { el2.disabled = true; });
+      wrap.querySelector(".or-actions").innerHTML = cancelled
+        ? `<span class="or-done">Cancelled — nothing was sent.</span>`
+        : `<span class="or-done">${approved.length} approved — sending one at a time, with a pause between each.</span>`;
+      window.nutaan.outreachDecision({ id, approved, cancelled });
+      showThinking();
+    };
+    wrap.querySelector(".or-cancel").addEventListener("click", () => finish([], true));
+    wrap.querySelector(".or-send").addEventListener("click", () => {
+      const approved = rows.filter((r) => r.querySelector("input").checked).map((r) => ({ ...items[Number(r.dataset.i)], message: r.querySelector(".or-msg").value.trim() }));
+      finish(approved, false);
+    });
+    thread.appendChild(wrap);
+    renderEmptyVisibility();
     scrollToBottom();
   });
 
@@ -4925,8 +5008,9 @@
     }
     runs.delete(chatId || chat?.id);
     setRunning(false);
-    // The thread was built for another chat (you switched here mid-run): redraw from history.
-    if (chat && threadChatId !== chat.id) { renderThreadFromMessages(chat.messages); threadChatId = chat.id; }
+    // The thread was built for another chat, or from a mid-run snapshot: redraw from the finished
+    // transcript so nothing that happened is missing.
+    if (chat) { delete chat.live; if (threadChatId !== chat.id || threadPartial) { renderThreadFromMessages(chat.messages); threadChatId = chat.id; threadPartial = false; } }
     renderExplorer();
   });
 

@@ -3668,6 +3668,59 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "outreach_review",
+      description:
+        "Show the user a review card of drafted outreach messages — one row per person: who, why they fit, the message — with a checkbox and an editable message each. Blocks until the user approves, edits or skips, and returns ONLY the approved rows (with any edits). Nothing is ever sent without this step. Call it once per batch, before any sending.",
+      parameters: {
+        type: "object",
+        properties: {
+          campaign: { type: "string", description: "Short campaign name, e.g. 'Head of Eng — Nutaan Code launch'." },
+          channel: { type: "string", enum: ["linkedin", "email", "whatsapp", "other"] },
+          items: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                name: { type: "string" }, company: { type: "string" }, title: { type: "string" },
+                url: { type: "string", description: "Profile or contact URL / address to send to." },
+                why: { type: "string", description: "One line: the specific reason this person fits and the hook used." },
+                message: { type: "string", description: "The exact message to send, personalised, under 500 characters for LinkedIn." },
+              },
+              required: ["name", "message"],
+            },
+          },
+        },
+        required: ["campaign", "items"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "outreach_log",
+      description: "Record what happened to one outreach message (sent, skipped, failed, replied) in the campaign's CSV under ~/.nutaan/outreach, so the campaign is tracked across chats and never messages the same person twice. Call it right after each send attempt.",
+      parameters: {
+        type: "object",
+        properties: {
+          campaign: { type: "string" }, name: { type: "string" }, company: { type: "string" }, url: { type: "string" },
+          status: { type: "string", enum: ["sent", "skipped", "failed", "replied", "drafted"] },
+          message: { type: "string" }, note: { type: "string" },
+        },
+        required: ["campaign", "name", "status"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "outreach_history",
+      description: "Read a campaign's log (or list all campaigns): who was contacted, when, with what status. Check it BEFORE drafting so nobody is messaged twice and the daily cap is respected.",
+      parameters: { type: "object", properties: { campaign: { type: "string", description: "Omit to list campaigns." } } },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "design_export_video",
       description:
         "Render a motion artboard (preset video or vertical) to a video file, frame by frame, and hand the path back so the user can play it in the chat. The artboard is a scene whose time comes from CSS animations (and any embedded Demo Studio take placed with {{take:Name}}); its length is body data-duration in ms, or the end of its last animation. Call design_verify on the scene first so it renders clean.",
@@ -4064,6 +4117,9 @@ const PARALLEL_TOOLS = new Set([
 ]);
 
 const SAFE_TOOLS = new Set([
+  "outreach_review",
+  "outreach_log",
+  "outreach_history",
   "list_dir",
   "read_file",
   "search_files",
@@ -4151,6 +4207,26 @@ async function searchFiles(root, startRel, pattern) {
 
   await walk(startRel || ".");
   return { matches: results, truncated: results.length >= MAX_SEARCH_MATCHES };
+}
+
+// Outreach: the review card is the one gate every message passes through, and the campaign log
+// is what stops the same person being contacted twice across chats. Tab-separated so a message
+// with commas survives; one file per campaign under ~/.nutaan/outreach.
+const pendingOutreach = new Map();
+ipcMain.on("outreach:decision", (_e, { id, approved, cancelled }) => {
+  const resolve = pendingOutreach.get(id);
+  if (resolve) { resolve({ approved: Array.isArray(approved) ? approved : [], cancelled: !!cancelled }); pendingOutreach.delete(id); }
+});
+function outreachDir() { const d = path.join(os.homedir(), ".nutaan", "outreach"); fsSync.mkdirSync(d, { recursive: true }); return d; }
+function outreachFile(campaign) { return String(campaign || "outreach").replace(/[^a-z0-9 _-]+/gi, "").trim().slice(0, 60).replace(/\s+/g, "-") + ".csv"; }
+async function outreachLog({ campaign, name, company, url, status, message, note }) {
+  const file = path.join(outreachDir(), outreachFile(campaign));
+  const clean = (s) => String(s || "").replace(/[\t\r\n]+/g, " ").trim();
+  let exists = true;
+  try { await fs.access(file); } catch { exists = false; }
+  const line = [new Date().toISOString(), clean(name), clean(company), clean(url), clean(status), clean(note), clean(message)].join("\t") + "\n";
+  await fs.appendFile(file, (exists ? "" : "at\tname\tcompany\turl\tstatus\tnote\tmessage\n") + line, "utf8");
+  return { ok: true, file, status: clean(status) };
 }
 
 function requestPermission(sender, id, payload) {
@@ -4427,6 +4503,36 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
           ? "Use exactly these values in every artboard of this design."
           : "No brand is set. Ask the user for their colours and logo before you design — propose a palette and ask them to confirm. The logo is added from the Design tab (Brand → Add logo); tell them that if they have one.",
       };
+    }
+    case "outreach_review": {
+      const items = Array.isArray(args.items) ? args.items.slice(0, 100) : [];
+      if (!items.length) return { error: "No items to review." };
+      const id = "or-" + Date.now().toString(36);
+      const decision = await new Promise((resolve) => {
+        pendingOutreach.set(id, resolve);
+        sender.send("agent:outreach-review", { id, campaign: String(args.campaign || "Outreach"), channel: args.channel || "linkedin", items });
+      });
+      if (!decision || decision.cancelled) return { approved: [], skipped: items.length, cancelled: true, note: "The user cancelled — do not send anything. Ask what to change." };
+      for (const it of decision.approved) await outreachLog({ campaign: args.campaign, name: it.name, company: it.company, url: it.url, status: "drafted", message: it.message, note: "approved for sending" });
+      return { approved: decision.approved, skipped: items.length - decision.approved.length, note: decision.approved.length ? "Send ONLY these, one at a time, in this order, through the browser; call outreach_log after each with sent/failed." : "Nothing approved." };
+    }
+    case "outreach_log":
+      return outreachLog(args);
+    case "outreach_history": {
+      const dir = outreachDir();
+      if (!args.campaign) {
+        let names = [];
+        try { names = (await fs.readdir(dir)).filter((f) => f.endsWith(".csv")); } catch {}
+        return { campaigns: names.map((f) => f.replace(/\.csv$/, "")) };
+      }
+      try {
+        const rows = (await fs.readFile(path.join(dir, outreachFile(args.campaign)), "utf8")).trim().split("\n").slice(1).map((l) => {
+          const [at, name, company, url, status, note, message] = l.split("\t");
+          return { at, name, company, url, status, note, message };
+        });
+        const today = new Date().toISOString().slice(0, 10);
+        return { campaign: args.campaign, rows, sentToday: rows.filter((r) => r.status === "sent" && String(r.at).startsWith(today)).length, dailyCap: 25 };
+      } catch { return { campaign: args.campaign, rows: [], sentToday: 0, dailyCap: 25 }; }
     }
     case "design_takes":
       return { takes: (await design.takes()).map(({ id, name, seconds, width, height }) => ({ id, name, seconds, width, height })) };
@@ -5080,6 +5186,10 @@ const TOOL_FAMILIES = {
   design: {
     names: ["design_new", "design_artboard", "design_append", "design_update", "design_verify", "design_brand", "design_read", "design_list", "design_export_video", "design_takes"],
     re: /\b(design|mockup|wireframe|landing ?page|ui|ux|layout|screen|deck|slide|poster|flyer|banner|brand|logo|figma|prototype|artboard|canvas|dashboard|palette|typography)\b/i,
+  },
+  outreach: {
+    names: ["outreach_review", "outreach_log", "outreach_history"],
+    re: /\b(outreach|icp|leads?|prospects?|linkedin|cold (email|message|dm)|campaign|personali[sz]ed? (message|email)|reach out|dm)\b/i,
   },
   storage: {
     names: ["cleanup_storage", "disk_scan", "disk_review"],
