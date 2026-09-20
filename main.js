@@ -671,6 +671,17 @@ function cleanUpdateError(err) {
   return String(err?.message || "Update check failed").split("\n")[0].slice(0, 180);
 }
 
+// The places a personal workspace lives. The renderer needs these to work without a project open:
+// the Co-worker should never have to ask someone to pick a folder before it can help.
+ipcMain.handle("app:paths", () => ({
+  home: os.homedir(),
+  downloads: (() => { try { return app.getPath("downloads"); } catch { return path.join(os.homedir(), "Downloads"); } })(),
+  documents: (() => { try { return app.getPath("documents"); } catch { return path.join(os.homedir(), "Documents"); } })(),
+  desktop: (() => { try { return app.getPath("desktop"); } catch { return path.join(os.homedir(), "Desktop"); } })(),
+  sep: path.sep,
+  platform: process.platform,
+}));
+
 ipcMain.handle("app:get-version", () => app.getVersion());
 
 ipcMain.handle("app:check-for-updates", async () => {
@@ -3338,6 +3349,39 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "disk_scan",
+      description:
+        "Scan the WHOLE computer for space that can be freed, and report what is where. Use this whenever the user asks to free up space, clear disk, 'remove 100 GB', 'my laptop is full', 'make it faster' — anything about reclaiming storage. It reads caches, the recycle bin, stale temp files, old installers in Downloads, dependency folders of dormant projects, large personal files, screen recordings, machine-wide system junk, and every installed application with its size. It DELETES NOTHING — it only measures. Report the groups and their sizes, say which are safe, and then tell the user you can open the review list for them to pick from.",
+      parameters: {
+        type: "object",
+        properties: {
+          budget_seconds: { type: "number", description: "How long the scan may take. 90 by default; raise it for a thorough sweep of a large disk." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "disk_review",
+      description:
+        "Open the review sheet so the user can see every candidate, tick what goes and confirm the deletion themselves. Call this after disk_scan when the user says to go ahead ('remove it', 'clean it up', 'yes delete'). You cannot delete anything yourself — this hands the decision to the user, and the deletion happens when they confirm in that window. Pass target_gb when the user named an amount, so the sheet can show progress towards it.",
+      parameters: {
+        type: "object",
+        properties: {
+          target_gb: { type: "number", description: "How much the user asked to free, in GB, if they said a number." },
+          groups: {
+            type: "array",
+            items: { type: "string" },
+            description: "Group ids to pre-tick beyond the safe defaults: caches, trash, temp, installers, deps, big, recordings, system, apps.",
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "cleanup_storage",
       description: "Free up disk space by clearing Nutaan Code's own regenerable junk — the auto-update download cache (which stacks up old installers), the app's HTTP/GPU caches, redundant legacy caches, and stale temp files. It NEVER touches your settings, chats, knowledge base, memory, or saved browser logins. Pass dry_run:true first to preview exactly what would be removed and how much space it frees, then call it again to actually clean.",
       parameters: {
@@ -3955,6 +3999,41 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
       return { tasks: listBgTasks() };
     case "stop_background_task":
       return stopBgTask(args.id);
+    case "disk_scan": {
+      const scan = await reclaim.scan({
+        budgetMs: Math.min(240_000, Math.max(15_000, (Number(args.budget_seconds) || 90) * 1000)),
+        onProgress: (p) => emitToWindow("reclaim:progress", p),
+      });
+      const gb = (n) => Math.round((n / 1073741824) * 100) / 100;
+      // The model gets the shape and the numbers, not 300 file paths.
+      return {
+        totalGB: gb(scan.totalBytes),
+        safeGB: gb(scan.safeBytes),
+        tookSeconds: Math.round(scan.ms / 100) / 10,
+        partial: scan.partial,
+        groups: scan.groups.map((g) => ({
+          id: g.id,
+          title: g.title,
+          gb: gb(g.items.reduce((n, i) => n + i.bytes, 0)),
+          items: g.items.length,
+          safeToRemove: !!g.defaultOn,
+          hint: g.hint,
+          biggest: g.items.slice(0, 5).map((i) => ({ name: i.label, gb: gb(i.bytes), note: i.note || "" })),
+        })),
+        nextStep: "Nothing has been deleted. Call disk_review to open the list for the user to tick and confirm.",
+      };
+    }
+    case "disk_review": {
+      if (!reclaim.last) return { error: "Run disk_scan first — there is nothing to review yet." };
+      emitToWindow("reclaim:review", {
+        targetGB: Number(args.target_gb) || 0,
+        preselect: Array.isArray(args.groups) ? args.groups : [],
+      });
+      return {
+        opened: true,
+        note: "The review sheet is open. The user ticks what goes and presses delete — you cannot delete on their behalf. Tell them the sheet is open and what you suggest they tick.",
+      };
+    }
     case "cleanup_storage":
       return cleanupStorage({ dryRun: !!args.dry_run });
     case "memory_list":
@@ -4473,8 +4552,8 @@ const TOOL_FAMILIES = {
     re: /\b(knowledge ?base|kb|docs?|documentation|reference|ingest)\b|index (this|the)|remember this/i,
   },
   storage: {
-    names: ["cleanup_storage"],
-    re: /\b(storage|junk|cache)\b|disk space|free up|clean ?up|temp files/i,
+    names: ["cleanup_storage", "disk_scan", "disk_review"],
+    re: /\b(storage|junk|cache|gb|tb|space|disk|drive|uninstall|recycle|bin)\b|free up|clean ?up|temp files|full|slow/i,
   },
 };
 
@@ -5204,6 +5283,7 @@ const { Swarm } = require("./agents/swarm");
 const { Healer } = require("./agents/healer");
 const { Today } = require("./agents/today");
 const { Monitor } = require("./agents/monitor");
+const { Reclaim } = require("./agents/reclaim");
 
 async function headlessBackend(model) {
   const s = await refreshSettingsCache();
@@ -5349,6 +5429,11 @@ const today = new Today({ userDataDir, complete, log: (m) => console.log("[today
 // Device + web-app monitoring: the traffic light in the title bar, the watched URLs, and the
 // twice-weekly security scan. It reads the same live system probe the os_system_stats tool uses,
 // and runs its scans through the same arsenal the agent does — no second, weaker implementation.
+// "Free up 100 GB" — scan the whole machine, show the user exactly what would go, delete only
+// what they ticked. The instance is long-lived because a selection only means anything against
+// the scan it came from.
+const reclaim = new Reclaim({ log: (m) => console.log("[reclaim]", m) });
+
 const monitor = new Monitor({
   userDataDir,
   notify: notifyDesktop,
@@ -5793,3 +5878,27 @@ ipcMain.handle("monitor:scan-now", async () => { await monitor.runScan("manual")
 ipcMain.handle("monitor:set-enabled", (_e, on) => monitor.setEnabled(on));
 ipcMain.handle("monitor:mark-read", () => { monitor.markEventsRead(); return monitor.view(); });
 ipcMain.handle("monitor:clear-events", () => { monitor.clearEvents(); return monitor.view(); });
+
+// ---- IPC: disk reclaim ----
+ipcMain.handle("reclaim:scan", async (_e, opts) => {
+  try {
+    return await reclaim.scan({
+      ...(opts || {}),
+      onProgress: (p) => emitToWindow("reclaim:progress", p),
+    });
+  } catch (err) {
+    return { error: err.message, groups: [], totalBytes: 0 };
+  }
+});
+ipcMain.handle("reclaim:plan", (_e, paths) => {
+  const { items, refused, bytes } = reclaim.plan(paths || []);
+  return { bytes, refused, items: items.map((i) => ({ id: i.id, label: i.label, path: i.path, bytes: i.bytes, kind: i.kind || null, group: i.group })) };
+});
+ipcMain.handle("reclaim:apply", async (_e, paths) => {
+  try {
+    return await reclaim.apply(paths || [], { onProgress: (p) => emitToWindow("reclaim:progress", p) });
+  } catch (err) {
+    return { error: err.message, freed: 0, removed: 0, failed: 0, results: [] };
+  }
+});
+ipcMain.handle("reclaim:uninstall", (_e, id) => reclaim.uninstall(id));

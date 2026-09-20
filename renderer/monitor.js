@@ -196,6 +196,238 @@
     setTimeout(scanCleanup, 1500);
   }
 
+
+  // ---------- Free up space: scan → review → delete ----------
+  // The agent can open this sheet and suggest what to tick. It cannot tick anything, and it cannot
+  // press the button: every deletion on this machine goes through a human looking at this list.
+  const RC = { scan: null, selected: new Set(), busy: false, targetGB: 0 };
+
+  const rcFmt = (b) => {
+    if (!b) return "0 B";
+    if (b < 1024) return b + " B";
+    if (b < 1048576) return Math.round(b / 1024) + " KB";
+    if (b < 1073741824) return Math.round(b / 1048576) + " MB";
+    return (b / 1073741824).toFixed(2) + " GB";
+  };
+
+  function rcSelectedBytes() {
+    let n = 0;
+    for (const g of RC.scan?.groups || []) {
+      for (const i of g.items) if (RC.selected.has(i.id)) n += i.bytes;
+    }
+    return n;
+  }
+
+  function rcRenderFooter() {
+    const bytes = rcSelectedBytes();
+    const count = RC.selected.size;
+    el("rcSelected").innerHTML = count
+      ? `<b>${rcFmt(bytes)}</b> selected · ${count} item${count === 1 ? "" : "s"}`
+      : "Nothing selected";
+    el("rcDelete").disabled = !count || RC.busy;
+    el("rcDelete").textContent = count ? `Delete ${rcFmt(bytes)} permanently` : "Delete permanently";
+    if (RC.targetGB) {
+      const pct = Math.min(100, (bytes / (RC.targetGB * 1073741824)) * 100);
+      el("rcMeterFill").style.width = pct.toFixed(1) + "%";
+      el("rcMeterFill").classList.toggle("done", pct >= 100);
+      el("rcMeterLabel").textContent = `${rcFmt(bytes)} of the ${RC.targetGB} GB you asked for`;
+    }
+  }
+
+  function rcRenderGroups() {
+    const box = el("rcGroups");
+    const scan = RC.scan;
+    if (!box || !scan) return;
+    box.hidden = false;
+    el("rcScanning").hidden = true;
+    box.innerHTML = scan.groups.map((g) => {
+      const bytes = g.items.reduce((n, i) => n + i.bytes, 0);
+      if (!g.items.length) return "";
+      const isApps = g.kind === "apps";
+      const on = g.items.filter((i) => RC.selected.has(i.id)).length;
+      return `<section class="rc-group${g.defaultOn ? " safe" : ""}" data-group="${esc(g.id)}">
+          <div class="rc-g-head">
+            ${isApps ? "" : `<input type="checkbox" class="rc-g-check" data-group="${esc(g.id)}" ${on === g.items.length ? "checked" : ""} />`}
+            <span class="rc-g-title">${esc(g.title)}</span>
+            ${g.defaultOn ? `<span class="rc-tag safe">safe</span>` : ""}
+            ${g.kind === "system" ? `<span class="rc-tag admin">administrator</span>` : ""}
+            <span class="spacer"></span>
+            <span class="rc-g-size">${rcFmt(bytes)}</span>
+            <span class="rc-g-count">${g.items.length}</span>
+            <button class="rc-g-toggle" type="button" data-group="${esc(g.id)}">▾</button>
+          </div>
+          <div class="rc-g-hint">${esc(g.hint || "")}</div>
+          <div class="rc-items" data-group="${esc(g.id)}" hidden>
+            ${g.items.map((i) => `
+              <label class="rc-item${isApps ? " app" : ""}">
+                ${isApps
+                  ? `<button class="rc-uninstall" type="button" data-id="${esc(i.id)}">Uninstall</button>`
+                  : `<input type="checkbox" class="rc-check" data-id="${esc(i.id)}" ${RC.selected.has(i.id) ? "checked" : ""} />`}
+                <span class="rc-i-label" title="${esc(i.path || i.label)}">${esc(i.label)}</span>
+                ${i.note ? `<span class="rc-i-note">${esc(i.note)}</span>` : ""}
+                <span class="spacer"></span>
+                <span class="rc-i-size">${rcFmt(i.bytes)}</span>
+              </label>`).join("")}
+          </div>
+        </section>`;
+    }).join("");
+    rcRenderFooter();
+  }
+
+  function rcPreselect(groupIds) {
+    RC.selected.clear();
+    for (const g of RC.scan?.groups || []) {
+      if (g.kind === "apps") continue; // an app is never bulk-ticked; it goes through its uninstaller
+      const want = g.defaultOn || (groupIds || []).includes(g.id);
+      if (want) for (const i of g.items) RC.selected.add(i.id);
+    }
+  }
+
+  async function rcScan({ targetGB = 0, preselect = [] } = {}) {
+    const api2 = window.nutaan.reclaim;
+    if (!api2 || RC.busy) return;
+    RC.busy = true;
+    RC.targetGB = targetGB;
+    el("rcOverlay").hidden = false;
+    el("rcResult").hidden = true;
+    el("rcGroups").hidden = true;
+    el("rcScanning").hidden = false;
+    el("rcMeter").hidden = !targetGB;
+    el("rcSub").textContent = "Scanning this computer — nothing is being deleted.";
+    el("rcTitle").textContent = targetGB ? `Free up ${targetGB} GB` : "Free up space";
+    el("rcDelete").disabled = true;
+    try {
+      // 75s: long enough for a real sweep of a large disk, short enough that the sheet does not
+      // feel hung. The progress label says which phase is running throughout.
+      RC.scan = await api2.scan({ budgetMs: 75000 });
+    } catch {
+      RC.scan = null;
+    }
+    RC.busy = false;
+    if (!RC.scan || RC.scan.error) {
+      el("rcScanLabel").textContent = "The scan could not run: " + ((RC.scan && RC.scan.error) || "unknown error");
+      return;
+    }
+    rcPreselect(preselect);
+    el("rcSub").innerHTML = `<b>${rcFmt(RC.scan.totalBytes)}</b> found · <b>${rcFmt(RC.scan.safeBytes)}</b> of it safe to remove` +
+      (RC.scan.partial ? " · the scan hit its time limit, so there may be more" : "");
+    rcRenderGroups();
+  }
+
+  async function rcApply() {
+    const api2 = window.nutaan.reclaim;
+    const paths = [...RC.selected];
+    if (!paths.length || RC.busy) return;
+    const bytes = rcSelectedBytes();
+    const hasSystem = (RC.scan.groups.find((g) => g.kind === "system")?.items || []).some((i) => RC.selected.has(i.id));
+    // One last, explicit, unambiguous confirmation — this is permanent.
+    const okToGo = confirm(
+      `Permanently delete ${paths.length} item${paths.length === 1 ? "" : "s"}, about ${rcFmt(bytes)}?\n\n` +
+      `This does not go to the recycle bin. It cannot be undone.` +
+      (hasSystem ? `\n\nYour system will ask for administrator permission for the system-level items.` : "")
+    );
+    if (!okToGo) return;
+    RC.busy = true;
+    el("rcDelete").disabled = true;
+    el("rcDelete").textContent = "Deleting…";
+    el("rcGroups").hidden = true;
+    el("rcScanning").hidden = false;
+    el("rcScanLabel").textContent = "Deleting…";
+    let res = null;
+    try { res = await api2.apply(paths); } catch (e) { res = { error: e.message }; }
+    RC.busy = false;
+    el("rcScanning").hidden = true;
+    const box = el("rcResult");
+    box.hidden = false;
+    if (!res || res.error) {
+      box.className = "rc-result err";
+      box.innerHTML = `<div class="rc-r-head">Nothing was deleted — ${esc((res && res.error) || "the delete failed")}</div>`;
+    } else {
+      box.className = "rc-result";
+      const failed = res.results.filter((r) => !r.removed);
+      box.innerHTML =
+        `<div class="rc-r-head">Freed <b>${rcFmt(res.freed)}</b> · ${res.removed} removed${res.failed ? ` · ${res.failed} could not be` : ""}</div>` +
+        `<div class="rc-r-list">${res.results.slice(0, 14).map((r) =>
+          `<div class="rc-r-row ${r.removed ? "ok" : "bad"}"><span>${esc(r.label)}</span><span class="spacer"></span>` +
+          `<span>${r.removed ? "freed " + rcFmt(r.freed) : esc(r.error || "kept")}</span></div>`).join("")}</div>` +
+        (failed.length ? `<div class="st-note">Anything still listed is held open by a running program — close it and run this again.</div>` : "");
+      RC.selected.clear();
+      // The device strip and the reclaimable card are both stale now.
+      refresh({ refresh: true });
+      if (typeof scanCleanup === "function") setTimeout(scanCleanup, 1200);
+    }
+    el("rcDelete").textContent = "Delete permanently";
+    rcRenderFooter();
+  }
+
+  function wireReclaim() {
+    const overlay = el("rcOverlay");
+    if (!overlay) return;
+    const close = () => { if (!RC.busy) overlay.hidden = true; };
+    el("rcClose").addEventListener("click", close);
+    el("rcCancel").addEventListener("click", close);
+    el("rcRescan").addEventListener("click", () => rcScan({ targetGB: RC.targetGB }));
+    el("rcDelete").addEventListener("click", rcApply);
+
+    el("rcGroups").addEventListener("change", (e) => {
+      const one = e.target.closest(".rc-check");
+      if (one) {
+        if (e.target.checked) RC.selected.add(one.dataset.id);
+        else RC.selected.delete(one.dataset.id);
+        const sec = one.closest(".rc-group");
+        const boxes = [...sec.querySelectorAll(".rc-check")];
+        const head = sec.querySelector(".rc-g-check");
+        if (head) head.checked = boxes.every((b) => b.checked);
+        rcRenderFooter();
+        return;
+      }
+      const all = e.target.closest(".rc-g-check");
+      if (all) {
+        const g = RC.scan.groups.find((x) => x.id === all.dataset.group);
+        for (const i of g.items) { if (e.target.checked) RC.selected.add(i.id); else RC.selected.delete(i.id); }
+        for (const b of all.closest(".rc-group").querySelectorAll(".rc-check")) b.checked = e.target.checked;
+        rcRenderFooter();
+      }
+    });
+
+    el("rcGroups").addEventListener("click", async (e) => {
+      const toggle = e.target.closest(".rc-g-toggle");
+      if (toggle) {
+        const items = el("rcGroups").querySelector(`.rc-items[data-group="${toggle.dataset.group}"]`);
+        items.hidden = !items.hidden;
+        toggle.textContent = items.hidden ? "▾" : "▴";
+        return;
+      }
+      const un = e.target.closest(".rc-uninstall");
+      if (un) {
+        un.disabled = true;
+        un.textContent = "Opening…";
+        const res = await window.nutaan.reclaim.uninstall(un.dataset.id);
+        un.textContent = res && res.ok ? "Removed" : "Uninstall";
+        un.disabled = !(res && res.ok);
+        if (res && !res.ok && res.error) alert(res.error);
+      }
+    });
+
+    if (window.nutaan.reclaim.onProgress) {
+      window.nutaan.reclaim.onProgress((p) => {
+        const label = el("rcScanLabel");
+        if (!label || el("rcScanning").hidden) return;
+        label.textContent = p.label
+          ? p.label + "…"
+          : `Deleting ${p.done}/${p.total} — freed ${rcFmt(p.freed || 0)}`;
+      });
+    }
+    // The agent asked for the sheet; it still cannot touch anything in it.
+    if (window.nutaan.reclaim.onReview) {
+      window.nutaan.reclaim.onReview(({ targetGB, preselect }) => {
+        rcScan({ targetGB: targetGB || 0, preselect: preselect || [] });
+      });
+    }
+    const btn = el("mclFreeUp");
+    if (btn) btn.addEventListener("click", () => rcScan({}));
+  }
+
   function render() {
     renderChip();
     if (S.popOpen) renderPop();
@@ -305,6 +537,7 @@
       if (S.booted || !api()) return;
       S.booted = true;
       wire();
+      wireReclaim();
       refresh();
     },
     onShowHealth() {

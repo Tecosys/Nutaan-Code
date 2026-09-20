@@ -753,14 +753,19 @@
   });
 
   function renderProjectLabel() {
-    projectBtnLabel.textContent = activePath ? basename(activePath) : "No project";
-    projectBtn.title = activePath || "Open a project";
+    // The home-directory workspace is not a project anyone chose, so it is never shown as one.
+    const personal = activePath && _paths && activePath === _paths.home;
+    const label = personal ? "Your computer" : activePath ? basename(activePath) : "No project";
+    projectBtnLabel.textContent = label;
+    projectBtn.title = personal ? `Working across this computer (${activePath})` : activePath || "Open a project";
     treeProjectRow.hidden = !activePath;
-    treeProjectName.textContent = activePath ? basename(activePath) : "";
+    treeProjectName.textContent = label === "No project" ? "" : label;
     treeProjectName.title = activePath || "";
-    openProjectLinkLabel.textContent = activePath
-      ? `Working in ${basename(activePath)} — switch project`
-      : "Open a project to get started";
+    openProjectLinkLabel.textContent = personal
+      ? "Working across this computer — open a project instead"
+      : activePath
+        ? `Working in ${basename(activePath)} — switch project`
+        : "Open a project, or just ask — no folder needed";
   }
 
   // ---------- Git chip ----------
@@ -3633,6 +3638,33 @@
     persistProjects();
   }
 
+  // Working on the machine itself — organising Downloads, freeing up space, finding a document —
+  // needs no project at all. Rather than making someone pick a folder before the app will talk to
+  // them, the first message opens a workspace rooted at their home directory.
+  let _paths = null;
+  async function userPaths() {
+    if (!_paths) {
+      try { _paths = await window.nutaan.getPaths(); } catch { _paths = { home: "" }; }
+    }
+    return _paths;
+  }
+
+  async function ensureWorkspace() {
+    const existing = activeProject();
+    if (existing) return existing;
+    const paths = await userPaths();
+    if (!paths.home) return null;
+    await openProject(paths.home);
+    const proj = activeProject();
+    if (proj) proj.personal = true;
+    persistProjects();
+    return proj;
+  }
+
+  function isPersonal(p) {
+    return !!(p && (p.personal || (_paths && p.path === _paths.home)));
+  }
+
   async function pickAndOpenProject() {
     if (running) return;
     const picked = await window.nutaan.pickFolder();
@@ -3645,9 +3677,9 @@
     e.stopPropagation();
     newChat();
   });
-  el("newChatMain").addEventListener("click", () => {
+  el("newChatMain").addEventListener("click", async () => {
+    if (!activePath) await ensureWorkspace();
     if (activePath) newChat();
-    else pickAndOpenProject();
   });
 
   // ---------- Sending ----------
@@ -3878,10 +3910,11 @@
       switchSettingsTab("omniroute");
       return;
     }
-    const proj = activeProject();
+    let proj = activeProject();
+    if (!proj) proj = await ensureWorkspace();
     const chat = activeChat();
     if (!proj || !chat) {
-      pickAndOpenProject();
+      appendBubble("error", "Could not open a workspace on this computer. Open a folder from the project menu and try again.");
       return;
     }
     if (chat.messages.length === 0) chat.messages = [{ role: "system", content: systemPrompt(proj.path) }];

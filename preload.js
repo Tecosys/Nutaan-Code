@@ -80,6 +80,7 @@ contextBridge.exposeInMainWorld("nutaan", {
   gitPush: (root) => ipcRenderer.invoke("git:push", root),
   gitChanges: (root) => ipcRenderer.invoke("git:changes", root),
   gitCommit: (payload) => ipcRenderer.invoke("git:commit", payload),
+  getPaths: () => ipcRenderer.invoke("app:paths"),
   getVersion: () => ipcRenderer.invoke("app:get-version"),
   checkForUpdates: () => ipcRenderer.invoke("app:check-for-updates"),
   openReleases: () => ipcRenderer.invoke("app:open-releases"),
@@ -147,6 +148,23 @@ contextBridge.exposeInMainWorld("nutaan", {
     markRead: () => ipcRenderer.invoke("monitor:mark-read"),
     clearEvents: () => ipcRenderer.invoke("monitor:clear-events"),
     cleanup: (opts) => ipcRenderer.invoke("storage:cleanup", opts),
+  },
+  reclaim: {
+    scan: (opts) => ipcRenderer.invoke("reclaim:scan", opts),
+    plan: (paths) => ipcRenderer.invoke("reclaim:plan", paths),
+    apply: (paths) => ipcRenderer.invoke("reclaim:apply", paths),
+    uninstall: (id) => ipcRenderer.invoke("reclaim:uninstall", id),
+    onProgress: (callback) => {
+      const listener = (_e, data) => callback(data);
+      ipcRenderer.on("reclaim:progress", listener);
+      return () => ipcRenderer.removeListener("reclaim:progress", listener);
+    },
+    // The agent cannot delete anything; it can only ask for this sheet to be opened.
+    onReview: (callback) => {
+      const listener = (_e, data) => callback(data);
+      ipcRenderer.on("reclaim:review", listener);
+      return () => ipcRenderer.removeListener("reclaim:review", listener);
+    },
   },
   today: (payload) => ipcRenderer.invoke("today:build", payload),
   projectOpened: (root) => ipcRenderer.send("project:opened", root),

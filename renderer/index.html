@@ -166,7 +166,7 @@
             <div class="quick-grid" id="quickGrid"></div>
             <button class="open-project-link" id="openProjectLink">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M3 7a2 2 0 0 1 2-2h3.6l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-            <span id="openProjectLinkLabel">Open a project to get started</span>
+            <span id="openProjectLinkLabel">Open a project, or just ask — no folder needed</span>
             </button>
           </div>
 
@@ -280,6 +280,7 @@
               <span class="spacer"></span>
               <button class="link-btn" id="mclRescan" type="button">Re-check</button>
               <button class="btn-primary sm" id="mclClean" type="button" disabled>Clean up</button>
+              <button class="btn-secondary sm" id="mclFreeUp" type="button" title="Scan the whole computer, then pick what goes">Free up space…</button>
             </div>
             <div class="mcl-items" id="mclItems"></div>
             <div class="st-note">Only caches, stale update downloads and week-old temp files — never settings, chats, the knowledge base, memory, or browser logins.</div>
@@ -1290,6 +1291,44 @@
   <button class="st-rec-act" id="stRecMark" type="button" title="Mark a zoom (Ctrl+Shift+F8)">Mark zoom</button>
   <button class="st-rec-act" id="stRecPause" type="button" title="Pause (Ctrl+Shift+F10)">Pause</button>
   <button class="st-rec-act stop" id="stRecStop" type="button" title="Stop (Ctrl+Shift+F9)">Stop</button>
+</div>
+
+<!-- Free up space: the review step. Nothing is deleted until the user ticks and confirms here. -->
+<div class="overlay" id="rcOverlay" hidden>
+  <div class="modal rc-modal">
+    <div class="rc-head">
+      <div>
+        <h2 id="rcTitle">Free up space</h2>
+        <div class="rc-sub" id="rcSub">Scanning this computer…</div>
+      </div>
+      <button class="icon-btn" id="rcClose" type="button" title="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+
+    <div class="rc-meter" id="rcMeter" hidden>
+      <div class="rc-meter-bar"><div class="rc-meter-fill" id="rcMeterFill"></div></div>
+      <div class="rc-meter-label" id="rcMeterLabel"></div>
+    </div>
+
+    <div class="rc-body" id="rcBody">
+      <div class="rc-scanning" id="rcScanning">
+        <div class="rc-spinner"></div>
+        <div class="rc-scan-label" id="rcScanLabel">Looking for space…</div>
+        <div class="st-note">Nothing is deleted while this runs. You will see the whole list first.</div>
+      </div>
+      <div class="rc-groups" id="rcGroups" hidden></div>
+      <div class="rc-result" id="rcResult" hidden></div>
+    </div>
+
+    <div class="rc-foot">
+      <span class="rc-selected" id="rcSelected">Nothing selected</span>
+      <span class="spacer"></span>
+      <button class="btn-secondary" id="rcRescan" type="button">Re-scan</button>
+      <button class="btn-secondary" id="rcCancel" type="button">Close</button>
+      <button class="btn-danger" id="rcDelete" type="button" disabled>Delete permanently</button>
+    </div>
+  </div>
 </div>
 
 <div class="overlay" id="stExportOverlay" hidden>
