@@ -53,6 +53,12 @@
            "footnotes and page furniture" },
     { id: "paper", label: "Research paper", preset: "a4", icon: "☰", playbook: "document",
       ask: "an academic paper on A4 pages, one artboard PER PAGE: title block with authors and abstract, two-column body, numbered sections, figures with captions, and a references list" },
+    { id: "motion", label: "Motion video", preset: "video", icon: "▶", playbook: "motion-video",
+      ask: "a motion-graphics video: one artboard at 1920×1080 that is a timed scene, not a page. Every movement is a " +
+           "CSS animation with an absolute delay on a shared timeline, body carries data-duration in ms, and the still " +
+           "at any instant is a finished frame. Use design_takes to see Demo Studio screen recordings and place one " +
+           "with {{take:Name}} where the product should appear. When it verifies clean, call design_export_video so I " +
+           "get the file" },
     { id: "social", label: "Social post", preset: "square", icon: "◼",
       ask: "a social post at 1080×1080, as one self-contained HTML artboard" },
     { id: "email", label: "Email", preset: "email", icon: "✉",
@@ -127,11 +133,14 @@
       `most six sizes, one radius, one shadow depth, one typeface — the copy that matters, what any attached image is ` +
       `for, which project files it draws from). Then design_brand: use the brand if set; otherwise pick a palette that ` +
       `fits (mine if I named colours), save it with "set", and carry on — never stop to ask about colours.\n\n` +
-      `Then design_artboard with preset "${k.preset}" for each screen or page: complete, self-contained HTML with ` +
-      `inline <style>, real copy about the actual subject, no external files (the motion module named in ` +
-      `reference/motion.md is the one exception). After EVERY artboard call design_verify and look at what it ` +
-      `returns; fix what it finds with design_update in one batch and verify again, at most twice. Do not tell me it ` +
-      `is done before verify is clean. Then one line on what you made, naming any decision you took on my behalf.`;
+      `Then build each screen or page so I can watch it appear: design_artboard with preset "${k.preset}" holding ` +
+      `only the document shell — <head> with the <style> (tokens as CSS variables, the type scale, every class the ` +
+      `sections will use) and the header/nav — then ONE design_append per section in reading order (hero, then the ` +
+      `next section, … footer), each a complete block. Never write a whole page in one call. Real copy about the ` +
+      `actual subject, no external files (the motion module named in reference/motion.md is the one exception). ` +
+      `When every section is in, call design_verify and look at what it returns; fix what it finds with design_update ` +
+      `in one batch and verify again, at most twice. Do not tell me it is done before verify is clean. Then one line ` +
+      `on what you made, naming any decision you took on my behalf.`;
   }
 
   function sendToAgent(prompt, title) {
@@ -339,8 +348,19 @@
     };
   }
 
+  // {{take:Name}} in a scene is a Demo Studio recording; the canvas resolves it the way the
+  // exporter does, through the app's own media scheme, so Play shows the real footage.
+  S.takes = S.takes || null;
+  function resolveTakes(html) {
+    if (!S.takes || !/{{take:/.test(html)) return html;
+    return html.replace(/{{take:([^}]+)}}/g, (m, key) => {
+      const k = key.trim().toLowerCase();
+      const t = S.takes.find((x) => x.id === key.trim() || String(x.name).toLowerCase() === k);
+      return t ? `nutaan-media://take/${encodeURIComponent(t.id)}` : m;
+    });
+  }
   function wrapHtml(b, width) {
-    const html = b.html || "";
+    const html = resolveTakes(b.html || "");
     const body = /<html[\s>]/i.test(html)
       ? html
       : `<!doctype html><html><head><meta charset="utf-8" />
@@ -603,6 +623,7 @@
     design_new: "Starting the design",
     design_artboard: "Drawing",
     design_update: "Revising",
+    design_append: "Adding a section",
     design_verify: "Checking how it renders",
     design_read: "Reading the design so far",
     design_list: "Looking at your designs",
@@ -628,6 +649,7 @@
     };
     if (name === "design_verify") return named(a.artboard_id) || a.name || "";
     if (name === "design_update") return named(a.artboard_id) || a.name || "";
+    if (name === "design_append") { const m = String(a.html || "").match(/<(section|header|nav|footer|main|aside)\b[^>]*?(?:id|class|aria-label)="([^"]+)"/i); return (m ? m[2].split(/\s+/)[0] : "") || named(a.artboard_id); }
     if (name === "design_artboard") return a.name || a.preset || "";
     if (name === "design_new") return a.name || "";
     if (name === "use_skill" || name === "list_skills") return a.id || a.skill || "";
@@ -761,7 +783,7 @@
       if (!LIVE.on) return;
       for (const s of LIVE.steps) s.done = true;
       // The streamed draft is superseded by the saved artboard, which lands right after.
-      if (name === "design_artboard" || name === "design_update" || name === "design_verify") {
+      if (name === "design_artboard" || name === "design_append" || name === "design_update" || name === "design_verify") {
         LIVE.stream = null;
         clearTimeout(streamTimer); streamTimer = null;
         refreshOpen(); // verify can grow the artboard to fit the page
@@ -901,9 +923,9 @@
         flash(ok && !ok.error ? "Saved into your project" : "Could not save");
         return;
       }
-      flash(fmt === "zip" ? "Rendering every artboard…" : "Rendering…");
+      flash(fmt === "zip" ? "Rendering every artboard…" : /^video/.test(fmt) ? "Filming the scene — this takes about as long as the video…" : "Rendering…");
       const res = await api().export({ id: S.doc.id, boardId: b.id, format: fmt, scale: 2 });
-      if (res && res.ok) flash(fmt === "zip" ? "Zip saved — open index.html for the prototype" : "Exported");
+      if (res && res.ok) flash(fmt === "zip" ? "Zip saved — open index.html for the prototype" : /^video/.test(fmt) ? `Video saved — ${Math.round(res.seconds || 0)}s, in your Videos folder` : "Exported");
       else if (res && !res.canceled) alert(res.error || "export failed");
     });
 
@@ -940,6 +962,7 @@
       if (!S.booted) {
         S.booted = true;
         S.presets = (await api().presets()) || [];
+        try { S.takes = (await api().takes()) || []; } catch { S.takes = []; }
         el("dzPreset").innerHTML = S.presets.map((p) => `<option value="${esc(p.id)}">${esc(p.label)} · ${p.w}×${p.h}</option>`).join("");
         renderKinds();
         wire();

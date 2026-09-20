@@ -1,4 +1,8 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, protocol, net } = require("electron");
+// nutaan-media://take/<id> streams a Demo Studio recording into any page that needs it — a scene
+// in the Design canvas (a sandboxed frame with no origin, which file:// would refuse) and the
+// offscreen window that renders that scene to video. Registered before ready, as Chromium requires.
+protocol.registerSchemesAsPrivileged([{ scheme: "nutaan-media", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, bypassCSP: true } }]);
 const path = require("node:path");
 const os = require("node:os");
 const fs = require("node:fs/promises");
@@ -3583,6 +3587,23 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "design_append",
+      description:
+        "Add the next section to an artboard you started with design_artboard. Build a page this way — the shell (head, styles, header) with design_artboard, then ONE section per design_append call (hero, then features, then pricing, then footer…) — so each part appears on the canvas the moment it is written instead of the whole page arriving minutes later. The HTML is inserted just before </body> (or at the end). Verify once when all sections are in.",
+      parameters: {
+        type: "object",
+        properties: {
+          artboard_id: { type: "string" },
+          html: { type: "string", description: "One section: a complete <section>/<footer>/<nav> block, styled by the classes and variables the shell defined (add a <style> for anything new)." },
+          design_id: { type: "string" },
+        },
+        required: ["artboard_id", "html"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "design_update",
       description:
         "Replace the HTML of an artboard that already exists — use this for every revision ('make the header bigger', 'try it in dark mode', 'change the copy'). Read the design first with design_read so you are editing what is actually on the canvas rather than what you remember writing.",
@@ -3642,6 +3663,33 @@ const TOOLS = [
         },
         required: ["artboard_id"],
       },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "design_export_video",
+      description:
+        "Render a motion artboard (preset video or vertical) to a video file, frame by frame, and hand the path back so the user can play it in the chat. The artboard is a scene whose time comes from CSS animations (and any embedded Demo Studio take placed with {{take:Name}}); its length is body data-duration in ms, or the end of its last animation. Call design_verify on the scene first so it renders clean.",
+      parameters: {
+        type: "object",
+        properties: {
+          artboard_id: { type: "string" },
+          design_id: { type: "string", description: "Omit for the design that is open." },
+          fps: { type: "number", description: "Frames per second, default 30." },
+          seconds: { type: "number", description: "Override the scene length in seconds." },
+          format: { type: "string", enum: ["mp4", "webm"], description: "mp4 (H.264, default) or webm (VP9)." },
+        },
+        required: ["artboard_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "design_takes",
+      description: "List the screen recordings made in Demo Studio (id, name, seconds, size). Embed one in a motion scene with <video src=\"{{take:Name}}\" data-start=\"ms\" muted playsinline> — it starts at that point in the scene and is seeked frame-accurately in the export.",
+      parameters: { type: "object", properties: {} },
     },
   },
   {
@@ -4352,6 +4400,13 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
       emitToWindow("design:opened", { id, focus: board.id });
       return { artboard_id: board.id, name: board.name, size: `${board.w}x${board.h}`, design_id: id };
     }
+    case "design_append": {
+      const id = args.design_id || design.openId;
+      if (!id) return { error: "No design is open." };
+      const board = await design.appendToArtboard(id, args.artboard_id, String(args.html || ""));
+      emitToWindow("design:opened", { id, focus: board.id });
+      return { artboard_id: board.id, name: board.name, sections: board.sections, bytes: board.html.length, note: "On the canvas. Add the next section, or design_verify when the page is complete." };
+    }
     case "design_update": {
       const id = args.design_id || design.openId;
       if (!id) return { error: "No design is open." };
@@ -4372,6 +4427,14 @@ async function executeTool(sender, root, name, args, callId, signal, imageConfig
           ? "Use exactly these values in every artboard of this design."
           : "No brand is set. Ask the user for their colours and logo before you design — propose a palette and ask them to confirm. The logo is added from the Design tab (Brand → Add logo); tell them that if they have one.",
       };
+    }
+    case "design_takes":
+      return { takes: (await design.takes()).map(({ id, name, seconds, width, height }) => ({ id, name, seconds, width, height })) };
+    case "design_export_video": {
+      const id = args.design_id || design.openId;
+      if (!id) return { error: "No design is open." };
+      const out = await exportSceneVideo(id, args.artboard_id, { fps: args.fps, seconds: args.seconds, format: args.format, sender });
+      return { ok: true, ...out, note: "The video is saved and shown to the user in the chat. Say where it is and how long it runs." };
     }
     case "design_verify": {
       const id = args.design_id || design.openId;
@@ -5015,7 +5078,7 @@ const TOOL_FAMILIES = {
     re: /\b(knowledge ?base|kb|docs?|documentation|reference|ingest)\b|index (this|the)|remember this/i,
   },
   design: {
-    names: ["design_new", "design_artboard", "design_update", "design_verify", "design_brand", "design_read", "design_list"],
+    names: ["design_new", "design_artboard", "design_append", "design_update", "design_verify", "design_brand", "design_read", "design_list", "design_export_video", "design_takes"],
     re: /\b(design|mockup|wireframe|landing ?page|ui|ux|layout|screen|deck|slide|poster|flyer|banner|brand|logo|figma|prototype|artboard|canvas|dashboard|palette|typography)\b/i,
   },
   storage: {
@@ -5069,7 +5132,8 @@ async function streamChatCompletion(sender, controller, { baseUrl, apiKey, model
       // tool calls carry no thought_signature) to Gemini (which demands one) was replaying the
       // already-assembled Azure history and being rejected. Deciding at the moment of the call
       // means it always matches the model actually being asked.
-      messages: [chatMessages[0], ...(flattenHistory ? flattenToolHistory(chatMessages.slice(1)) : normalizeHistory(chatMessages.slice(1), model))],
+      // `display` is what the thread shows for a wrapped prompt; providers must never see it.
+      messages: [chatMessages[0], ...(flattenHistory ? flattenToolHistory(chatMessages.slice(1)) : normalizeHistory(chatMessages.slice(1), model))].map(({ display, ...msg }) => msg),
       // Everything the user switched on in Tools is offered to the model as well.
       tools: toolList,
       // Weak models ignore even a forceful "call the tool, don't lecture" instruction and write a
@@ -5628,8 +5692,11 @@ async function runAgentLoop(sender, { root, baseUrl, apiKey, model, imageModel, 
 
       let approved = true;
       // A dry-run cleanup only reports what it *would* remove — no approval needed for a preview.
+      // The Design canvas is its own sandbox: every design_* tool only writes into the design store
+      // and renders in an offscreen window. Asking approval for each verify round turned a design
+      // into a click-through of twenty permission cards.
       const isSafe = SAFE_TOOLS.has(name) || (name === "cleanup_storage" && args && args.dry_run) ||
-        toolRegistry.isSafe(name) || HEADLESS_ONLY_TOOLS.has(name);
+        toolRegistry.isSafe(name) || HEADLESS_ONLY_TOOLS.has(name) || /^design_/.test(name);
       if (!isSafe && readOnly) {
         // A look-only worker asked to change something. Refuse with a reason the model can
         // relay, rather than silently doing it — the user set this worker up as read-only.
@@ -5958,7 +6025,47 @@ const reclaim = new Reclaim({ log: (m) => console.log("[reclaim]", m) });
 
 // The design canvas: artboards the agent writes as HTML, kept as one JSON file per design. There
 // is nothing to install and nothing to start.
-const design = new Design({ userDataDir, emit: emitToWindow, log: (m) => console.log("[design]", m) });
+const design = new Design({ userDataDir, demoDir: path.join(CANONICAL_STORE_DIR, "demos"), emit: emitToWindow, log: (m) => console.log("[design]", m) });
+
+// Frames are rendered here in the main process; the app window encodes them (MediaRecorder on a
+// canvas, fed at exactly the frame rate) and hands the bytes back. One job at a time.
+const encodeJobs = new Map();
+ipcMain.handle("motion:encoded", (_e, { jobId, data, mime, error }) => {
+  const job = encodeJobs.get(jobId);
+  if (!job) return false;
+  encodeJobs.delete(jobId);
+  if (error) job.reject(new Error(error));
+  else job.resolve({ data: Buffer.from(data), mime });
+  return true;
+});
+async function exportSceneVideo(id, boardId, { fps, seconds, sender, format } = {}) {
+  const wantExt = /webm/i.test(format || "") ? "webm" : "mp4";
+  if (!win || win.isDestroyed()) throw new Error("The app window is needed to encode the video.");
+  const doc = await design.read(id);
+  const board = doc.artboards.find((b) => b.id === boardId);
+  if (!board) throw new Error("no such artboard");
+  const out = await design.exportVideo(id, boardId, {
+    fps: Math.min(60, Math.max(10, Number(fps) || 30)),
+    seconds: Number(seconds) || undefined,
+    onProgress: (pr) => { try { (sender || win.webContents).send("motion:progress", { id, boardId, ...pr }); } catch {} },
+    encode: ({ dir, frames, fps, width, height, ext }) => new Promise((resolve, reject) => {
+      const jobId = "enc-" + Date.now().toString(36);
+      encodeJobs.set(jobId, { resolve, reject });
+      win.webContents.send("motion:encode", { jobId, dir, frames, fps, width, height, ext: ext || "png", format: wantExt });
+      setTimeout(() => { if (encodeJobs.has(jobId)) { encodeJobs.delete(jobId); reject(new Error("encoding timed out")); } }, 10 * 60_000);
+    }).then(async ({ data, mime }) => {
+      const ext = /mp4/.test(mime) ? "mp4" : "webm";
+      let base = app.getPath("videos");
+      try { await fs.mkdir(base, { recursive: true }); } catch { base = app.getPath("downloads"); }
+      const safe = `${doc.name || "motion"} — ${board.name || "scene"}`.replace(/[\/:*?"<>|]+/g, "-").slice(0, 80);
+      const file = path.join(base, `${safe}.${ext}`);
+      await fs.writeFile(file, data);
+      return { path: file, bytes: data.length, mime };
+    }),
+  });
+  try { (sender || win.webContents).send("motion:done", { id, boardId, ...out }); } catch {}
+  return out;
+}
 
 const monitor = new Monitor({
   userDataDir,
@@ -5976,6 +6083,22 @@ bgTaskListeners.push({
 });
 
 app.whenReady().then(async () => {
+  // Demo Studio takes, by id, for scenes and their export. The id is checked against the same
+  // rule the Studio uses for its own files, so the handler can only ever serve a take.
+  protocol.handle("nutaan-media", async (req) => {
+    try {
+      const u = new URL(req.url);
+      const kind = u.hostname;
+      const key = decodeURIComponent(u.pathname.replace(/^\//, ""));
+      if (kind === "take") {
+        const takes = await design.takes();
+        const t = takes.find((x) => x.id === key);
+        if (!t || !safeDemoId(t.id)) return new Response("not found", { status: 404 });
+        return net.fetch(require("node:url").pathToFileURL(t.mediaPath).href, { headers: req.headers });
+      }
+    } catch (err) { return new Response(String(err.message), { status: 500 }); }
+    return new Response("not found", { status: 404 });
+  });
   await Promise.all([workers.load(), swarm.load(), healer.load(), monitor.load()]).catch(() => {});
   workers.start();
   monitor.start();
@@ -6436,6 +6559,7 @@ ipcMain.handle("reclaim:uninstall", (_e, id) => reclaim.uninstall(id));
 const designCall = async (fn) => { try { return await fn(); } catch (err) { return { error: err.message }; } };
 ipcMain.handle("design:list", () => designCall(() => design.list()));
 ipcMain.handle("design:presets", () => design.presets());
+ipcMain.handle("design:takes", () => design.takes().then((t) => t.map(({ id, name, seconds, width, height }) => ({ id, name, seconds, width, height }))));
 
 // The Skills page: everything the agent can use_skill, with where each one came from, so the
 // list is the same one list_skills gives the model — not a second, hand-maintained catalogue.
@@ -6493,6 +6617,11 @@ ipcMain.handle("design:export", async (_e, { id, boardId, format, scale } = {}) 
   try {
     const doc = await design.read(id);
     const board = doc.artboards.find((b) => b.id === boardId);
+    if (/^video/.test(format || "")) {
+      const out = await exportSceneVideo(id, boardId, { format: format.replace("video-", "") });
+      shell.showItemInFolder(out.path);
+      return { ok: true, path: out.path, bytes: out.bytes, seconds: out.seconds };
+    }
     const zip = format === "zip";
     const data = zip ? await design.exportZip(id) : await design.render(id, boardId, { format, scale });
     const ext = zip ? "zip" : format === "pdf" ? "pdf" : "png";

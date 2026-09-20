@@ -173,6 +173,11 @@ contextBridge.exposeInMainWorld("nutaan", {
       return () => ipcRenderer.removeListener("reclaim:review", listener);
     },
   },
+  // Motion export: the main process renders the frames, this window encodes them.
+  motion: {
+    onEncode: (cb) => ipcRenderer.on("motion:encode", (_e, job) => cb(job)),
+    encoded: (payload) => ipcRenderer.invoke("motion:encoded", payload),
+  },
   skills: {
     list: (root) => ipcRenderer.invoke("skills:list", root),
     openFolder: (dir) => ipcRenderer.invoke("skills:open-folder", dir),
@@ -180,6 +185,7 @@ contextBridge.exposeInMainWorld("nutaan", {
   design: {
     list: () => ipcRenderer.invoke("design:list"),
     presets: () => ipcRenderer.invoke("design:presets"),
+    takes: () => ipcRenderer.invoke("design:takes"),
     create: (spec) => ipcRenderer.invoke("design:create", spec),
     read: (id) => ipcRenderer.invoke("design:read", id),
     remove: (id) => ipcRenderer.invoke("design:remove", id),
@@ -251,6 +257,8 @@ contextBridge.exposeInMainWorld("nutaan", {
       "agent:retrying",
       "agent:model-switched",
       "agent:tool-arg-stream",
+      "motion:progress",
+      "motion:done",
       "agent:done",
       "agent:error",
       "bgtask:update",

@@ -11,6 +11,7 @@
 const fs = require("node:fs/promises");
 const fsSync = require("node:fs");
 const path = require("node:path");
+const os = require("node:os");
 
 const MAX_HTML_BYTES = 1_500_000;
 
@@ -72,6 +73,9 @@ const PRESETS = {
   story: { w: 1080, h: 1920, label: "Story" },
   a4: { w: 1240, h: 1754, label: "A4 page" },
   email: { w: 640, h: 1200, label: "Email" },
+  // Motion: a fixed-duration scene rendered to video. Same HTML, but time is the layout.
+  video: { w: 1920, h: 1080, label: "Video 16:9" },
+  vertical: { w: 1080, h: 1920, label: "Video 9:16" },
 };
 // Presets whose height is a viewport, not a format: a page in them scrolls, so the artboard grows
 // to fit what was drawn (verify does this). A slide, an A4 page or a social tile stays fixed.
@@ -85,8 +89,9 @@ function safeId(id) {
 }
 
 class Design {
-  constructor({ userDataDir, emit, log } = {}) {
+  constructor({ userDataDir, demoDir, emit, log } = {}) {
     this.dir = path.join(userDataDir || ".", "designs");
+    this.demoDir = demoDir || null; // Demo Studio's takes, so a scene can carry a screen recording
     this.emit = emit || (() => {});
     this.log = log || (() => {});
     this.openId = null;
@@ -255,6 +260,22 @@ class Design {
       for (const k of ["x", "y", "w", "h"]) if (typeof patch[k] === "number") b[k] = Math.round(patch[k]);
       b.updatedAt = Date.now();
       return b;
+    });
+    this.queueThumb(id);
+    return b;
+  }
+
+  // A page arrives one section at a time: each call lands just before </body>, the canvas repaints,
+  // and the person watches the page grow instead of waiting minutes for one giant write.
+  async appendToArtboard(id, boardId, html) {
+    const b = await this.mutate(id, (doc) => {
+      const b = doc.artboards.find((x) => x.id === boardId);
+      if (!b) throw new Error("no such artboard");
+      const piece = this.withBrand(doc, html);
+      const cur = b.html || "";
+      b.html = (/<\/body>/i.test(cur) ? cur.replace(/<\/body>/i, piece + "\n</body>") : cur + "\n" + piece).slice(0, MAX_HTML_BYTES);
+      b.updatedAt = Date.now();
+      return { ...b, sections: (b.html.match(/<(section|header|nav|footer|main|aside)\b/gi) || []).length };
     });
     this.queueThumb(id);
     return b;
@@ -491,7 +512,7 @@ class Design {
       },
     });
     try {
-      await win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(this.documentFor(board)));
+      await win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(await this.resolveTakes(this.documentFor(board))));
       try { win.webContents.setZoomFactor(zoom); } catch {}
       // Webfonts and gradients need a beat; a capture that beats the paint is a blank page.
       await new Promise((r) => setTimeout(r, 500));
@@ -561,6 +582,87 @@ ${first ? `<p><a href="${first}.html">Open the prototype →</a></p>` : ""}`, "u
     return zipFiles(files);
   }
 
+  // A scene to a video: an offscreen window at the artboard's exact size, every frame asked for by
+  // time through __seek, captured as a bitmap, then encoded by the app window (MediaRecorder on a
+  // canvas fed at exactly the frame rate) and written out. No ffmpeg, no native module.
+  async exportVideo(id, boardId, { fps = 30, seconds, encode, onProgress } = {}) {
+    const doc = await this.read(id);
+    const b = doc.artboards.find((x) => x.id === boardId);
+    if (!b) throw new Error("no such artboard");
+    if (typeof encode !== "function") throw new Error("no encoder available");
+    const { BrowserWindow } = require("electron");
+    // A 1920×1080 scene must render at 1920×1080 even on a 1366-wide laptop: without
+    // enableLargerThanScreen the window is clamped to the display and the film comes out cropped.
+    const win = new BrowserWindow({
+      width: b.w, height: b.h, useContentSize: true, show: false, frame: false, enableLargerThanScreen: true,
+      webPreferences: { offscreen: true, sandbox: true, contextIsolation: true, nodeIntegration: false, javascript: true, webSecurity: true, zoomFactor: 1 },
+    });
+    try {
+      win.setContentSize(b.w, b.h);
+      win.webContents.setFrameRate(Math.min(60, fps));
+      const html = await this.resolveTakes(this.documentFor(b));
+      await win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+      // The verify windows zoom their page to fit the screen, and Chromium remembers that zoom for
+      // the data: origin — which every artboard shares. Filmed at that zoom the frame is 3000px
+      // wide and the scene sits in one corner. Reset it, and check the page is at 1:1.
+      win.webContents.setZoomFactor(1);
+      win.webContents.setZoomLevel(0);
+      await new Promise((r) => setTimeout(r, 900)); // fonts, takes' metadata
+      const vp = JSON.parse(await win.webContents.executeJavaScript("JSON.stringify({ iw: innerWidth, ih: innerHeight, dpr: devicePixelRatio })"));
+      if (Math.abs(vp.iw - b.w) > 2) this.log(`film viewport ${vp.iw}x${vp.ih} dpr ${vp.dpr} — expected ${b.w}x${b.h}`);
+      const totalMs = Math.max(1000, Math.min(120_000, seconds ? seconds * 1000 : Number(await win.webContents.executeJavaScript("window.__duration()")) || 8000));
+      const frames = Math.round((totalMs / 1000) * fps);
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nutaan-motion-"));
+      // The scene is played in real time and every repaint the offscreen window makes is kept
+      // with its timestamp, then the run is resampled to a fixed frame rate. This films whatever
+      // the page does — CSS timelines, script-driven sequences, embedded takes — exactly as Play
+      // shows it. (Seeking by time only reproduces what the Web Animations API can see.)
+      const painted = []; // { ms, file }
+      let idx = 0, lastWrite = Promise.resolve();
+      const t0 = Date.now();
+      const onPaint = (_e, _dirty, image) => {
+        const ms = Date.now() - t0;
+        if (ms > totalMs + 200) return;
+        const file = path.join(dir, `p${String(idx++).padStart(5, "0")}.jpg`);
+        const jpg = image.toJPEG(92);
+        painted.push({ ms, file });
+        lastWrite = lastWrite.then(() => fs.writeFile(file, jpg));
+        if (onProgress && painted.length % 15 === 0) onProgress({ frame: Math.min(frames, Math.round((ms / 1000) * fps)), frames, phase: "render" });
+      };
+      win.webContents.on("paint", onPaint);
+      await win.webContents.executeJavaScript("window.__play && window.__play(); true");
+      win.webContents.invalidate();
+      await new Promise((r) => setTimeout(r, totalMs + 250));
+      win.webContents.off("paint", onPaint);
+      await lastWrite;
+      // A hold with nothing moving paints nothing, so each target frame takes the last paint at or
+      // before its time; a scene that never painted at all falls back to seeking frame by frame.
+      let usedSeek = false;
+      if (painted.length < Math.max(4, totalMs / 1000)) {
+        usedSeek = true;
+        for (let i = 0; i < frames; i++) {
+          await win.webContents.executeJavaScript(`window.__seek(${Math.round((i / fps) * 1000)})`);
+          const img = await win.webContents.capturePage();
+          await fs.writeFile(path.join(dir, `f${String(i).padStart(5, "0")}.png`), img.toPNG());
+          if (onProgress && i % 10 === 0) onProgress({ frame: i, frames, phase: "render" });
+        }
+      } else {
+        let p = 0;
+        for (let i = 0; i < frames; i++) {
+          const t = (i / fps) * 1000;
+          while (p + 1 < painted.length && painted[p + 1].ms <= t) p++;
+          await fs.copyFile(painted[p].file, path.join(dir, `f${String(i).padStart(5, "0")}.jpg`));
+        }
+      }
+      if (onProgress) onProgress({ frame: frames, frames, phase: "encode" });
+      const out = await encode({ dir, frames, fps, width: b.w, height: b.h, ext: usedSeek ? "png" : "jpg" });
+      try { await fs.rm(dir, { recursive: true, force: true }); } catch {}
+      return { ...out, seconds: totalMs / 1000, fps, frames, width: b.w, height: b.h };
+    } finally {
+      try { win.destroy(); } catch {}
+    }
+  }
+
   // The capture comes back at the zoomed size; scale it to what was asked for.
   async capture(win, zoom, board, scale) {
     const img = await win.webContents.capturePage();
@@ -570,10 +672,74 @@ ${first ? `<p><a href="${first}.html">Open the prototype →</a></p>` : ""}`, "u
   }
 
   // One wrapper so every artboard renders the same in the canvas and in the export.
+  // Demo Studio takes a scene can embed: {{take:Name}} becomes a URL the frame can load.
+  async takes() {
+    if (!this.demoDir) return [];
+    let names = [];
+    try { names = await fs.readdir(this.demoDir); } catch { return []; }
+    const out = [];
+    for (const name of names) {
+      if (!name.endsWith(".json")) continue;
+      try {
+        const pj = JSON.parse(await fs.readFile(path.join(this.demoDir, name), "utf8"));
+        if (!pj.mediaPath) continue;
+        out.push({ id: pj.id, name: pj.name || pj.id, seconds: Math.round((pj.duration || 0) * 10) / 10, width: pj.width, height: pj.height, mediaPath: pj.mediaPath, savedAt: pj.savedAt || pj.createdAt || 0 });
+      } catch {}
+    }
+    return out.sort((a, b) => b.savedAt - a.savedAt);
+  }
+  takePath(idOrName) {
+    return this._takes && this._takes.find((t) => t.id === idOrName || String(t.name).toLowerCase() === String(idOrName).toLowerCase());
+  }
+  async resolveTakes(html) {
+    if (!/\{\{take:/.test(html)) return html;
+    this._takes = await this.takes();
+    return html.replace(/\{\{take:([^}]+)\}\}/g, (m, key) => {
+      const t = this.takePath(key.trim());
+      return t ? `nutaan-media://take/${encodeURIComponent(t.id)}` : m;
+    });
+  }
+
+  // A scene is only a video if every frame can be asked for by time. This puts __seek(ms) into
+  // the page: it pauses every animation the page has (CSS keyframes, transitions and anything
+  // built on the Web Animations API — motion.dev included), sets them all to the same instant,
+  // and seeks any embedded take to its own offset. Frame after frame, the exporter calls it.
+  static SEEK_SCRIPT = `<script>
+(function(){
+  var pending = [];
+  function seekVideo(v, ms){
+    var start = Number(v.dataset.start || 0), t = (ms - start) / 1000;
+    if (t < 0) { v.currentTime = 0; v.style.visibility = v.dataset.hideBeforeStart === "0" ? "" : "hidden"; return Promise.resolve(); }
+    v.style.visibility = "";
+    if (v.readyState < 1) return new Promise(function(r){ v.addEventListener("loadedmetadata", function(){ seekVideo(v, ms).then(r); }, { once: true }); });
+    var target = Math.min(t, Math.max(0, (v.duration || t) - 0.05));
+    if (Math.abs(v.currentTime - target) < 0.001) return Promise.resolve();
+    return new Promise(function(r){ var done = function(){ v.removeEventListener("seeked", done); r(); }; v.addEventListener("seeked", done); v.currentTime = target; setTimeout(done, 400); });
+  }
+  window.__seek = function(ms){
+    document.getAnimations().forEach(function(a){ try { a.pause(); a.currentTime = ms; } catch(e){} });
+    var vids = Array.prototype.slice.call(document.querySelectorAll("video"));
+    vids.forEach(function(v){ v.pause(); v.muted = true; });
+    return Promise.all(vids.map(function(v){ return seekVideo(v, ms); })).then(function(){
+      return new Promise(function(r){ requestAnimationFrame(function(){ requestAnimationFrame(r); }); });
+    });
+  };
+  window.__duration = function(){
+    var d = Number(document.body.dataset.duration || document.documentElement.dataset.duration || 0);
+    if (d) return d;
+    var max = 0;
+    document.getAnimations().forEach(function(a){ try { var t = a.effect.getComputedTiming(); var end = (t.delay || 0) + (t.activeDuration === Infinity ? 0 : t.activeDuration) + (t.endDelay || 0); if (end > max) max = end; } catch(e){} });
+    return max || 8000;
+  };
+  window.__play = function(){ document.getAnimations().forEach(function(a){ try { a.currentTime = 0; a.play(); } catch(e){} }); document.querySelectorAll("video").forEach(function(v){ var s = Number(v.dataset.start||0); v.currentTime = 0; setTimeout(function(){ v.play().catch(function(){}); }, s); }); };
+})();
+</script>`;
+
   documentFor(board) {
     const html = board.html || "";
-    if (/<html[\s>]/i.test(html)) return html;
-    return `<!doctype html><html><head><meta charset="utf-8" />
+    const withSeek = (doc) => (/__seek/.test(doc) ? doc : doc.replace(/<\/body>/i, Design.SEEK_SCRIPT + "</body>"));
+    if (/<html[\s>]/i.test(html)) return withSeek(html);
+    return withSeek(`<!doctype html><html><head><meta charset="utf-8" />
 <meta name="viewport" content="width=${board.w}, initial-scale=1" />
 <style>
   *,*::before,*::after{box-sizing:border-box}
@@ -581,7 +747,7 @@ ${first ? `<p><a href="${first}.html">Open the prototype →</a></p>` : ""}`, "u
     font-family:"Plus Jakarta Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;
     color:#0f1117;-webkit-font-smoothing:antialiased}
   img{max-width:100%}
-</style></head><body>${html}</body></html>`;
+</style></head><body>${html}</body></html>`);
   }
 }
 

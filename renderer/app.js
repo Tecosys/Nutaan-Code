@@ -947,16 +947,19 @@
       return;
     }
     for (const proj of projects) {
+      const isCurrent = proj.path === activePath;
+      const shown = proj.chats.filter((c) => isCurrent || c.messages.some((m) => m.role === "user") || runs.has(c.id));
+      if (!shown.length) continue;
       const head = document.createElement("div");
       head.className = "chats-proj-head";
       head.innerHTML =
         `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 7a2 2 0 0 1 2-2h3.6l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>` +
         `<span>${escapeHtml(basename(proj.path))}</span>`;
       chatsView.appendChild(head);
-      for (const c of proj.chats) {
+      for (const c of shown) {
         const row = document.createElement("div");
         const run = runs.get(c.id);
-        row.className = "chat-row" + (c.id === proj.activeChatId ? " active" : "") + (run ? " running" : "") + (c.unread ? " unread" : "");
+        row.className = "chat-row" + (isCurrent && c.id === proj.activeChatId ? " active" : "") + (run ? " running" : "") + (c.unread ? " unread" : "");
         row.innerHTML =
           `<span class="chat-title">${run ? `<span class="chat-run-dot"></span>` : ""}${escapeHtml(c.title)}</span>` +
           `<span class="chat-meta">${run ? escapeHtml(run.activity || "Working…") : escapeHtml(relTime(c.updatedAt))}</span>` +
@@ -2106,16 +2109,38 @@
   // A map of the conversation, not a decoration: every block is a mark at the place it actually
   // sits in the scroll, your own messages longer than the rest, and the one in view is lit. It
   // only appears once there is something to move between.
+  // One dash per block, evenly down the column; the one in view lit; a preview on hover; click
+  // to jump. It only appears once there is something to move between.
   let railBlocks = [];
+  function railLabel(b) {
+    const t = (b.textContent || "").trim().replace(/\s+/g, " ");
+    if (b.classList.contains("user")) return { who: "You", text: t.slice(0, 160) };
+    if (b.classList.contains("assistant")) return { who: "Nutaan", text: t.slice(0, 160) };
+    if (b.classList.contains("tool-card")) return { who: (b.querySelector(".tool-title") || {}).textContent || "Tool", text: ((b.querySelector(".tool-cmd") || {}).textContent || t).slice(0, 120) };
+    return { who: "", text: t.slice(0, 160) };
+  }
+  const railTip = document.createElement("div");
+  railTip.className = "rail-tip";
+  railTip.hidden = true;
+  document.body.appendChild(railTip);
   function renderChatRail() {
     if (!chatRail) return;
-    railBlocks = [...thread.children].filter((c) => !c.hidden && c.id !== "emptyState" && c.id !== "coworkerHero" && !c.classList.contains("thinking-row"));
-    if (railBlocks.length < 2 || threadScroll.scrollHeight <= threadScroll.clientHeight + 40) { chatRail.innerHTML = ""; return; }
-    const total = threadScroll.scrollHeight || 1;
-    chatRail.innerHTML = railBlocks.slice(0, 200).map((b, i) =>
-      `<button type="button" class="rail-dot${b.classList.contains("user") ? " you" : ""}" data-i="${i}" style="top:${((b.offsetTop / total) * 100).toFixed(2)}%" title="${escapeHtml((b.textContent || "").trim().slice(0, 70))}"></button>`).join("");
+    railBlocks = [...thread.children].filter((c) => !c.hidden && c.id !== "emptyState" && c.id !== "coworkerHero" && !c.classList.contains("thinking-row") && !c.classList.contains("sys-line"));
+    if (railBlocks.length < 2) { chatRail.innerHTML = ""; return; }
+    chatRail.innerHTML = railBlocks.slice(0, 80).map((b, i) =>
+      `<button type="button" class="rail-dot${b.classList.contains("user") ? " you" : ""}" data-i="${i}"></button>`).join("");
     chatRail.querySelectorAll(".rail-dot").forEach((d) => {
       d.addEventListener("click", () => railBlocks[Number(d.dataset.i)]?.scrollIntoView({ behavior: "smooth", block: "center" }));
+      d.addEventListener("mouseenter", () => {
+        const b = railBlocks[Number(d.dataset.i)]; if (!b) return;
+        const { who, text } = railLabel(b);
+        railTip.innerHTML = `${who ? `<b>${escapeHtml(who)}</b>` : ""}<span>${escapeHtml(text)}</span>`;
+        const r = d.getBoundingClientRect();
+        railTip.style.top = Math.min(window.innerHeight - 120, Math.max(60, r.top - 12)) + "px";
+        railTip.style.left = r.right + 10 + "px";
+        railTip.hidden = false;
+      });
+      d.addEventListener("mouseleave", () => { railTip.hidden = true; });
     });
     updateRailActive();
   }
@@ -3166,7 +3191,7 @@
     const toolNameById = new Map();
     for (const m of messages || []) {
       if (m.role === "user") {
-        const text = messageText(m.content);
+        const text = m.display || messageText(m.content);
         if (text && text.trim()) appendBubble("user", text);
       } else if (m.role === "assistant") {
         const text = messageText(m.content);
@@ -4210,6 +4235,21 @@
     taskChev.textContent = taskList.hidden ? "▸" : "▾";
   });
 
+  const codebaseCache = new Map();
+  async function looksLikeCodebase(root) {
+    if (codebaseCache.has(root)) return codebaseCache.get(root);
+    let ok = false;
+    try {
+      const entries = await window.nutaan.listDir(root, ".");
+      const names = new Set((entries || []).map((e) => (e.name || "").toLowerCase()));
+      const markers = [".git", "package.json", "pyproject.toml", "requirements.txt", "cargo.toml", "go.mod", "pom.xml", "build.gradle", "gemfile", "composer.json", "pubspec.yaml", "makefile", "cmakelists.txt", "src"];
+      ok = markers.some((m) => names.has(m));
+      if (!ok && window.nutaan.gitStatus) { const g = await window.nutaan.gitStatus(root); ok = !!(g && (g.ok || g.branch) && !g.error); }
+    } catch {}
+    codebaseCache.set(root, ok);
+    return ok;
+  }
+
   const TASK_MARK = { completed: "✓", in_progress: "▸", pending: "○" };
 
   function renderTasks(tasks) {
@@ -4435,7 +4475,6 @@
     }
     if (chat.messages.length === 0) chat.messages = [{ role: "system", content: systemPrompt(proj.path) }];
     if (chat.title === "New chat") chat.title = deriveChatTitle(pendingTitle || text);
-    pendingTitle = null;
     chat.updatedAt = new Date().toISOString();
 
     // Outcome mode: the goal goes to the swarm, not to one agent.
@@ -4446,10 +4485,13 @@
       return;
     }
 
-    chat.messages.push({ role: "user", content: buildUserContent(text) });
+    // The model gets the wrapped prompt; the thread shows what the person actually typed.
+    const shown = pendingTitle || text;
+    chat.messages.push({ role: "user", content: buildUserContent(text), ...(pendingTitle ? { display: pendingTitle } : {}) });
+    pendingTitle = null;
     _lastTurnHadImage = attachments.some((a) => a.kind === "image");
     resetFileGroup();
-    appendBubble("user", attachments.length ? `${attachments.map((a) => `📎 ${a.name}`).join("\n")}\n\n${text}` : text);
+    appendBubble("user", attachments.length ? `${attachments.map((a) => `📎 ${a.name}`).join("\n")}\n\n${shown}` : shown);
     attachments = [];
     renderAttachments();
     input.value = "";
@@ -4775,6 +4817,86 @@
   }
 
   const FS_MUTATING_TOOLS = new Set(["write_file", "edit_file", "run_command"]);
+  // ---------- Motion: encode rendered frames into a video ----------
+  // The main process renders one PNG per frame; this draws them onto a canvas at exactly the frame
+  // rate while MediaRecorder captures the stream. MP4 (H.264) where Chromium offers it, VP9 WebM
+  // otherwise. Nothing native, nothing bundled.
+  function motionMime(format) {
+    const mp4 = ["video/mp4;codecs=avc1.42E01E", "video/mp4;codecs=avc1", "video/mp4"];
+    const webm = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+    const cands = format === "webm" ? [...webm, ...mp4] : [...mp4, ...webm];
+    for (const m of cands) { try { if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; } catch {} }
+    return "";
+  }
+  window.nutaan.motion?.onEncode(async ({ jobId, dir, frames, fps, width, height, ext = "png", format = "mp4" }) => {
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext("2d", { alpha: false });
+      const stream = canvas.captureStream(0);
+      const track = stream.getVideoTracks()[0];
+      const mime = motionMime(format);
+      const rec = new MediaRecorder(stream, { mimeType: mime || undefined, videoBitsPerSecond: Math.min(30_000_000, Math.round(width * height * fps * 0.2)) });
+      const chunks = [];
+      rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+      const stopped = new Promise((r) => { rec.onstop = r; });
+      const load = (i) => new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("frame " + i + " failed to load"));
+        img.src = "file:///" + (dir.replace(/\\/g, "/") + "/f" + String(i).padStart(5, "0") + "." + ext).replace(/^\/+/, "");
+      });
+      // Decode several frames ahead so the draw loop never waits on disk: a late frame would be
+      // stamped late, and the file would run long in that spot.
+      const AHEAD = 8;
+      const queue = new Map();
+      const fetchAhead = (from) => { for (let k = from; k < Math.min(frames, from + AHEAD); k++) if (!queue.has(k)) queue.set(k, load(k)); };
+      fetchAhead(0);
+      const first = await queue.get(0);
+      ctx.drawImage(first, 0, 0, width, height);
+      rec.start(250);
+      const step = 1000 / fps;
+      const t0 = performance.now();
+      for (let i = 0; i < frames; i++) {
+        fetchAhead(i + 1);
+        const img = i === 0 ? first : await queue.get(i);
+        queue.delete(i);
+        const due = t0 + i * step;
+        const wait = due - performance.now();
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+        ctx.drawImage(img, 0, 0, width, height);
+        track.requestFrame && track.requestFrame();
+      }
+      const loopMs = performance.now() - t0;
+      await new Promise((r) => setTimeout(r, step * 2));
+      rec.stop();
+      await stopped;
+      const blob = new Blob(chunks, { type: mime || "video/webm" });
+      window.__lastEncode = { frames, fps, loopMs: Math.round(loopMs), bytes: blob.size, mime };
+      await window.nutaan.motion.encoded({ jobId, data: new Uint8Array(await blob.arrayBuffer()), mime: mime || "video/webm" });
+    } catch (err) {
+      await window.nutaan.motion.encoded({ jobId, error: err.message || String(err) });
+    }
+  });
+
+  // Progress while a scene renders, and the finished video as a card you can play and open.
+  onAgentEvent("motion:progress", ({ frame, frames, phase }) => {
+    runActivity.textContent = phase === "encode" ? `Encoding ${frames} frames…` : `Rendering frame ${frame} of ${frames}…`;
+  });
+  function appendVideoCard({ path, seconds, width, height, bytes }) {
+    const wrap = document.createElement("div");
+    wrap.className = "video-card";
+    const src = "file:///" + String(path).replace(/\\/g, "/").replace(/^\/+/, "");
+    wrap.innerHTML = `<video controls preload="metadata" src="${escapeHtml(src)}"></video>
+      <div class="video-meta"><span>${escapeHtml(basename(path))}</span><span class="video-dim">${Math.round(seconds || 0)}s · ${width}×${height} · ${((bytes || 0) / 1048576).toFixed(1)} MB</span>
+      <button class="link-btn" type="button">Show in folder</button></div>`;
+    wrap.querySelector("button").addEventListener("click", () => window.nutaan.studio?.reveal ? window.nutaan.studio.reveal(path) : window.nutaan.osOpen(path));
+    thread.appendChild(wrap);
+    renderEmptyVisibility();
+    scrollToBottom();
+  }
+  onAgentEvent("motion:done", (out) => { if (out && out.path) appendVideoCard(out); });
+
   onAgentEvent("agent:tool-result", ({ id, name, result }) => {
     resolveToolCard(id, name, result);
     maybeShowInCodeTab(id, name, result);
@@ -6284,6 +6406,7 @@
     // Both are full-bleed workspaces: a canvas or a timeline has no room left beside the composer.
     if (composerWrap) composerWrap.hidden = showStudio || showDesign;
     threadScroll.hidden = showWorkers || showHealth || showStudio || showDesign;
+    if (chatRail) chatRail.hidden = threadScroll.hidden; // the rail belongs to the thread, not the page behind it
     if (showWorkers) renderWorkersPage();
     if (showHealth) {
       renderHealthPage();
@@ -6717,6 +6840,9 @@
   let todayToken = 0;
   async function loadToday({ force = false } = {}) {
     if (!activePath) { todaySection.hidden = true; return; }
+    // A home folder or a plain directory is not a project: scanning it for TODOs and tests produces
+    // nonsense ("clear 35 TODOs in Arduino15/libraries"). Today speaks only for a real codebase.
+    if (!(await looksLikeCodebase(activePath))) { todaySection.hidden = true; return; }
     const token = ++todayToken;
     const root = activePath;
     todaySection.hidden = settings.uiMode === "office";

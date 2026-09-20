@@ -72,7 +72,8 @@ Read it with `use_skill({ id: "nutaan-design", file: "reference/<kind>.md" })`:
 | Dashboard, admin, metrics | reference/dashboard.md |
 | Slide deck | reference/presentation.md |
 | Document, report, research paper | reference/document.md |
-| Anything that moves | reference/motion.md — after the page is designed, not before |
+| Motion video, launch video, animated demo, reel | reference/motion-video.md — a timed scene rendered to a file |
+| Anything on a page that moves | reference/motion.md — after the page is designed, not before |
 
 ## 5. Ship
 

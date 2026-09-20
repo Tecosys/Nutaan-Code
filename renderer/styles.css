@@ -4740,3 +4740,27 @@ main.chat.home .thread { max-width: 860px; }
    (the overlay's width, from the platform) and everything in it lines up on one 60px line. */
 .topbar { padding-right: calc(100vw - env(titlebar-area-width, 100vw) + 8px); }
 .topbar-right, .topbar .topbar-actions { -webkit-app-region: no-drag; }
+
+/* ---------- A rendered video in the thread ---------- */
+.video-card { align-self: stretch; max-width: 720px; border: 1px solid var(--border-card); border-radius: 14px; overflow: hidden; background: #000; }
+.video-card video { display: block; width: 100%; max-height: 420px; background: #000; }
+.video-card .video-meta { display: flex; align-items: center; gap: 12px; padding: 9px 12px; background: var(--bg-card); font-size: 12.5px; color: var(--text-1); }
+.video-card .video-dim { color: var(--text-3); font-family: var(--mono); font-size: 11px; }
+.video-card .link-btn { margin-left: auto; }
+
+/* A chat working in the background: a ring turning beside its name, the way a running task reads. */
+.chat-run-dot { width: 10px; height: 10px; border-radius: 50%; background: none; border: 2px solid var(--border-strong); border-top-color: var(--purple-light); animation: chat-spin 0.9s linear infinite; margin-right: 8px; vertical-align: -1px; }
+@keyframes chat-spin { to { transform: rotate(360deg); } }
+
+/* ---------- Rail: one dash per block, evenly spread, preview on hover ---------- */
+.chat-rail { display: flex; flex-direction: column; justify-content: space-evenly; align-items: flex-start; gap: 0; position: absolute; left: 8px; top: 16px; bottom: 140px; width: 18px; overflow: hidden; }
+.chat-rail .rail-dot { position: static; width: 12px; height: 2px; left: auto; top: auto; background: var(--border-strong); transform: none; transition: background .15s, width .15s; }
+.chat-rail .rail-dot.you { width: 16px; background: var(--text-3); }
+.chat-rail .rail-dot:hover { background: var(--text-1); width: 18px; }
+.chat-rail .rail-dot.active { background: var(--purple-light); width: 18px; }
+.rail-tip { position: fixed; z-index: 80; max-width: 320px; padding: 10px 12px; border-radius: 12px; background: var(--bg-menu); border: 1px solid var(--border-strong); box-shadow: 0 16px 40px -16px rgba(0,0,0,.9); font-size: 12.5px; line-height: 1.45; color: var(--text-1); pointer-events: none; }
+.rail-tip b { display: block; font-size: 11px; color: var(--purple-light); margin-bottom: 3px; font-weight: 650; }
+.rail-tip span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* Rail: a compact stack, not spread across the column. */
+.chat-rail { justify-content: center; gap: 8px; }
